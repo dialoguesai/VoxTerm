@@ -8,4 +8,5 @@ mlx-qwen3-asr>=0.1.0; sys_platform == "darwin"
 qwen-asr>=0.0.6; sys_platform == "linux"
 torch>=2.0.0; sys_platform == "linux"
 faster-whisper>=1.0.0; sys_platform == "linux"
-cryptography>=41.0.0; sys_platform == "linux"
+zeroconf>=0.131.0
+cryptography>=42.0.0
