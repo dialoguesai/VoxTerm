@@ -176,13 +176,14 @@ class SessionManager:
 
     def leave_session(self) -> None:
         """Send BYE to all peers and shut down."""
-        self._running = False
-
-        # Send BYE to all connected peers (outside lock)
+        # Send BYE BEFORE setting _running=False so read loops don't
+        # close sockets out from under us.
         with self._lock:
             peers_snapshot = list(self._peers.values())
         for peer in peers_snapshot:
             self._send_to_peer(peer, build_bye(self._node_id))
+
+        self._running = False
 
         # Close all peer connections
         with self._lock:
@@ -378,6 +379,10 @@ class SessionManager:
 
         except Exception as exc:
             log.debug("Failed to connect to %s:%d: %s", ip, port, exc)
+            try:
+                sock.close()
+            except Exception:
+                pass
             return False
 
     # ── encryption handshake ──────────────────────────────────
@@ -435,10 +440,15 @@ class SessionManager:
         peer.close()
 
         with self._lock:
-            # Only fire callback if this peer was still in the table
-            # (prevents double-remove from heartbeat + read loop race)
-            was_present = self._peers.pop(node_id, None) is not None
-        self._read_threads.pop(node_id, None)
+            # Only remove if the current entry IS this exact peer object.
+            # A newer connection for the same node_id may have replaced it.
+            current = self._peers.get(node_id)
+            if current is peer:
+                del self._peers[node_id]
+                was_present = True
+            else:
+                was_present = False
+            self._read_threads.pop(node_id, None)
 
         if not was_present:
             return  # already removed by another thread

@@ -159,13 +159,15 @@ def recv_encrypted_msg(sock: socket.socket, key: bytes) -> dict | None:
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
     """Read exactly n bytes from a socket.  Returns None on EOF."""
-    data = b""
-    while len(data) < n:
-        chunk = sock.recv(n - len(data))
-        if not chunk:
+    buf = bytearray(n)
+    pos = 0
+    view = memoryview(buf)
+    while pos < n:
+        nbytes = sock.recv_into(view[pos:])
+        if not nbytes:
             return None
-        data += chunk
-    return data
+        pos += nbytes
+    return bytes(buf)
 
 
 # ── Plaintext TCP framing (for debugging / development) ──────

@@ -831,17 +831,19 @@ class VoxTerm(App):
         self._append_live_transcript(text, speaker, speaker_id)
         self._update_telemetry()
 
-        # Broadcast to P2P peers if in a session
-        if self._session_mgr and self._session_mgr.is_in_session:
+        # Broadcast to P2P peers if in a session (off main thread to avoid blocking)
+        mgr = self._session_mgr
+        if mgr and mgr.is_in_session:
             self._transcript_seq += 1
-            self._session_mgr.broadcast_final(
-                speaker_name=speaker or self._p2p_display_name,
-                seq=self._transcript_seq,
-                text=text,
-                start_ts=time.monotonic(),
-                end_ts=time.monotonic(),
-                confidence=0.9,
-            )
+            seq = self._transcript_seq
+            name = speaker or self._p2p_display_name
+            ts = time.monotonic()
+            threading.Thread(
+                target=mgr.broadcast_final,
+                kwargs=dict(speaker_name=name, seq=seq, text=text,
+                            start_ts=ts, end_ts=ts, confidence=0.9),
+                daemon=True,
+            ).start()
 
         # First-use onboarding tip
         if (
@@ -1489,6 +1491,7 @@ class VoxTerm(App):
         code = result["session_code"]
         self._p2p_display_name = name
         self._ensure_p2p_identity()
+        self._stop_discovery()  # stop auto-discovery before session setup
 
         tp = self.query_one(TranscriptPanel)
         tp.system_message(f"P2P session starting...")
@@ -1626,6 +1629,7 @@ class VoxTerm(App):
         code = result["session_code"]
         self._p2p_display_name = name
         self._ensure_p2p_identity()
+        self._stop_discovery()  # stop auto-discovery before session setup
 
         tp = self.query_one(TranscriptPanel)
         tp.system_message(f"joining session...")
@@ -1740,6 +1744,9 @@ class VoxTerm(App):
         self._speaker_profile_map.clear()
 
     def action_quit(self):
+        # Cancel any in-progress P2P workers before cleanup
+        self.workers.cancel_group(self, "p2p_setup")
+        self.workers.cancel_group(self, "p2p_discovery")
         # Leave P2P session and stop discovery
         self._stop_discovery()
         if self._session_mgr and self._session_mgr.is_in_session:

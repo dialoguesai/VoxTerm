@@ -105,8 +105,11 @@ class PeerDiscovery:
         self._in_session = in_session
         if self._zeroconf and self._service_info:
             new_info = self._build_service_info()
-            self._zeroconf.update_service(new_info)
-            self._service_info = new_info
+            try:
+                self._zeroconf.update_service(new_info)
+                self._service_info = new_info
+            except Exception:
+                log.debug("Failed to update mDNS service (already unregistered?)")
 
     def get_visible_peers(self) -> list[PeerInfo]:
         """Return a snapshot of currently visible peers."""
@@ -121,7 +124,7 @@ class PeerDiscovery:
         instance_name = f"{self._display_name}-{self._node_id[:6]}"
         return ServiceInfo(
             P2P_SERVICE_TYPE,
-            f"{instance_name}._voxterm._tcp.local.",
+            f"{instance_name}.{P2P_SERVICE_TYPE}",
             server=f"{instance_name}.local.",
             addresses=[socket.inet_aton(local_ip)],
             port=self._tcp_port,
@@ -164,10 +167,13 @@ class PeerDiscovery:
             if info and info.properties:
                 node_id = info.properties.get(b"node_id", b"").decode("utf-8", errors="replace")
             if not node_id:
-                # Fallback: match by service name
+                # Fallback: match by mDNS instance name which we control
+                # Format: "{display_name}-{node_id[:6]}._voxterm._tcp.local."
+                instance = name.split(".")[0]  # e.g. "bob-aabb11"
                 with self._lock:
                     for nid, peer in self._peers.items():
-                        if name.startswith(peer.display_name):
+                        expected = f"{peer.display_name}-{nid[:6]}"
+                        if instance == expected:
                             node_id = nid
                             break
             if node_id:
