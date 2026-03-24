@@ -42,9 +42,13 @@ class MergedSegment:
 class TranscriptAssembler:
     """Merges finalized transcript segments from all peers into one timeline."""
 
+    # Keep at most this many finals to prevent unbounded memory growth.
+    MAX_FINALS = 5000
+
     def __init__(self):
         self._finals: list[MergedSegment] = []
         self._partials: dict[str, MergedSegment] = {}  # node_id → latest partial
+        self._seen: set[tuple[str, int]] = set()  # (node_id, seq) dedup
         self._lock = threading.Lock()
 
     def on_final(
@@ -57,8 +61,11 @@ class TranscriptAssembler:
         end_ts: float,
         confidence: float,
         clock_sync: ClockSync | None = None,
-    ) -> MergedSegment:
-        """Insert a finalized segment, sorted by adjusted start time."""
+    ) -> MergedSegment | None:
+        """Insert a finalized segment, sorted by adjusted start time.
+
+        Returns None if this (node_id, seq) was already received (dedup).
+        """
         adjusted = clock_sync.adjust(start_ts) if clock_sync else start_ts
         adjusted_end = clock_sync.adjust(end_ts) if clock_sync else end_ts
 
@@ -76,10 +83,24 @@ class TranscriptAssembler:
         )
 
         with self._lock:
+            # Dedup: skip if we already received this (node_id, seq)
+            key = (node_id, seq)
+            if key in self._seen:
+                return None
+            self._seen.add(key)
+
             # Binary insert by adjusted_start_ts
             keys = [s.adjusted_start_ts for s in self._finals]
             idx = bisect.bisect_right(keys, adjusted)
             self._finals.insert(idx, seg)
+
+            # Evict oldest segments if over capacity
+            if len(self._finals) > self.MAX_FINALS:
+                evicted = self._finals[:len(self._finals) - self.MAX_FINALS]
+                self._finals = self._finals[len(self._finals) - self.MAX_FINALS:]
+                # Also remove evicted entries from the dedup set
+                for s in evicted:
+                    self._seen.discard((s.node_id, s.seq))
 
             # Clear any pending partial for this node with same seq
             if node_id in self._partials and self._partials[node_id].seq == seq:
@@ -123,6 +144,13 @@ class TranscriptAssembler:
         """Current in-progress partials from all peers."""
         with self._lock:
             return list(self._partials.values())
+
+    def clear(self) -> None:
+        """Reset all state — call when user clears the transcript."""
+        with self._lock:
+            self._finals.clear()
+            self._partials.clear()
+            self._seen.clear()
 
     def clear_peer(self, node_id: str) -> None:
         """Remove pending partials for a disconnected peer."""

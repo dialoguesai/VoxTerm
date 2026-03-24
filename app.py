@@ -1708,11 +1708,13 @@ class VoxTerm(App):
             peers = mgr.peers
             peer = peers.get(node_id)
             clock_sync = peer.clock if peer else None
-            self._assembler.on_final(
+            seg = self._assembler.on_final(
                 node_id, msg["seq"], msg["speaker_name"], msg["text"],
                 msg["start_ts"], msg["end_ts"], msg["confidence"],
                 clock_sync=clock_sync,
             )
+            if seg is None:
+                return  # duplicate segment, already displayed
             peer_name = msg.get("speaker_name", node_id[:8])
             display_name = peer.display_name if peer else node_id[:8]
             self.call_from_thread(
@@ -1764,6 +1766,8 @@ class VoxTerm(App):
         self.vad.reset()
         if self._diarizer_loaded:
             self.diarizer.reset_session()
+        if self._assembler:
+            self._assembler.clear()
         self._speaker_profile_map.clear()
 
     def action_quit(self):
