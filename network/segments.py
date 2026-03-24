@@ -25,15 +25,18 @@ class MergedSegment:
     seq: int
     speaker_name: str
     text: str
-    start_ts: float
-    end_ts: float
+    start_ts: float          # original remote timestamp
+    end_ts: float             # original remote timestamp
     confidence: float
     is_partial: bool
-    adjusted_start_ts: float = 0.0
+    adjusted_start_ts: float = 0.0   # converted to local clock
+    adjusted_end_ts: float = 0.0     # converted to local clock
 
     def __post_init__(self):
         if self.adjusted_start_ts == 0.0:
             self.adjusted_start_ts = self.start_ts
+        if self.adjusted_end_ts == 0.0:
+            self.adjusted_end_ts = self.end_ts
 
 
 class TranscriptAssembler:
@@ -69,8 +72,8 @@ class TranscriptAssembler:
             confidence=confidence,
             is_partial=False,
             adjusted_start_ts=adjusted,
+            adjusted_end_ts=adjusted_end,
         )
-        seg.end_ts = adjusted_end
 
         with self._lock:
             # Binary insert by adjusted_start_ts
