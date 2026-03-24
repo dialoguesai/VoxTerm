@@ -8,10 +8,14 @@ a robust estimate accurate to ~1ms on LAN.
 from __future__ import annotations
 
 import statistics
+import threading
 
 
 class ClockSync:
     """Per-peer clock offset estimator using heartbeat round-trips.
+
+    Thread-safe: ``add_sample`` is called from the heartbeat thread,
+    while ``offset``/``adjust`` may be called from read-loop threads.
 
     Usage::
 
@@ -31,6 +35,7 @@ class ClockSync:
         self._window_size = window_size
         self._offsets: list[float] = []
         self._rtts: list[float] = []
+        self._lock = threading.Lock()
 
     def add_sample(self, t1: float, t2: float, t3: float) -> None:
         """Record a heartbeat round-trip measurement.
@@ -46,31 +51,35 @@ class ClockSync:
         owl = rtt / 2.0
         offset = t2 - t1 - owl
 
-        self._offsets.append(offset)
-        self._rtts.append(rtt)
+        with self._lock:
+            self._offsets.append(offset)
+            self._rtts.append(rtt)
 
-        # Trim to window
-        if len(self._offsets) > self._window_size:
-            self._offsets = self._offsets[-self._window_size :]
-            self._rtts = self._rtts[-self._window_size :]
+            # Trim to window
+            if len(self._offsets) > self._window_size:
+                self._offsets = self._offsets[-self._window_size :]
+                self._rtts = self._rtts[-self._window_size :]
 
     @property
     def offset(self) -> float:
         """Median clock offset (remote - local).  0.0 if no samples."""
-        if not self._offsets:
-            return 0.0
-        return statistics.median(self._offsets)
+        with self._lock:
+            if not self._offsets:
+                return 0.0
+            return statistics.median(self._offsets)
 
     @property
     def rtt(self) -> float:
         """Median round-trip time in seconds.  0.0 if no samples."""
-        if not self._rtts:
-            return 0.0
-        return statistics.median(self._rtts)
+        with self._lock:
+            if not self._rtts:
+                return 0.0
+            return statistics.median(self._rtts)
 
     @property
     def sample_count(self) -> int:
-        return len(self._offsets)
+        with self._lock:
+            return len(self._offsets)
 
     def adjust(self, remote_ts: float) -> float:
         """Convert a remote peer's timestamp to this node's local clock."""

@@ -411,23 +411,25 @@ class SessionManager:
 
     def _register_peer(self, peer: PeerConnection) -> None:
         """Add a peer to the table and start its read loop."""
-        with self._lock:
-            if peer.node_id in self._peers:
-                # Already connected — close the old connection
-                old = self._peers[peer.node_id]
-                old.close()
-            self._peers[peer.node_id] = peer
-
-        log.info("Peer connected: %s (%s)", peer.display_name, peer.node_id[:8])
-
-        # Start read loop for this peer
+        old = None
         t = threading.Thread(
             target=self._read_loop,
             args=(peer,),
             daemon=True,
             name=f"p2p-read-{peer.node_id[:8]}",
         )
-        self._read_threads[peer.node_id] = t
+        with self._lock:
+            if peer.node_id in self._peers:
+                old = self._peers[peer.node_id]
+            self._peers[peer.node_id] = peer
+            self._read_threads[peer.node_id] = t
+
+        # Close old connection OUTSIDE lock — its read loop will call
+        # _remove_peer, but the identity check sees the new peer and skips.
+        if old is not None:
+            old.close()
+
+        log.info("Peer connected: %s (%s)", peer.display_name, peer.node_id[:8])
         t.start()
 
         if self.on_peer_connected:
