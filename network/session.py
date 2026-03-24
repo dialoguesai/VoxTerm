@@ -447,10 +447,10 @@ class SessionManager:
             current = self._peers.get(node_id)
             if current is peer:
                 del self._peers[node_id]
+                self._read_threads.pop(node_id, None)
                 was_present = True
             else:
                 was_present = False
-            self._read_threads.pop(node_id, None)
 
         if not was_present:
             return  # already removed by another thread

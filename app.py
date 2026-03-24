@@ -1501,6 +1501,15 @@ class VoxTerm(App):
     def _start_p2p_session(self, code: str, is_creator: bool) -> None:
         """Start P2P session in a worker thread to avoid blocking the event loop."""
         try:
+            # Shut down any previous session manager that may be orphaned
+            # from a cancelled worker (thread=True workers can't be interrupted)
+            old_mgr = self._session_mgr
+            if old_mgr is not None:
+                try:
+                    old_mgr.leave_session()
+                except Exception:
+                    pass
+
             mgr = SessionManager(
                 self._p2p_display_name, node_id=self._p2p_node_id, tcp_port=0,
             )

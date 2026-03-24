@@ -211,11 +211,22 @@ class PeerDiscovery:
     @staticmethod
     def _get_local_ip() -> str:
         """Get this machine's LAN IP address."""
+        # Try route-resolution first (works when there's a default route)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))  # doesn't send data, just resolves route
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
+            return s.getsockname()[0]
         except Exception:
-            return "127.0.0.1"
+            pass
+        finally:
+            s.close()
+
+        # Fallback: find the first non-loopback IPv4 address
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = info[4][0]
+                if not ip.startswith("127."):
+                    return ip
+        except Exception:
+            pass
+        return "127.0.0.1"
