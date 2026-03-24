@@ -1491,6 +1491,9 @@ class VoxTerm(App):
         code = result["session_code"]
         self._p2p_display_name = name
         self._ensure_p2p_identity()
+        # Cancel the auto-discovery worker BEFORE stopping discovery —
+        # prevents the worker from overwriting self._discovery after we nil it.
+        self.workers.cancel_group(self, "p2p_discovery")
         self._stop_discovery()  # stop auto-discovery before session setup
 
         tp = self.query_one(TranscriptPanel)
@@ -1608,6 +1611,14 @@ class VoxTerm(App):
                 )
 
         except Exception as exc:
+            # Clean up the half-initialized session manager so the user
+            # isn't stuck in "already in a session" state forever.
+            try:
+                if self._session_mgr is not None:
+                    self._session_mgr.leave_session()
+            except Exception:
+                pass
+            self._session_mgr = None
             self.call_from_thread(
                 self.query_one(TranscriptPanel).system_message,
                 f"P2P session failed: {exc}",
@@ -1638,6 +1649,9 @@ class VoxTerm(App):
         code = result["session_code"]
         self._p2p_display_name = name
         self._ensure_p2p_identity()
+        # Cancel the auto-discovery worker BEFORE stopping discovery —
+        # prevents the worker from overwriting self._discovery after we nil it.
+        self.workers.cancel_group(self, "p2p_discovery")
         self._stop_discovery()  # stop auto-discovery before session setup
 
         tp = self.query_one(TranscriptPanel)

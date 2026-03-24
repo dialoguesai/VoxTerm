@@ -60,6 +60,11 @@ class PeerAudioBuffer:
         n = len(frame)
 
         with self._lock:
+            # Drop out-of-order and duplicate frames — they would corrupt
+            # the ring buffer position and cause phantom gap-fills.
+            if self._last_seq >= 0 and seq <= self._last_seq:
+                return
+
             if self._last_seq >= 0 and seq > self._last_seq + 1:
                 # Fill gap with silence
                 gap = seq - self._last_seq - 1
