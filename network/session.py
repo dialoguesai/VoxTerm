@@ -204,10 +204,12 @@ class SessionManager:
             self._accept_thread.join(timeout=2.0)
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             self._heartbeat_thread.join(timeout=2.0)
-        for t in list(self._read_threads.values()):
+        with self._lock:
+            read_threads_snapshot = list(self._read_threads.values())
+            self._read_threads.clear()
+        for t in read_threads_snapshot:
             if t.is_alive():
                 t.join(timeout=2.0)
-        self._read_threads.clear()
 
         self._in_session = False
         self._session_code = None
@@ -464,22 +466,32 @@ class SessionManager:
 
     def _read_loop(self, peer: PeerConnection) -> None:
         """Per-peer TCP read loop. Runs in its own thread."""
-        while self._running and peer.state == "connected":
-            try:
-                msg = recv_plaintext_msg(peer.sock)
-            except Exception:
-                msg = None
+        try:
+            while self._running and peer.state == "connected":
+                try:
+                    msg = recv_plaintext_msg(peer.sock)
+                except Exception:
+                    msg = None
 
-            if msg is None:
-                # EOF or decryption failure
-                break
+                if msg is None:
+                    # EOF or decryption failure
+                    break
 
-            peer.stats.tcp_rx += 1
-            self._dispatch_message(peer, msg)
+                peer.stats.tcp_rx += 1
 
-        # Peer disconnected — clean up outside lock (proxy.py pattern)
-        # This fires whether peer sent BYE or just dropped.
-        self._remove_peer(peer)
+                if not validate_message(msg):
+                    log.debug("Invalid message from %s: %s", peer.display_name, msg.get("type"))
+                    continue
+
+                try:
+                    self._dispatch_message(peer, msg)
+                except Exception:
+                    log.debug("Error dispatching message from %s: %s",
+                              peer.display_name, msg.get("type"), exc_info=True)
+        finally:
+            # Peer disconnected — clean up outside lock (proxy.py pattern)
+            # This fires whether peer sent BYE or just dropped.
+            self._remove_peer(peer)
 
     def _dispatch_message(self, peer: PeerConnection, msg: dict) -> None:
         """Route an incoming message to the appropriate handler."""
