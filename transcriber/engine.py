@@ -1,7 +1,8 @@
-"""Transcription engine — Qwen3-ASR (macOS), mlx-whisper (macOS), faster-whisper (Linux)."""
+"""Transcription engine — Qwen3-ASR (all platforms), mlx-whisper (macOS), faster-whisper (Linux fallback)."""
 
 from __future__ import annotations
 
+import sys
 import re
 import numpy as np
 
@@ -102,20 +103,33 @@ def _is_hallucination(text: str, expected_language: str | None = "en") -> bool:
 
 
 class Qwen3Transcriber(_DeduplicatorMixin):
-    """Qwen3-ASR transcriber."""
+    """Qwen3-ASR transcriber — MLX on macOS, qwen-asr (PyTorch) on Linux."""
 
     def __init__(self, model: str = "Qwen/Qwen3-ASR-0.6B", language: str | None = "en"):
         self.model_id = model
         self._language = language
         self._model = None
         self._loaded = False
+        self._use_mlx = sys.platform == "darwin"
         self._init_dedup()
 
     def load(self):
         """Pre-load the model (downloads on first run)."""
-        from mlx_qwen3_asr import load_model
-        model, _config = load_model(self.model_id)
-        self._model = model
+        if self._use_mlx:
+            from mlx_qwen3_asr import load_model
+            model, _config = load_model(self.model_id)
+            self._model = model
+        else:
+            from qwen_asr import Qwen3ASRModel
+            import torch
+            dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            self._model = Qwen3ASRModel.from_pretrained(
+                self.model_id,
+                dtype=dtype,
+                device_map=device,
+                max_new_tokens=256,
+            )
         self._loaded = True
 
     def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
@@ -124,20 +138,25 @@ class Qwen3Transcriber(_DeduplicatorMixin):
         Returns:
             {"text": str, "speaker": str, "speaker_id": int}
         """
-        from mlx_qwen3_asr import transcribe
-
         rms = float(np.sqrt(np.mean(audio ** 2)))
         if rms < 0.005:
             return {"text": "", "speaker": "", "speaker_id": 0}
 
-        result = transcribe(
-            audio,
-            model=self._model if self._model else self.model_id,
-            language=self._language,
-            verbose=False,
-        )
-
-        text = str(result.text).strip() if hasattr(result, 'text') else ""
+        if self._use_mlx:
+            from mlx_qwen3_asr import transcribe
+            result = transcribe(
+                audio,
+                model=self._model if self._model else self.model_id,
+                language=self._language,
+                verbose=False,
+            )
+            text = str(result.text).strip() if hasattr(result, 'text') else ""
+        else:
+            results = self._model.transcribe(
+                audio=(audio, 16000),
+                language=self._language,
+            )
+            text = results[0].text.strip() if results else ""
 
         if _is_hallucination(text, self._language):
             return {"text": "", "speaker": "", "speaker_id": 0}

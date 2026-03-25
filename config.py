@@ -25,9 +25,11 @@ if sys.platform == "darwin":
     QWEN3_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
     WHISPER_MODEL = "mlx-community/whisper-small-mlx"
 elif sys.platform.startswith("linux"):
-    # Linux: faster-whisper (CTranslate2 backend)
-    DEFAULT_MODEL = "fw-small"
+    # Linux: Qwen3-ASR (primary, via qwen-asr/PyTorch) + faster-whisper (fallback)
+    DEFAULT_MODEL = "qwen3-0.6b"
     AVAILABLE_MODELS = {
+        "qwen3-0.6b":  "Qwen/Qwen3-ASR-0.6B",
+        "qwen3-1.7b":  "Qwen/Qwen3-ASR-1.7B",
         "fw-tiny":           "tiny",
         "fw-base":           "base",
         "fw-small":          "small",
@@ -35,7 +37,7 @@ elif sys.platform.startswith("linux"):
         "fw-large-v3":       "large-v3",
         "fw-distil-large-v3": "distil-large-v3",
     }
-    QWEN3_MODELS: set[str] = set()
+    QWEN3_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
     WHISPER_MODEL = ""
 else:
     raise RuntimeError(f"Unsupported platform: {sys.platform}")
