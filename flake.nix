@@ -17,12 +17,8 @@
 
         # System libraries needed at runtime
         darwinDeps = with pkgs; [
-          darwin.apple_sdk.frameworks.ScreenCaptureKit
-          darwin.apple_sdk.frameworks.CoreAudio
-          darwin.apple_sdk.frameworks.AudioToolbox
-          darwin.apple_sdk.frameworks.Security
-          darwin.apple_sdk.frameworks.CoreFoundation
-          swift
+          apple-sdk_15
+          swiftPackages.swift
         ];
 
         linuxDeps = with pkgs; [
