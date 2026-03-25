@@ -102,6 +102,18 @@ def _is_hallucination(text: str, expected_language: str | None = "en") -> bool:
     return False
 
 
+# qwen-asr (PyTorch) expects full language names, not ISO codes
+_ISO_TO_LANG = {
+    "en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean",
+    "de": "German", "fr": "French", "es": "Spanish", "pt": "Portuguese",
+    "ru": "Russian", "ar": "Arabic", "hi": "Hindi", "it": "Italian",
+    "tr": "Turkish", "nl": "Dutch", "id": "Indonesian", "th": "Thai",
+    "vi": "Vietnamese", "ms": "Malay", "sv": "Swedish", "da": "Danish",
+    "fi": "Finnish", "pl": "Polish", "cs": "Czech", "el": "Greek",
+    "ro": "Romanian", "hu": "Hungarian", "fa": "Persian",
+}
+
+
 class Qwen3Transcriber(_DeduplicatorMixin):
     """Qwen3-ASR transcriber — MLX on macOS, qwen-asr (PyTorch) on Linux."""
 
@@ -152,9 +164,10 @@ class Qwen3Transcriber(_DeduplicatorMixin):
             )
             text = str(result.text).strip() if hasattr(result, 'text') else ""
         else:
+            lang = _ISO_TO_LANG.get(self._language, self._language) if self._language else None
             results = self._model.transcribe(
                 audio=(audio, 16000),
-                language=self._language,
+                language=lang,
             )
             text = results[0].text.strip() if results else ""
 
