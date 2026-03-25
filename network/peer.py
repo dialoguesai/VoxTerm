@@ -47,15 +47,17 @@ class PeerConnection:
         return (time.monotonic() - self.last_heartbeat_recv) < timeout
 
     def close(self) -> None:
-        """Close the TCP socket if open."""
-        if self.sock:
-            try:
-                self.sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                self.sock.close()
-            except OSError:
-                pass
+        """Close the TCP socket if open.  Thread-safe via send_lock."""
+        with self.send_lock:
+            sock = self.sock
             self.sock = None
+        if sock:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
         self.state = "disconnected"

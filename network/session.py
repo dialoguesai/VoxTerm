@@ -177,10 +177,17 @@ class SessionManager:
     def leave_session(self) -> None:
         """Send BYE to all peers and shut down."""
         # Send BYE BEFORE setting _running=False so read loops don't
-        # close sockets out from under us.
+        # close sockets out from under us. Use a short timeout so a
+        # stalled peer doesn't freeze shutdown.
         with self._lock:
             peers_snapshot = list(self._peers.values())
         for peer in peers_snapshot:
+            try:
+                with peer.send_lock:
+                    if peer.sock:
+                        peer.sock.settimeout(1.0)
+            except OSError:
+                pass
             self._send_to_peer(peer, build_bye(self._node_id))
 
         self._running = False
@@ -248,10 +255,12 @@ class SessionManager:
 
     def _send_to_peer(self, peer: PeerConnection, msg: dict) -> bool:
         """Send a message to a single peer, holding the send lock."""
-        if not peer.sock or peer.state != "connected":
+        if peer.state != "connected":
             return False
         try:
             with peer.send_lock:
+                if not peer.sock:
+                    return False
                 send_plaintext_msg(peer.sock, msg)
             peer.stats.tcp_tx += 1
             return True
@@ -324,7 +333,7 @@ class SessionManager:
                 conn.close()
                 return
 
-            conn.settimeout(None)
+            conn.settimeout(10.0)  # prevent indefinite blocking on stalled peers
 
             peer = PeerConnection(
                 node_id=their_hello["node_id"],
@@ -365,7 +374,7 @@ class SessionManager:
                 sock.close()
                 return False
 
-            sock.settimeout(None)
+            sock.settimeout(10.0)  # prevent indefinite blocking on stalled peers
 
             peer = PeerConnection(
                 node_id=their_hello["node_id"],
