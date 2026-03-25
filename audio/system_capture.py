@@ -261,8 +261,8 @@ class SystemCapture:
             pass
         finally:
             self._active = False
-            # Check exit code for permission errors
-            if proc.poll() == 1:
+            # Check exit code for permission errors (macOS-specific)
+            if proc.poll() == 1 and CURRENT_PLATFORM == Platform.MACOS:
                 self._status_message = (
                     "Screen Recording permission required — "
                     "grant access in System Settings > Privacy & Security > Screen Recording"

@@ -61,7 +61,7 @@ from config import (
     DEFAULT_LANGUAGE, AVAILABLE_LANGUAGES,
     LIVE_DIR,
 )
-from paths import SESSIONS_DIR, STATE_FILE
+from paths import SESSIONS_DIR, STATE_FILE as _STATE_FILE
 
 
 def _clipboard_cmd() -> list[str] | None:
@@ -85,7 +85,7 @@ _config: ConfigStore | None = None
 def _get_config() -> ConfigStore:
     global _config
     if _config is None:
-        _config = ConfigStore()
+        _config = ConfigStore(path=_STATE_FILE)
     return _config
 
 

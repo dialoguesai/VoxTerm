@@ -19,7 +19,6 @@ import hmac
 import hashlib
 import logging
 import os
-import sys
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -189,8 +188,9 @@ def _file_key_set(key: bytes) -> bool:
     path = _file_key_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(key)
-        path.chmod(0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
         return True
     except Exception:
         return False

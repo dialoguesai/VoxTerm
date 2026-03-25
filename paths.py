@@ -18,7 +18,7 @@ if sys.platform == "darwin":
     BIN_DIR = SESSIONS_DIR / ".bin"
     CRASH_DIR = SESSIONS_DIR / ".crashes"
     STATE_FILE = SESSIONS_DIR / ".state.json"
-else:
+elif sys.platform.startswith("linux"):
     # Linux — XDG-compliant paths
     _xdg_data = Path(os.environ.get("XDG_DATA_HOME", _home / ".local" / "share"))
     _xdg_config = Path(os.environ.get("XDG_CONFIG_HOME", _home / ".config"))
@@ -29,6 +29,8 @@ else:
     BIN_DIR = DATA_DIR / ".bin"
     CRASH_DIR = DATA_DIR / ".crashes"
     STATE_FILE = CONFIG_DIR / "state.json"
+else:
+    raise RuntimeError(f"Unsupported platform: {sys.platform}")
 
 # Speaker database
 DB_DIR = DATA_DIR

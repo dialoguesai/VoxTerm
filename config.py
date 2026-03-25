@@ -24,7 +24,7 @@ if sys.platform == "darwin":
     }
     QWEN3_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
     WHISPER_MODEL = "mlx-community/whisper-small-mlx"
-else:
+elif sys.platform.startswith("linux"):
     # Linux: faster-whisper (CTranslate2 backend)
     DEFAULT_MODEL = "fw-small"
     AVAILABLE_MODELS = {
@@ -37,6 +37,8 @@ else:
     }
     QWEN3_MODELS: set[str] = set()
     WHISPER_MODEL = ""
+else:
+    raise RuntimeError(f"Unsupported platform: {sys.platform}")
 
 # Set of model keys that use faster-whisper backend
 FASTER_WHISPER_MODELS = {"fw-tiny", "fw-base", "fw-small", "fw-medium", "fw-large-v3", "fw-distil-large-v3"}

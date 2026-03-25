@@ -46,7 +46,7 @@ class MatchResult:
     ambiguous: bool      # True if top-2 are too close (conflict)
 
 # Default storage location (platform-aware, not synced by iCloud on macOS)
-from paths import DB_DIR as DEFAULT_DB_DIR, DB_PATH as DEFAULT_DB_PATH, BACKUP_DIR
+from paths import DB_PATH as DEFAULT_DB_PATH, BACKUP_DIR
 
 _SCHEMA_VERSION = 1
 
