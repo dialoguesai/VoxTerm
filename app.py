@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import gc
+import queue
 import sys
 import os
 import subprocess
@@ -417,6 +418,7 @@ class VoxTerm(App):
         self._transcript_seq: int = 0
         self._assembler = TranscriptAssembler() if _P2P_AVAILABLE else None
         self._p2p_debug = P2PDebugStats() if _P2P_AVAILABLE else None
+        self._p2p_send_queue: queue.Queue | None = None
 
     def compose(self) -> ComposeResult:
         yield CyberHeader()
@@ -808,19 +810,18 @@ class VoxTerm(App):
         self._append_live_transcript(text, speaker, speaker_id)
         self._update_telemetry()
 
-        # Broadcast to P2P peers if in a session (off main thread to avoid blocking)
-        mgr = self._session_mgr
-        if mgr and mgr.is_in_session:
+        # Broadcast to P2P peers if in a session (via bounded queue, not per-call threads)
+        if self._session_mgr and self._session_mgr.is_in_session and self._p2p_send_queue:
             self._transcript_seq += 1
-            seq = self._transcript_seq
-            name = speaker or self._p2p_display_name
-            ts = time.monotonic()
-            threading.Thread(
-                target=mgr.broadcast_final,
-                kwargs=dict(speaker_name=name, seq=seq, text=text,
-                            start_ts=ts, end_ts=ts, confidence=0.9),
-                daemon=True,
-            ).start()
+            try:
+                self._p2p_send_queue.put_nowait(dict(
+                    speaker_name=speaker or self._p2p_display_name,
+                    seq=self._transcript_seq, text=text,
+                    start_ts=time.monotonic(), end_ts=time.monotonic(),
+                    confidence=0.9,
+                ))
+            except Exception:
+                pass  # queue full — drop rather than leak threads
 
         # First-use onboarding tip
         if (
@@ -1498,6 +1499,25 @@ class VoxTerm(App):
             mgr._start_server()
             mgr._in_session = True
             port = mgr._server_sock.getsockname()[1]
+
+            # Start bounded sender thread for P2P broadcast (replaces per-call threads)
+            self._p2p_send_queue = queue.Queue(maxsize=64)
+            send_q = self._p2p_send_queue
+
+            def _p2p_sender_loop():
+                while mgr._running:
+                    try:
+                        kwargs = send_q.get(timeout=1.0)
+                    except queue.Empty:
+                        continue
+                    try:
+                        mgr.broadcast_final(**kwargs)
+                    except Exception:
+                        pass
+
+            threading.Thread(
+                target=_p2p_sender_loop, daemon=True, name="p2p-sender"
+            ).start()
 
             # Wire discovery callback BEFORE starting so we don't miss peers.
             # Only the node with the lower node_id initiates the TCP connection.
