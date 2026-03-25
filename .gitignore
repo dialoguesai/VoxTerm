@@ -34,3 +34,6 @@ tests/fixtures/speakers/tst01.wav
 
 # Generated media
 docs/pipeline.mp4
+
+# Nix
+result
