@@ -231,6 +231,61 @@ class LanguageSelectScreen(ModalScreen):
         self.dismiss(None)
 
 
+class QuitConfirmScreen(ModalScreen):
+    """Confirmation dialog when quitting during an active recording."""
+
+    DEFAULT_CSS = """
+    QuitConfirmScreen {
+        align: center middle;
+    }
+    #quit-dialog {
+        width: 50;
+        height: auto;
+        max-height: 10;
+        border: heavy #ff6600;
+        border-title-color: #ffaa00;
+        border-title-style: bold;
+        background: #0a0e14;
+        padding: 1 2;
+    }
+    #quit-list {
+        height: auto;
+        max-height: 4;
+        background: #0a0e14;
+        color: #c0c0c0;
+    }
+    #quit-list > .option-list--option-highlighted {
+        background: #1a1a3a;
+        color: #00ffcc;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="quit-dialog") as dialog:
+            dialog.border_title = "QUIT?"
+            yield Static(
+                "[#ffaa00]Recording is active.[/] Your transcript is auto-saved,\n"
+                "but the current segment will be lost.",
+                markup=True,
+            )
+            yield Static("")
+            yield OptionList(
+                Option("  Quit anyway", id="quit"),
+                Option("  Cancel — keep recording", id="cancel"),
+                id="quit-list",
+            )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id == "quit")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class HelpScreen(ModalScreen):
     """Modal showing all keyboard shortcuts."""
 
@@ -1771,6 +1826,17 @@ class VoxTerm(App):
         self._speaker_profile_map.clear()
 
     def action_quit(self):
+        # If recording, confirm before quitting
+        if self._recording:
+            self.push_screen(QuitConfirmScreen(), self._on_quit_confirm)
+            return
+        self._do_quit()
+
+    def _on_quit_confirm(self, confirmed: bool) -> None:
+        if confirmed:
+            self._do_quit()
+
+    def _do_quit(self):
         # Cancel any in-progress P2P workers before cleanup
         self.workers.cancel_group(self, "p2p_setup")
         self.workers.cancel_group(self, "p2p_discovery")
