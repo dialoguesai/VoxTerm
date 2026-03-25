@@ -392,6 +392,7 @@ class VoxTerm(App):
         self._had_speech = False
         self._silence_chunks = 0
         self._transcribing = threading.Event()  # set = busy, clear = idle
+        self._transcribe_lock = threading.Lock()  # serialize MLX GPU access
         self._transcribe_started: float = 0.0
         self._debug = False
         self._last_dbg: float = 0.0
@@ -701,9 +702,11 @@ class VoxTerm(App):
                     f"[dbg] transcribing {duration:.1f}s audio..."
                 )
             # 1. Transcribe (Qwen3: ~100ms, Whisper: ~2-4s)
-            # MLX runs in main process; PyTorch diarizer runs in subprocess.
-            # No lock needed — they're in separate processes.
-            result = self.transcriber.transcribe(audio)
+            # MLX Metal command buffers are NOT thread-safe — concurrent GPU
+            # submissions from multiple Textual workers cause segfaults.
+            # Serialize with a lock.
+            with self._transcribe_lock:
+                result = self.transcriber.transcribe(audio)
 
             # Periodic GC to prevent MLX memory buildup
             self._transcribe_count += 1
