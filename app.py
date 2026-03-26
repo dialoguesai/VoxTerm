@@ -409,7 +409,6 @@ class VoxTerm(App):
         # Overlapping-chunk agreement pipeline
         self._agreement = AgreementState()
         self._last_tick_time: float = 0.0
-        self._agreement_silence_start: float = 0.0
 
     def compose(self) -> ComposeResult:
         yield CyberHeader()
@@ -653,19 +652,20 @@ class VoxTerm(App):
                     f"speech={self._had_speech} hyp={self._agreement.has_hypothesis}"
                 )
 
-        # Track silence start for flush timing
-        if self._had_speech and silence_duration > 0 and self._agreement_silence_start == 0:
-            self._agreement_silence_start = now
-
         if not self._had_speech or buffer_duration < AGREEMENT_MIN_AUDIO:
             return
 
-        # Flush: extended silence with pending hypothesis → commit remaining
-        if (
-            silence_duration > AGREEMENT_FLUSH_SILENCE
-            and self._agreement.has_hypothesis
-        ):
-            self._flush_agreement()
+        # Flush: extended silence after speech → commit remaining or reset
+        if silence_duration > AGREEMENT_FLUSH_SILENCE:
+            if self._agreement.has_hypothesis:
+                self._flush_agreement()
+            else:
+                # No pending hypothesis but extended silence after speech:
+                # treat as end-of-utterance, reset so we stop buffering silence
+                self.audio_buffer.clear()
+                self._had_speech = False
+                self._silence_chunks = 0
+                self._agreement.reset()
             return
 
         # Tick: periodic overlapping transcription while speech is active
@@ -698,7 +698,6 @@ class VoxTerm(App):
         self.audio_buffer.clear()
         self._had_speech = False
         self._silence_chunks = 0
-        self._agreement_silence_start = 0
         self._agreement.reset()
 
     def _trigger_transcription(self):
@@ -757,7 +756,7 @@ class VoxTerm(App):
                     speaker_label, speaker_id = self.diarizer.identify(
                         audio.copy()
                     )
-                    self._run_cross_session_matching(
+                    speaker_label, confidence = self._run_cross_session_matching(
                         speaker_id, speaker_label, audio
                     )
                 except Exception:
@@ -777,7 +776,6 @@ class VoxTerm(App):
             )
         finally:
             self._transcribing.clear()
-            self._agreement_silence_start = 0
 
     @work(thread=True, group="transcription")
     def _transcribe_audio(self, audio: np.ndarray):

@@ -12,8 +12,6 @@ real-time output than the fire-and-forget approach.
 
 from __future__ import annotations
 
-from config import SAMPLE_RATE
-
 
 def _norm(word: str) -> str:
     """Normalize a word for comparison: lowercase, strip punctuation."""
@@ -128,16 +126,20 @@ class AgreementState:
         """Calculate how many seconds to trim from audio buffer front.
 
         Estimates based on the ratio of committed vs total words, with a
-        safety margin to avoid trimming into uncommitted speech.
+        safety margin to avoid trimming into uncommitted speech. When the
+        hypothesis is fully committed (no pending words), trims most of
+        the buffer to avoid re-transcribing committed audio.
         """
-        if not self._committed_words or not self._hypothesis:
+        if not self._overlap_ref:
             return 0.0
 
         n_committed = len(self._overlap_ref)
         n_pending = len(self._hypothesis)
         total = n_committed + n_pending
-        if total == 0:
-            return 0.0
+
+        if n_pending == 0:
+            # Fully committed — trim most of the buffer, keep 0.5s safety margin
+            return max(0.0, audio_duration - 0.5)
 
         committed_fraction = n_committed / total
         trim_to = max(0.0, audio_duration * committed_fraction - 0.5)
