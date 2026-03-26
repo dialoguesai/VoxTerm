@@ -54,10 +54,12 @@ from transcriber.engine import Qwen3Transcriber, WhisperTranscriber, FasterWhisp
 from diarization.proxy import DiarizationProxy
 from speakers.store import SpeakerStore
 from audio.vad import SileroVAD
+from transcriber.agreement import AgreementState
 from config import (
     SAMPLE_RATE, CHUNK_SIZE, WAVEFORM_FPS,
     SILENCE_THRESHOLD, SILENCE_TRIGGER_SECONDS,
     MAX_BUFFER_SECONDS, MIN_BUFFER_SECONDS,
+    AGREEMENT_TICK_SECONDS, AGREEMENT_MIN_AUDIO, AGREEMENT_FLUSH_SILENCE,
     DEFAULT_MODEL, AVAILABLE_MODELS, QWEN3_MODELS, FASTER_WHISPER_MODELS,
     DEFAULT_LANGUAGE, AVAILABLE_LANGUAGES,
     LIVE_DIR,
@@ -404,6 +406,10 @@ class VoxTerm(App):
         self._prompt_confirmations: dict[int, int] = {}  # speaker_id → confirm count
         self._last_prompt_time: float = 0.0
         self._onboarding_shown = False
+        # Overlapping-chunk agreement pipeline
+        self._agreement = AgreementState()
+        self._last_tick_time: float = 0.0
+        self._agreement_silence_start: float = 0.0
 
     def compose(self) -> ComposeResult:
         yield CyberHeader()
@@ -614,22 +620,21 @@ class VoxTerm(App):
 
         waveform.tick()
 
-        # Check transcription trigger
+        # Check transcription trigger (overlapping-chunk agreement pipeline)
         silence_duration = self._silence_chunks * self._chunk_duration
         buffer_duration = self.audio_buffer.duration
+        now = time.time()
 
         if self._transcribing.is_set():
             # Graduated watchdog: warn → force-reset → disable
-            elapsed = time.time() - self._transcribe_started if self._transcribe_started else 0
+            elapsed = now - self._transcribe_started if self._transcribe_started else 0
             if elapsed > 30:
-                # Critical: transcriber appears hung — force-reset and warn
                 self._transcribing.clear()
                 self._write_crash_dump(f"transcription_hung_{elapsed:.0f}s")
                 self.query_one(TranscriptPanel).system_message(
                     f"transcription timed out ({elapsed:.0f}s) — try a smaller model [M]"
                 )
             elif elapsed > 15:
-                # Force-reset and log
                 self._transcribing.clear()
                 self.query_one(TranscriptPanel).system_message(
                     f"[watchdog] reset after {elapsed:.0f}s"
@@ -641,21 +646,63 @@ class VoxTerm(App):
             return
 
         if self._debug:
-            now = time.time()
             if buffer_duration > 0.5 and now - self._last_dbg > 3:
                 self._last_dbg = now
                 self.query_one(TranscriptPanel).system_message(
                     f"[dbg] buf={buffer_duration:.1f}s sil={silence_duration:.1f}s "
-                    f"speech={self._had_speech}"
+                    f"speech={self._had_speech} hyp={self._agreement.has_hypothesis}"
                 )
 
-        if self._had_speech and silence_duration > SILENCE_TRIGGER_SECONDS and buffer_duration > MIN_BUFFER_SECONDS:
-            self._trigger_transcription()
-        elif buffer_duration >= MAX_BUFFER_SECONDS:
-            self._trigger_transcription()
+        # Track silence start for flush timing
+        if self._had_speech and silence_duration > 0 and self._agreement_silence_start == 0:
+            self._agreement_silence_start = now
+
+        if not self._had_speech or buffer_duration < AGREEMENT_MIN_AUDIO:
+            return
+
+        # Flush: extended silence with pending hypothesis → commit remaining
+        if (
+            silence_duration > AGREEMENT_FLUSH_SILENCE
+            and self._agreement.has_hypothesis
+        ):
+            self._flush_agreement()
+            return
+
+        # Tick: periodic overlapping transcription while speech is active
+        time_since_tick = now - self._last_tick_time
+        if time_since_tick >= AGREEMENT_TICK_SECONDS:
+            self._trigger_agreement_tick()
+
+        # Safety: buffer overflow still triggers
+        if buffer_duration >= MAX_BUFFER_SECONDS * 2:
+            self._trigger_agreement_tick()
+
+    def _trigger_agreement_tick(self):
+        """Overlapping-window tick: transcribe current buffer without clearing."""
+        self._transcribing.set()
+        self._transcribe_started = time.time()
+        self._last_tick_time = time.time()
+        audio = self.audio_buffer.get_audio()
+        if len(audio) < int(SAMPLE_RATE * AGREEMENT_MIN_AUDIO):
+            self._transcribing.clear()
+            return
+        self._transcribe_audio_tick(audio)
+
+    def _flush_agreement(self):
+        """Flush pending hypothesis on extended silence — commit remaining words."""
+        flush_text = self._agreement.flush_all()
+        if flush_text.strip():
+            # Always called from main thread (timer or toggle_recording)
+            self._on_transcription(flush_text, "", 0, "")
+        # Clear buffer and reset for next utterance
+        self.audio_buffer.clear()
+        self._had_speech = False
+        self._silence_chunks = 0
+        self._agreement_silence_start = 0
+        self._agreement.reset()
 
     def _trigger_transcription(self):
-        """Send accumulated audio to transcription worker."""
+        """Legacy trigger: send accumulated audio to transcription worker."""
         self._transcribing.set()
         self._transcribe_started = time.time()
         self._silence_chunks = 0
@@ -666,6 +713,71 @@ class VoxTerm(App):
 
         self._had_speech = False
         self._transcribe_audio(audio)
+
+    @work(thread=True, group="transcription")
+    def _transcribe_audio_tick(self, audio: np.ndarray):
+        """Agreement-pipeline tick: transcribe overlapping window, commit agreed words."""
+        try:
+            if self._debug:
+                duration = len(audio) / SAMPLE_RATE
+                self.call_from_thread(
+                    self.query_one(TranscriptPanel).system_message,
+                    f"[dbg] agreement tick: {duration:.1f}s audio"
+                )
+
+            result = self.transcriber.transcribe(audio)
+
+            self._transcribe_count += 1
+            if self._transcribe_count % 20 == 0:
+                gc.collect()
+
+            text = result.get("text", "")
+
+            # Run through agreement: compare with previous hypothesis
+            newly_committed, pending = self._agreement.tick(text)
+
+            if self._debug and (newly_committed or pending):
+                self.call_from_thread(
+                    self.query_one(TranscriptPanel).system_message,
+                    f"[dbg] agreed=\"{newly_committed[:40]}\" pending=\"{pending[:40]}\""
+                )
+
+            # Trim audio buffer to slide window forward
+            if newly_committed:
+                audio_duration = len(audio) / SAMPLE_RATE
+                trim_secs = self._agreement.get_trim_seconds(audio_duration)
+                if trim_secs > 0:
+                    self.audio_buffer.trim_front(trim_secs)
+                    self._agreement.committed_time += trim_secs
+
+            # Diarize on the committed text (use full audio for speaker ID)
+            speaker_label, speaker_id, confidence = "", 0, ""
+            if newly_committed and self._diarizer_loaded:
+                try:
+                    speaker_label, speaker_id = self.diarizer.identify(
+                        audio.copy()
+                    )
+                    self._run_cross_session_matching(
+                        speaker_id, speaker_label, audio
+                    )
+                except Exception:
+                    pass
+
+            if newly_committed.strip():
+                self.call_from_thread(
+                    self._on_transcription, newly_committed.strip(),
+                    speaker_label, speaker_id, confidence,
+                )
+
+        except Exception as e:
+            self._write_crash_dump("_transcribe_audio_tick", e)
+            self.call_from_thread(
+                self.query_one(TranscriptPanel).system_message,
+                f"transcription error: {e}"
+            )
+        finally:
+            self._transcribing.clear()
+            self._agreement_silence_start = 0
 
     @work(thread=True, group="transcription")
     def _transcribe_audio(self, audio: np.ndarray):
@@ -689,7 +801,6 @@ class VoxTerm(App):
             text = result.get("text", "")
 
             # 2. Speaker ID via subprocess (non-blocking to main thread)
-            #    Use SCD to split audio at speaker changes, diarize each segment
             speaker_label, speaker_id = "", 0
             confidence = ""
             if text and self._diarizer_loaded:
@@ -698,7 +809,6 @@ class VoxTerm(App):
                         audio.copy()
                     )
 
-                    # Debug: show speaker assignment info
                     if self._debug:
                         dbg = getattr(self.diarizer, '_last_debug', {})
                         n_spk = dbg.get('debug_speakers', '?')
@@ -709,54 +819,10 @@ class VoxTerm(App):
                             f"speakers={n_spk} rms={rms}",
                         )
 
-                    # 3. Cross-session matching — if speaker stable and not yet matched
-                    if (
-                        speaker_id > 0
-                        and self.speaker_store.is_open
-                        and not self.diarizer.is_matched(speaker_id)
-                        and speaker_id not in self._speaker_profile_map
-                        and self.diarizer.is_speaker_stable(speaker_id)
-                    ):
-                        centroid = self.diarizer.get_session_centroid(speaker_id)
-                        if centroid is not None:
-                            match = self.speaker_store.classify_match(centroid)
-
-                            if match.tier == "high":
-                                # Auto-assign: name this speaker
-                                speaker_label = match.name
-                                confidence = "high"
-                                self.diarizer.set_speaker_name(speaker_id, match.name)
-                                self.diarizer.mark_matched(speaker_id)
-                                self._speaker_profile_map[speaker_id] = match.profile_id
-
-                                # Update profile if mature enough
-                                if self.speaker_store.is_profile_mature(match.profile_id):
-                                    seg_data = self.diarizer.get_segment_embeddings(speaker_id)
-                                    for emb, dur in seg_data:
-                                        if dur >= 3.0:
-                                            self.speaker_store.update_profile_embedding(
-                                                match.profile_id, emb,
-                                                duration=dur, confirmed=False,
-                                            )
-
-                                # Apply color + confidence on main thread
-                                self.call_from_thread(
-                                    self._on_auto_recognition,
-                                    speaker_id, match.name, match.color,
-                                    "high", match.score,
-                                )
-
-                            elif match.tier == "medium":
-                                # Suggest but don't auto-assign
-                                speaker_label = f"{match.name}?"
-                                confidence = "medium"
-                                self.diarizer.mark_matched(speaker_id)
-
-                                self.call_from_thread(
-                                    self._on_auto_recognition,
-                                    speaker_id, f"{match.name}?", match.color,
-                                    "medium", match.score,
-                                )
+                    # 3. Cross-session matching
+                    speaker_label, confidence = self._run_cross_session_matching(
+                        speaker_id, speaker_label, audio
+                    )
 
                 except Exception:
                     pass
@@ -775,6 +841,63 @@ class VoxTerm(App):
         finally:
             # ALWAYS unblock — even if worker is cancelled or crashes
             self._transcribing.clear()
+
+    def _run_cross_session_matching(
+        self, speaker_id: int, speaker_label: str, audio: np.ndarray,
+    ) -> tuple[str, str]:
+        """Cross-session speaker matching (called from worker thread).
+
+        Returns (updated_speaker_label, confidence).
+        """
+        if not (
+            speaker_id > 0
+            and self.speaker_store.is_open
+            and not self.diarizer.is_matched(speaker_id)
+            and speaker_id not in self._speaker_profile_map
+            and self.diarizer.is_speaker_stable(speaker_id)
+        ):
+            return speaker_label, ""
+
+        centroid = self.diarizer.get_session_centroid(speaker_id)
+        if centroid is None:
+            return speaker_label, ""
+
+        match = self.speaker_store.classify_match(centroid)
+
+        if match.tier == "high":
+            speaker_label = match.name
+            self.diarizer.set_speaker_name(speaker_id, match.name)
+            self.diarizer.mark_matched(speaker_id)
+            self._speaker_profile_map[speaker_id] = match.profile_id
+
+            if self.speaker_store.is_profile_mature(match.profile_id):
+                seg_data = self.diarizer.get_segment_embeddings(speaker_id)
+                for emb, dur in seg_data:
+                    if dur >= 3.0:
+                        self.speaker_store.update_profile_embedding(
+                            match.profile_id, emb,
+                            duration=dur, confirmed=False,
+                        )
+
+            self.call_from_thread(
+                self._on_auto_recognition,
+                speaker_id, match.name, match.color,
+                "high", match.score,
+            )
+            return speaker_label, "high"
+
+        elif match.tier == "medium":
+            speaker_label = f"{match.name}?"
+            self.diarizer.mark_matched(speaker_id)
+
+            self.call_from_thread(
+                self._on_auto_recognition,
+                speaker_id, f"{match.name}?", match.color,
+                "medium", match.score,
+            )
+            return speaker_label, "medium"
+
+        return speaker_label, ""
 
     def _on_transcription(
         self, text: str, speaker: str = "", speaker_id: int = 0,
@@ -957,8 +1080,12 @@ class VoxTerm(App):
         transcript = self.query_one(TranscriptPanel)
         if self._recording:
             self._recording = False
+            # Flush any pending agreement hypothesis before stopping
+            if self._agreement.has_hypothesis:
+                self._flush_agreement()
             self.audio_capture.stop()
             self.system_capture.stop()
+            self._agreement.reset()
             waveform.set_recording(False)
             header.set_recording(False)
             transcript.system_message("recording paused")
