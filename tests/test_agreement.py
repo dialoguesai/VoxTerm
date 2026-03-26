@@ -137,3 +137,14 @@ class TestAgreementState:
         # After committing "one two", trim should be positive
         trim = s.get_trim_seconds(4.0)
         assert trim >= 0.0
+
+    def test_get_trim_seconds_full_commit(self):
+        """When a tick fully commits the hypothesis (no pending words),
+        trimming should still advance the buffer."""
+        s = AgreementState()
+        s.tick("alpha beta gamma")
+        committed, pending = s.tick("alpha beta gamma")
+        assert committed == "alpha beta gamma"
+        assert pending == ""
+        trim = s.get_trim_seconds(3.0)
+        assert trim > 0.0
