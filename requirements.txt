@@ -9,3 +9,6 @@ qwen-asr>=0.0.6; sys_platform == "linux"
 torch>=2.0.0; sys_platform == "linux"
 faster-whisper>=1.0.0; sys_platform == "linux"
 cryptography>=41.0.0; sys_platform == "linux"
+# 3D-Speaker (optional: needed for PyTorch fallback and ONNX model export)
+# speakerlab>=0.2.0
+# modelscope>=1.10.0

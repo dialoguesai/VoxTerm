@@ -36,7 +36,7 @@ class SpeakerProfile:
     name: str
     color: str
 
-    centroid: np.ndarray                           # (192,) float32
+    centroid: np.ndarray                           # (EMBEDDING_DIM,) float32
     exemplars: list[np.ndarray] = field(default_factory=list)  # up to MAX_EXEMPLARS
     sub_centroids: list[np.ndarray] = field(default_factory=list)  # K sub-centroids
 
@@ -88,7 +88,7 @@ class SpeakerProfile:
             self.sub_centroids = []
             return
 
-        data = np.stack(self.exemplars)  # (N, 192)
+        data = np.stack(self.exemplars)  # (N, embedding_dim)
         n = len(data)
 
         # Initialize with evenly spaced exemplars

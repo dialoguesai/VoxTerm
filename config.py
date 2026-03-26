@@ -82,6 +82,21 @@ DIARIZER_TIMEOUT = 5.0        # seconds to wait for subprocess response
 DIARIZER_MAX_RESTARTS = 3     # max restarts before falling back to in-process
 DIARIZER_RESTART_WINDOW = 60  # seconds — restart counter resets after this
 
+# Speaker embedding model (3D-Speaker)
+# Backend: "onnx" (default, no subprocess needed) or "pytorch" (subprocess)
+SPEAKER_MODEL_BACKEND = "onnx"
+# ONNX model name: "eres2net_large" (192-dim, best accuracy),
+#                   "eres2netv2" (192-dim), or "campplus" (512-dim)
+SPEAKER_MODEL_NAME = "eres2net_large"
+SPEAKER_EMBEDDING_DIM = 512  # must match the chosen model's output
+SPEAKER_MODEL_ONNX_CACHE = __import__("pathlib").Path.home() / ".cache" / "3dspeaker"
+
+# Language identification (3D-Speaker LID)
+LID_ENABLED = True
+LID_MODEL_NAME = "campplus_lid"
+LID_MIN_AUDIO_SEC = 3.0       # min audio duration for reliable detection
+LID_AUTO_SWITCH = False        # auto-switch transcription language on detection
+
 # Crash reporting
 CRASH_LOG_MAX_COUNT = 50      # max crash logs to keep (rotated on startup)
 
