@@ -22,7 +22,7 @@ from diarization.ipc import (
     decode_array,
 )
 
-EMBEDDING_DIM = 512
+from config import SPEAKER_EMBEDDING_DIM as EMBEDDING_DIM
 SAMPLE_RATE = 16000
 
 

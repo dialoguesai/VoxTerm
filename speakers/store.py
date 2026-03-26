@@ -1,8 +1,9 @@
 """Persistent speaker profile storage backed by SQLite.
 
-Stores CAM++ embeddings (512-dim float32) as encrypted BLOBs
-(AES-256-CBC with HMAC-SHA256, key in macOS Keychain).  Uses WAL mode
-for safe concurrent access from the worker thread and the Textual event loop.
+Stores 3D-Speaker embeddings (configurable dim, default 192-dim float32)
+as encrypted BLOBs (AES-256-CBC with HMAC-SHA256, key in macOS Keychain).
+Uses WAL mode for safe concurrent access from the worker thread and the
+Textual event loop.
 """
 
 from __future__ import annotations
@@ -24,7 +25,10 @@ from . import crypto
 
 log = logging.getLogger(__name__)
 
-EMBEDDING_DIM = 512
+# Import configured embedding dim (set by config.py based on chosen model)
+from config import SPEAKER_EMBEDDING_DIM, SPEAKER_MODEL_NAME
+
+EMBEDDING_DIM = SPEAKER_EMBEDDING_DIM
 EMBEDDING_BYTES = EMBEDDING_DIM * 4  # float32
 
 # Cross-session confidence thresholds
@@ -51,11 +55,16 @@ DEFAULT_DB_DIR = Path.home() / "Library" / "Application Support" / "voxterm"
 DEFAULT_DB_PATH = DEFAULT_DB_DIR / ".speakers.db"
 BACKUP_DIR = DEFAULT_DB_DIR / ".backups"
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS speakers (
@@ -622,12 +631,59 @@ class SpeakerStore:
                 "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
                 (_SCHEMA_VERSION,),
             )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES ('model_id', ?)",
+                (SPEAKER_MODEL_NAME,),
+            )
             self._conn.commit()
+        else:
+            # Migrate v1 → v2: add metadata table
+            if "metadata" not in tables:
+                self._conn.execute(
+                    "CREATE TABLE IF NOT EXISTS metadata "
+                    "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                )
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO metadata (key, value) VALUES ('model_id', ?)",
+                    (SPEAKER_MODEL_NAME,),
+                )
+                self._conn.execute(
+                    "UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,)
+                )
+                self._conn.commit()
 
     def _migrate_embedding_dim(self) -> None:
-        """Clear profiles from a previous embedding model (dimension mismatch)."""
+        """Clear profiles when embedding model changes (incompatible spaces).
+
+        Detects both dimension mismatches (e.g. 512→192) and model changes
+        (e.g. CAM++→ERes2Net) that produce incompatible embedding spaces
+        even at the same dimension.
+        """
         if not self._conn:
             return
+
+        # Check model_id mismatch (v2 schema)
+        try:
+            row = self._conn.execute(
+                "SELECT value FROM metadata WHERE key = 'model_id'"
+            ).fetchone()
+            if row and row[0] != SPEAKER_MODEL_NAME:
+                log.info(
+                    "Clearing speaker profiles: model changed (%s → %s)",
+                    row[0], SPEAKER_MODEL_NAME,
+                )
+                self._conn.execute("DELETE FROM speakers")
+                self._conn.execute("DELETE FROM session_speakers")
+                self._conn.execute(
+                    "UPDATE metadata SET value = ? WHERE key = 'model_id'",
+                    (SPEAKER_MODEL_NAME,),
+                )
+                self._conn.commit()
+                return
+        except sqlite3.OperationalError:
+            pass  # metadata table doesn't exist yet (v1 schema)
+
+        # Fallback: check raw byte length (handles v1 databases)
         row = self._conn.execute(
             "SELECT centroid FROM speakers LIMIT 1"
         ).fetchone()
@@ -728,7 +784,7 @@ class SpeakerStore:
         return self._encrypt(raw)
 
     def _blob_to_embeddings(self, blob: bytes) -> list[np.ndarray]:
-        """Unpack a BLOB into a list of 512-dim embeddings."""
+        """Unpack a BLOB into a list of embeddings."""
         if not blob:
             return []
         raw = self._decrypt(blob)
