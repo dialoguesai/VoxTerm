@@ -486,6 +486,21 @@ class VoxTerm(App):
         # Start P2P peer discovery on launch (just visibility, no session)
         if _P2P_AVAILABLE:
             self._start_peer_discovery()
+            # Auto-create or auto-join session from CLI flags
+            if self._p2p_auto_create or self._p2p_auto_join_code:
+                name = self._p2p_auto_name or "voxterm"
+                self._p2p_display_name = name
+                self._ensure_p2p_identity()
+                if self._p2p_auto_create:
+                    code = generate_session_code()
+                    tp = self.query_one(TranscriptPanel)
+                    tp.system_message(f"P2P session starting (code: {code})...")
+                    self._start_p2p_session(code, is_creator=True)
+                elif self._p2p_auto_join_code:
+                    code = self._p2p_auto_join_code
+                    tp = self.query_one(TranscriptPanel)
+                    tp.system_message(f"Joining P2P session: {code}...")
+                    self._start_p2p_session(code, is_creator=False)
 
     @property
     def _chunk_duration(self) -> float:
@@ -1520,11 +1535,13 @@ class VoxTerm(App):
             self._session_mgr = mgr
             self._wire_session_callbacks()
 
-            # Set session code and start server (plaintext for now, no key needed)
-            mgr._session_code = code
-            mgr._session_key = b"unused"  # encryption disabled for debugging
-            mgr._start_server()
-            mgr._in_session = True
+            if is_creator:
+                mgr.create_session()
+                # Override with the code from the UI (create_session generates its own)
+                mgr._session_code = code
+                mgr._session_key = derive_session_key(code)
+            else:
+                mgr.join_session(code)
             port = mgr._server_sock.getsockname()[1]
 
             # Start bounded sender thread for P2P broadcast (replaces per-call threads)
@@ -1556,9 +1573,8 @@ class VoxTerm(App):
             def on_peer_found(peer_info):
                 if peer_info.node_id == my_id:
                     return
-                with mgr._lock:
-                    if peer_info.node_id in mgr._peers:
-                        return
+                if mgr.has_peer(peer_info.node_id):
+                    return
                 if not peer_info.in_session:
                     self.call_from_thread(
                         self._p2p_debug_msg,
@@ -1872,7 +1888,7 @@ if __name__ == "__main__":
         type=str,
         default=None,
         metavar="CODE",
-        help="Join a P2P session on launch (e.g. --session-join VOXJ-7K3M)",
+        help="Join a P2P session on launch (e.g. --session-join bacon-horse-galaxy)",
     )
     args = parser.parse_args()
 

@@ -70,7 +70,7 @@ class SessionManager:
         print(f"Session code: {code}")
 
         # Or join an existing session
-        mgr.join_session("VOXJ-7K3M")
+        mgr.join_session("bacon-horse-galaxy")
 
         # Wire up callbacks
         mgr.on_peer_connected = lambda peer: ...
@@ -139,6 +139,11 @@ class SessionManager:
     def peer_count(self) -> int:
         with self._lock:
             return len(self._peers)
+
+    def has_peer(self, node_id: str) -> bool:
+        """Check if a peer is currently connected."""
+        with self._lock:
+            return node_id in self._peers
 
     # ── session lifecycle ─────────────────────────────────────
 
@@ -261,7 +266,7 @@ class SessionManager:
             with peer.send_lock:
                 if not peer.sock:
                     return False
-                send_plaintext_msg(peer.sock, msg)
+                send_encrypted_msg(peer.sock, self._session_key, msg)
             peer.stats.tcp_tx += 1
             return True
         except Exception as exc:
@@ -294,7 +299,8 @@ class SessionManager:
         self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True, name="p2p-heartbeat")
         self._heartbeat_thread.start()
 
-        log.info("TCP server listening on port %d", self._tcp_port)
+        actual_port = self._server_sock.getsockname()[1]
+        log.info("TCP server listening on port %d", actual_port)
 
     def _accept_loop(self) -> None:
         """Accept incoming TCP connections."""
@@ -318,15 +324,21 @@ class SessionManager:
         try:
             conn.settimeout(5.0)
 
-            # Exchange HELLOs (plaintext for now)
+            # Encrypted handshake — validates session key before HELLO
+            if not self._do_handshake_server(conn):
+                log.debug("Handshake failed from %s (wrong session code?)", addr)
+                conn.close()
+                return
+
+            # Exchange HELLOs (encrypted)
             my_hello = build_hello(
                 self._node_id, self._display_name,
                 proto_v=P2P_PROTO_VERSION,
                 sample_rate=SAMPLE_RATE,
                 channels=CHANNELS,
             )
-            send_plaintext_msg(conn, my_hello)
-            their_hello = recv_plaintext_msg(conn)
+            send_encrypted_msg(conn, self._session_key, my_hello)
+            their_hello = recv_encrypted_msg(conn, self._session_key)
 
             if not their_hello or their_hello.get("type") != MSG_HELLO:
                 log.debug("Incoming HELLO failed from %s", addr)
@@ -355,20 +367,27 @@ class SessionManager:
 
     def _connect_to_peer(self, ip: str, port: int) -> bool:
         """Initiate an outgoing TCP connection to a peer."""
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5.0)
             sock.connect((ip, port))
 
-            # Exchange HELLOs (plaintext for now)
+            # Encrypted handshake — validates session key before HELLO
+            if not self._do_handshake_client(sock):
+                log.debug("Handshake failed to %s:%d (wrong session code?)", ip, port)
+                sock.close()
+                return False
+
+            # Exchange HELLOs (encrypted)
             my_hello = build_hello(
                 self._node_id, self._display_name,
                 proto_v=P2P_PROTO_VERSION,
                 sample_rate=SAMPLE_RATE,
                 channels=CHANNELS,
             )
-            send_plaintext_msg(sock, my_hello)
-            their_hello = recv_plaintext_msg(sock)
+            send_encrypted_msg(sock, self._session_key, my_hello)
+            their_hello = recv_encrypted_msg(sock, self._session_key)
 
             if not their_hello or their_hello.get("type") != MSG_HELLO:
                 sock.close()
@@ -390,10 +409,11 @@ class SessionManager:
 
         except Exception as exc:
             log.debug("Failed to connect to %s:%d: %s", ip, port, exc)
-            try:
-                sock.close()
-            except Exception:
-                pass
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
             return False
 
     # ── encryption handshake ──────────────────────────────────
@@ -478,7 +498,7 @@ class SessionManager:
         try:
             while self._running and peer.state == "connected":
                 try:
-                    msg = recv_plaintext_msg(peer.sock)
+                    msg = recv_encrypted_msg(peer.sock, self._session_key)
                 except Exception:
                     msg = None
 

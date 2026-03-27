@@ -541,7 +541,7 @@ python3 app.py --session-create --name "halcyon"
 # Or press N in the TUI
 ```
 
-1. Node generates a random 8-character session code: `VOXJ-7K3M`
+1. Node generates a random three-word session code: `bacon-horse-galaxy`
 2. Code is displayed prominently in the TUI
 3. User reads the code aloud to others in the room
 4. Node updates its mDNS advertisement to `in_session=1`
@@ -551,7 +551,7 @@ python3 app.py --session-create --name "halcyon"
 
 ```bash
 # CLI
-python3 app.py --session-join VOXJ-7K3M --name "bob"
+python3 app.py --session-join bacon-horse-galaxy --name "bob"
 
 # Or press J in the TUI, then type the code
 ```
@@ -601,13 +601,13 @@ The session code serves dual purpose — it's how you join AND how encryption is
 Creator:
   1. Press N (new session) in TUI
   2. Enters their display name
-  3. Screen shows: "Session code: VOXJ-7K3M"  (8 alphanumeric, displayed large)
+  3. Screen shows: "Session code: bacon-horse-galaxy"  (three hyphenated words, displayed large)
   4. Tells others the code verbally
 
 Joiner:
   1. Press J (join session) in TUI
   2. Enters their display name
-  3. Types the session code: VOXJ-7K3M
+  3. Types the session code: bacon-horse-galaxy
   4. Connected. Encrypted. Done.
 ```
 
@@ -616,7 +616,7 @@ The code is spoken aloud in the room — this is the out-of-band authentication.
 **Key derivation:**
 
 ```
-session_code = "VOXJ-7K3M"
+session_code = "bacon-horse-galaxy"
 salt = sha256(b"voxterm-p2p-v1")  # fixed, protocol-version-scoped
 session_key = HKDF(
     algorithm=SHA256,
@@ -703,10 +703,10 @@ For development, run multiple VoxTerm instances on the same machine using differ
 python3 app.py --session-create --name "alice" --p2p-port 9900
 
 # Terminal 2: Node B (uses audio file as fake mic input)
-python3 app.py --session-join VOXJ-7K3M --name "bob" --p2p-port 9901 --fake-mic tests/fixtures/bob_audio.wav
+python3 app.py --session-join bacon-horse-galaxy --name "bob" --p2p-port 9901 --fake-mic tests/fixtures/bob_audio.wav
 
 # Terminal 3: Node C
-python3 app.py --session-join VOXJ-7K3M --name "carol" --p2p-port 9902 --fake-mic tests/fixtures/carol_audio.wav
+python3 app.py --session-join bacon-horse-galaxy --name "carol" --p2p-port 9902 --fake-mic tests/fixtures/carol_audio.wav
 ```
 
 The `--fake-mic` flag replays a WAV file as if it were live mic input — same sample rate, same chunking, real-time pacing. This lets you simulate a multi-person room from one laptop.
@@ -717,7 +717,7 @@ Press `D` in the TUI during a P2P session to toggle the network debug overlay. D
 
 ```
 ┌─── P2P Debug ───────────────────────────────────────────────┐
-│ Session: VOXJ-7K3M  |  Peers: 3/3 connected  |  Proto: v1  │
+│ Session: bacon-horse-galaxy  |  Peers: 3/3 connected  |  Proto: v1  │
 │                                                             │
 │ Peer          Latency   Clock Δ   Audio Loss   State        │
 │ bob           0.4ms     -2.1ms    0.1%         streaming    │
@@ -732,7 +732,7 @@ Press `D` in the TUI during a P2P session to toggle the network debug overlay. D
 │ Clock sync samples: 20/20 (median offset: -2.1ms bob,      │
 │   +0.3ms carol, +5.7ms dave)                                │
 │ Segments rx: 47 finals, 312 partials                        │
-│ Encryption: AES-256-GCM ✓  |  Key: HKDF(VOXJ-7K3M)        │
+│ Encryption: AES-256-GCM ✓  |  Key: HKDF(bacon-horse-galaxy)        │
 │                                                             │
 │ Last events:                                                │
 │  14:03:22.447  bob FINAL seq=31 "yeah that riff is sick"    │

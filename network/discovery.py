@@ -8,6 +8,7 @@ broadcast — only ``in_session`` (0/1) is visible via mDNS.
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import threading
 from dataclasses import dataclass, field
@@ -74,6 +75,7 @@ class PeerDiscovery:
 
         # Callbacks
         self.on_peer_found: Callable[[PeerInfo], None] | None = None
+        self.on_peer_updated: Callable[[PeerInfo], None] | None = None
         self.on_peer_lost: Callable[[str], None] | None = None
 
     def start(self) -> None:
@@ -116,12 +118,22 @@ class PeerDiscovery:
         with self._lock:
             return list(self._peers.values())
 
+    @staticmethod
+    def _sanitize_dns_label(name: str) -> str:
+        """Sanitize a string for use as a DNS-SD instance name component."""
+        # Replace non-alphanumeric chars (except hyphens) with hyphens
+        sanitized = re.sub(r"[^a-zA-Z0-9-]", "-", name)
+        # Collapse multiple hyphens and strip leading/trailing
+        sanitized = re.sub(r"-+", "-", sanitized).strip("-")
+        return sanitized[:50] or "voxterm"  # DNS labels max 63 chars, leave room for suffix
+
     def _build_service_info(self) -> ServiceInfo:
         """Build the ServiceInfo for mDNS registration."""
         local_ip = self._get_local_ip()
         # Include node_id suffix to prevent name collisions if two
         # users pick the same display name
-        instance_name = f"{self._display_name}-{self._node_id[:6]}"
+        safe_name = self._sanitize_dns_label(self._display_name)
+        instance_name = f"{safe_name}-{self._node_id[:6]}"
         return ServiceInfo(
             P2P_SERVICE_TYPE,
             f"{instance_name}.{P2P_SERVICE_TYPE}",
@@ -156,9 +168,14 @@ class PeerDiscovery:
             with self._lock:
                 is_new = peer.node_id not in self._peers
                 self._peers[peer.node_id] = peer
-            if is_new and self.on_peer_found:
-                log.info("Peer found: %s at %s:%d", peer.display_name, peer.ip, peer.tcp_port)
-                self.on_peer_found(peer)
+            if is_new:
+                if self.on_peer_found:
+                    log.info("Peer found: %s at %s:%d", peer.display_name, peer.ip, peer.tcp_port)
+                    self.on_peer_found(peer)
+            else:
+                if self.on_peer_updated:
+                    log.info("Peer updated: %s at %s:%d", peer.display_name, peer.ip, peer.tcp_port)
+                    self.on_peer_updated(peer)
 
         elif state_change == ServiceStateChange.Removed:
             # Try to figure out which peer was removed

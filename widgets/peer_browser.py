@@ -143,8 +143,8 @@ class SessionJoinScreen(ModalScreen):
             yield Static("")
             yield Static("[b #00e5ff]Your name[/]  [dim](how others will see you)[/]", markup=True)
             yield Input(placeholder="e.g. bob", id="join-name-input")
-            yield Static("[b #00e5ff]Session code[/]  [dim](from the session creator)[/]", markup=True)
-            yield Input(placeholder="e.g. VOXJ-7K3M", id="join-code-input")
+            yield Static("[b #00e5ff]Session code[/]  [dim](three-word code from the session creator)[/]", markup=True)
+            yield Input(placeholder="e.g. bacon-horse-galaxy", id="join-code-input")
             yield Static(
                 "[#c0c0c0]Your device will scan the local network for the\n"
                 "session creator. The code encrypts the connection —\n"
@@ -165,7 +165,7 @@ class SessionJoinScreen(ModalScreen):
             self.query_one("#join-code-input", Input).focus()
             return
         name = self.query_one("#join-name-input", Input).value.strip()
-        code = self.query_one("#join-code-input", Input).value.strip().upper()
+        code = self.query_one("#join-code-input", Input).value.strip().lower()
         if name and code:
             self.dismiss({
                 "action": "join",
