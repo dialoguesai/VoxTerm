@@ -19,6 +19,7 @@ import hmac
 import hashlib
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -166,7 +167,14 @@ def _keychain_set(key: bytes) -> bool:
 # ── File-based key storage (Linux) ──────────────────────────
 
 def _file_key_path() -> Path:
-    """Key file path for file-based storage on Linux."""
+    """Key file path for file-based storage on Linux.
+
+    The directory can be overridden by setting the VOXTERM_KEY_DIR
+    environment variable (useful for testing / isolated environments).
+    """
+    key_dir = os.getenv("VOXTERM_KEY_DIR")
+    if key_dir:
+        return Path(key_dir) / ".keyfile"
     from paths import DB_DIR
     return DB_DIR / ".keyfile"
 
@@ -177,6 +185,16 @@ def _file_key_get() -> bytes | None:
     if not path.exists():
         return None
     try:
+        mode = path.stat().st_mode & 0o777
+        if mode != 0o600:
+            log.warning(
+                "Key file %s has permissions %04o (expected 0600) — "
+                "tightening permissions", path, mode,
+            )
+            try:
+                path.chmod(0o600)
+            except OSError:
+                log.warning("Could not fix key file permissions")
         key = path.read_bytes()
         return key if len(key) == _kCCKeySizeAES256 else None
     except Exception:
@@ -184,15 +202,26 @@ def _file_key_get() -> bytes | None:
 
 
 def _file_key_set(key: bytes) -> bool:
-    """Store the encryption key in a chmod-600 file."""
+    """Store the encryption key atomically in a chmod-600 file."""
     path = _file_key_path()
+    tmp_path = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(key)
+        fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".keyfile_tmp_")
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, key)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, path)
         return True
     except Exception:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         return False
 
 
