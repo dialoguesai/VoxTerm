@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Diarizer subprocess worker — loads ECAPA-TDNN and processes IPC requests.
+"""Diarizer subprocess worker — loads a speaker embedding backend and processes IPC requests.
 
-This process imports PyTorch/SpeechBrain only (never MLX), preventing C++
-runtime conflicts with the main process which uses MLX for transcription.
+Selects the embedding backend dynamically via the VOXTERM_DIARIZER_BACKEND
+env var (set by DiarizationProxy). Defaults to CAM++ if unset.
+
+This process imports PyTorch (never MLX), preventing C++ runtime conflicts
+with the main process which uses MLX for transcription.
 
 Protocol: reads length-prefixed JSON messages from stdin, writes responses
 to stdout. See ipc.py for details.

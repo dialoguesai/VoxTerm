@@ -93,7 +93,12 @@ def register_backend(name: str, cls: type[EmbeddingBackend]) -> None:
 def get_backend(name: str) -> EmbeddingBackend:
     """Instantiate an embedding backend by name.
 
-    Raises ValueError if the backend is unknown or its dependencies are missing.
+    Raises
+        ValueError: If the backend name is unknown.
+
+    Note:
+        Missing optional dependencies for a backend will surface as ImportError
+        when the backend module is imported or when backend.load() is called.
     """
     # Lazy-import all backend modules so registration happens on demand
     _ensure_registered()
@@ -119,11 +124,16 @@ def _ensure_registered() -> None:
     global _registered
     if _registered:
         return
-    _registered = True
 
-    # Import each backend module — they call register_backend() at import time
-    from diarization.backends import campplus_backend  # noqa: F401
-    from diarization.backends import speechbrain_backend  # noqa: F401
-    from diarization.backends import nemo_backend  # noqa: F401
-    from diarization.backends import resemblyzer_backend  # noqa: F401
-    from diarization.backends import pyannote_backend  # noqa: F401
+    try:
+        # Import each backend module — they call register_backend() at import time
+        from diarization.backends import campplus_backend  # noqa: F401
+        from diarization.backends import speechbrain_backend  # noqa: F401
+        from diarization.backends import nemo_backend  # noqa: F401
+        from diarization.backends import resemblyzer_backend  # noqa: F401
+        from diarization.backends import pyannote_backend  # noqa: F401
+    except Exception:
+        _registered = False
+        raise
+    else:
+        _registered = True

@@ -67,6 +67,8 @@ class CAMPPlusBackend(EmbeddingBackend):
         import torch
         feats_t = torch.tensor(feats, dtype=torch.float32).unsqueeze(0)
         embedding = self._model(feats_t).squeeze().cpu().numpy()
+        # L2 normalize to match the EmbeddingBackend contract
+        embedding = embedding / (np.linalg.norm(embedding) + 1e-10)
         return embedding
 
     @staticmethod
@@ -104,6 +106,7 @@ class CAMPPlusBackend(EmbeddingBackend):
         import torch
         feats_t = torch.tensor(feats, dtype=torch.float32).unsqueeze(0)
         embedding = self._model(feats_t).squeeze().cpu().numpy()
+        embedding = embedding / (np.linalg.norm(embedding) + 1e-10)
         return embedding
 
 

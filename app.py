@@ -1425,8 +1425,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "-b", "--backend",
         default=None,
-        help="Diarization embedding backend (default: campplus). "
-             "Options: campplus, ecapa_tdnn, titanet, resemblyzer, pyannote",
+        help=(
+            "Diarization embedding backend. If omitted, the backend is selected in this "
+            "order: VOXTERM_DIARIZER_BACKEND environment variable, then "
+            "config.DIARIZER_BACKEND (current config default: campplus). "
+            "Options: campplus, ecapa_tdnn, titanet, resemblyzer, pyannote"
+        ),
     )
     parser.add_argument(
         "--list-backends",
@@ -1437,9 +1441,11 @@ if __name__ == "__main__":
 
     if args.list_backends:
         from diarization.backends import BACKEND_INFO
+        from config import DIARIZER_BACKEND
+        _effective_backend = os.environ.get("VOXTERM_DIARIZER_BACKEND", DIARIZER_BACKEND)
         print("Available diarization backends:")
         for name, info in BACKEND_INFO.items():
-            tag = " (default)" if name == "campplus" else ""
+            tag = " (default)" if name == _effective_backend else ""
             print(f"  {name:14s}  {info['label']:30s}  dim={info['dim']}  {info['size']}{tag}")
             print(f"  {'':14s}  requires: {info['package']}")
         sys.exit(0)

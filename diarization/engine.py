@@ -92,13 +92,15 @@ class DiarizationEngine:
         self._model = getattr(self._backend, "_model", None)
 
         # Load segmentation model for overlap-aware embeddings (optional)
-        try:
-            from diarization.segmentation import SpeakerSegmentation
-            self._segmentation = SpeakerSegmentation()
-            if not self._segmentation.is_loaded:
+        # Skip in mock mode to match original behavior (mock audio isn't real speech)
+        if not os.environ.get("VOXTERM_MOCK_ENGINE"):
+            try:
+                from diarization.segmentation import SpeakerSegmentation
+                self._segmentation = SpeakerSegmentation()
+                if not self._segmentation.is_loaded:
+                    self._segmentation = None
+            except Exception:
                 self._segmentation = None
-        except Exception:
-            self._segmentation = None
 
         self._loaded = True
 
