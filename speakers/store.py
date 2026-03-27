@@ -22,6 +22,7 @@ import numpy as np
 
 from .models import SpeakerMeta, SpeakerProfile
 from . import crypto
+from paths import DB_PATH as DEFAULT_DB_PATH, BACKUP_DIR
 
 log = logging.getLogger(__name__)
 
@@ -49,11 +50,6 @@ class MatchResult:
     score: float         # cosine similarity
     color: str           # profile color (empty if low)
     ambiguous: bool      # True if top-2 are too close (conflict)
-
-# Default storage location (not synced by iCloud)
-DEFAULT_DB_DIR = Path.home() / "Library" / "Application Support" / "voxterm"
-DEFAULT_DB_PATH = DEFAULT_DB_DIR / ".speakers.db"
-BACKUP_DIR = DEFAULT_DB_DIR / ".backups"
 
 _SCHEMA_VERSION = 2
 

@@ -1,26 +1,11 @@
-"""Transcription engine — supports Qwen3-ASR (primary) and mlx-whisper (fallback)."""
+"""Transcription engine — Qwen3-ASR (all platforms), mlx-whisper (macOS), faster-whisper (Linux fallback)."""
 
 from __future__ import annotations
 
 import re
 import numpy as np
 
-# Available Qwen3-ASR models (MLX-native, fast, accurate)
-QWEN3_MODELS = {
-    "qwen3-0.6b": "Qwen/Qwen3-ASR-0.6B",
-    "qwen3-1.7b": "Qwen/Qwen3-ASR-1.7B",
-}
-
-# Legacy Whisper models (mlx-whisper)
-WHISPER_MODELS = {
-    "tiny":      "mlx-community/whisper-tiny",
-    "base":      "mlx-community/whisper-base-mlx",
-    "small":     "mlx-community/whisper-small-mlx",
-    "medium":    "mlx-community/whisper-medium-mlx",
-    "large-v3":  "mlx-community/whisper-large-v3-mlx",
-    "turbo":     "mlx-community/whisper-large-v3-turbo",
-    "distil-v3": "distil-whisper/distil-large-v3",
-}
+from audio.platform import CURRENT_PLATFORM, Platform
 
 
 class _DeduplicatorMixin:
@@ -91,21 +76,46 @@ def _is_hallucination(text: str, expected_language: str | None = "en") -> bool:
     return False
 
 
+# qwen-asr (PyTorch) expects full language names, not ISO codes
+_ISO_TO_LANG = {
+    "en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean",
+    "de": "German", "fr": "French", "es": "Spanish", "pt": "Portuguese",
+    "ru": "Russian", "ar": "Arabic", "hi": "Hindi", "it": "Italian",
+    "tr": "Turkish", "nl": "Dutch", "id": "Indonesian", "th": "Thai",
+    "vi": "Vietnamese", "ms": "Malay", "sv": "Swedish", "da": "Danish",
+    "fi": "Finnish", "pl": "Polish", "cs": "Czech", "el": "Greek",
+    "ro": "Romanian", "hu": "Hungarian", "fa": "Persian",
+}
+
+
 class Qwen3Transcriber(_DeduplicatorMixin):
-    """Qwen3-ASR transcriber."""
+    """Qwen3-ASR transcriber — MLX on macOS, qwen-asr (PyTorch) on Linux."""
 
     def __init__(self, model: str = "Qwen/Qwen3-ASR-0.6B", language: str | None = "en"):
         self.model_id = model
         self._language = language
         self._model = None
         self._loaded = False
+        self._use_mlx = CURRENT_PLATFORM == Platform.MACOS
         self._init_dedup()
 
     def load(self):
         """Pre-load the model (downloads on first run)."""
-        from mlx_qwen3_asr import load_model
-        model, _config = load_model(self.model_id)
-        self._model = model
+        if self._use_mlx:
+            from mlx_qwen3_asr import load_model
+            model, _config = load_model(self.model_id)
+            self._model = model
+        else:
+            from qwen_asr import Qwen3ASRModel
+            import torch
+            dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            self._model = Qwen3ASRModel.from_pretrained(
+                self.model_id,
+                dtype=dtype,
+                device_map=device,
+                max_new_tokens=256,
+            )
         self._loaded = True
 
     def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
@@ -114,20 +124,26 @@ class Qwen3Transcriber(_DeduplicatorMixin):
         Returns:
             {"text": str, "speaker": str, "speaker_id": int}
         """
-        from mlx_qwen3_asr import transcribe
-
         rms = float(np.sqrt(np.mean(audio ** 2)))
         if rms < 0.005:
             return {"text": "", "speaker": "", "speaker_id": 0}
 
-        result = transcribe(
-            audio,
-            model=self._model if self._model else self.model_id,
-            language=self._language,
-            verbose=False,
-        )
-
-        text = str(result.text).strip() if hasattr(result, 'text') else ""
+        if self._use_mlx:
+            from mlx_qwen3_asr import transcribe
+            result = transcribe(
+                audio,
+                model=self._model if self._model else self.model_id,
+                language=self._language,
+                verbose=False,
+            )
+            text = str(result.text).strip() if hasattr(result, 'text') else ""
+        else:
+            lang = _ISO_TO_LANG.get(self._language, self._language) if self._language else None
+            results = self._model.transcribe(
+                audio=(audio, 16000),
+                language=lang,
+            )
+            text = results[0].text.strip() if results else ""
 
         if _is_hallucination(text, self._language):
             return {"text": "", "speaker": "", "speaker_id": 0}
@@ -174,6 +190,53 @@ class WhisperTranscriber(_DeduplicatorMixin):
 
         text = result.get("text", "").strip()
         if _is_hallucination(text):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        if self._is_duplicate(text):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        return {"text": text, "speaker": "", "speaker_id": 0}
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+
+class FasterWhisperTranscriber(_DeduplicatorMixin):
+    """Cross-platform transcriber using faster-whisper (CTranslate2 backend).
+
+    Works on Linux (CPU/CUDA) and any platform with faster-whisper installed.
+    """
+
+    def __init__(self, model: str = "small", language: str | None = "en"):
+        self.model_size = model
+        self._language = language
+        self._model = None
+        self._loaded = False
+        self._init_dedup()
+
+    def load(self):
+        """Pre-load the model (downloads on first run)."""
+        from faster_whisper import WhisperModel
+        self._model = WhisperModel(
+            self.model_size, device="auto", compute_type="auto",
+        )
+        self._loaded = True
+
+    def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
+        rms = float(np.sqrt(np.mean(audio ** 2)))
+        if rms < 0.005:
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        segments, _info = self._model.transcribe(
+            audio,
+            language=self._language,
+            beam_size=5,
+            vad_filter=False,  # we already run Silero VAD upstream
+        )
+        text = " ".join(seg.text.strip() for seg in segments).strip()
+
+        if _is_hallucination(text, self._language):
             return {"text": "", "speaker": "", "speaker_id": 0}
 
         if self._is_duplicate(text):
