@@ -24,6 +24,7 @@ if sys.platform == "darwin":
     }
     QWEN3_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
     WHISPER_MODEL = "mlx-community/whisper-small-mlx"
+    FASTER_WHISPER_MODELS: set[str] = set()
 elif sys.platform.startswith("linux"):
     # Linux: Qwen3-ASR (primary, via qwen-asr/PyTorch) + faster-whisper (fallback)
     DEFAULT_MODEL = "qwen3-0.6b"
@@ -38,12 +39,10 @@ elif sys.platform.startswith("linux"):
         "fw-distil-large-v3": "distil-large-v3",
     }
     QWEN3_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
-    WHISPER_MODEL = ""
+    WHISPER_MODEL = None
+    FASTER_WHISPER_MODELS = {"fw-tiny", "fw-base", "fw-small", "fw-medium", "fw-large-v3", "fw-distil-large-v3"}
 else:
     raise RuntimeError(f"Unsupported platform: {sys.platform}")
-
-# Set of model keys that use faster-whisper backend
-FASTER_WHISPER_MODELS = {"fw-tiny", "fw-base", "fw-small", "fw-medium", "fw-large-v3", "fw-distil-large-v3"}
 
 # Language forcing for Qwen3-ASR (None = auto-detect)
 DEFAULT_LANGUAGE = "en"

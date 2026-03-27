@@ -20,6 +20,7 @@ import numpy as np
 
 from .models import SpeakerMeta, SpeakerProfile
 from . import crypto
+from paths import DB_PATH as DEFAULT_DB_PATH, BACKUP_DIR
 
 log = logging.getLogger(__name__)
 
@@ -44,9 +45,6 @@ class MatchResult:
     score: float         # cosine similarity
     color: str           # profile color (empty if low)
     ambiguous: bool      # True if top-2 are too close (conflict)
-
-# Default storage location (platform-aware, not synced by iCloud on macOS)
-from paths import DB_PATH as DEFAULT_DB_PATH, BACKUP_DIR
 
 _SCHEMA_VERSION = 1
 

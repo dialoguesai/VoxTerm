@@ -292,6 +292,13 @@ class SystemCapture:
             )
             return
 
+        if not shutil.which("pactl"):
+            self._unavailable = True
+            self._status_message = (
+                "pactl not found — install pulseaudio-utils or pipewire-pulse"
+            )
+            return
+
         monitor = self._find_monitor_source()
         if monitor is None:
             self._unavailable = True
@@ -330,15 +337,22 @@ class SystemCapture:
     @staticmethod
     def _find_monitor_source() -> str | None:
         """Find a PulseAudio/PipeWire monitor source for system audio capture."""
+        if not shutil.which("pactl"):
+            return None
         try:
             result = subprocess.run(
                 ["pactl", "list", "sources", "short"],
                 capture_output=True, text=True, timeout=5,
             )
+            if result.returncode != 0:
+                return None
             for line in result.stdout.strip().splitlines():
                 fields = line.split("\t")
                 if len(fields) >= 2 and ".monitor" in fields[1]:
                     return fields[1]
         except Exception:
             pass
-        return None
+        # Fallback: PulseAudio/PipeWire virtual name that resolves to the
+        # current default output's monitor (works even when pactl doesn't
+        # list .monitor sources by name, e.g. some PipeWire setups).
+        return "@DEFAULT_SINK@.monitor"

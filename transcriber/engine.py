@@ -2,36 +2,10 @@
 
 from __future__ import annotations
 
-import sys
 import re
 import numpy as np
 
-# Available Qwen3-ASR models (MLX-native, fast, accurate — macOS only)
-QWEN3_MODELS = {
-    "qwen3-0.6b": "Qwen/Qwen3-ASR-0.6B",
-    "qwen3-1.7b": "Qwen/Qwen3-ASR-1.7B",
-}
-
-# Legacy Whisper models (mlx-whisper — macOS only)
-WHISPER_MODELS = {
-    "tiny":      "mlx-community/whisper-tiny",
-    "base":      "mlx-community/whisper-base-mlx",
-    "small":     "mlx-community/whisper-small-mlx",
-    "medium":    "mlx-community/whisper-medium-mlx",
-    "large-v3":  "mlx-community/whisper-large-v3-mlx",
-    "turbo":     "mlx-community/whisper-large-v3-turbo",
-    "distil-v3": "distil-whisper/distil-large-v3",
-}
-
-# faster-whisper models (CTranslate2 backend — Linux/cross-platform)
-FASTER_WHISPER_MODELS = {
-    "fw-tiny":           "tiny",
-    "fw-base":           "base",
-    "fw-small":          "small",
-    "fw-medium":         "medium",
-    "fw-large-v3":       "large-v3",
-    "fw-distil-large-v3": "distil-large-v3",
-}
+from audio.platform import CURRENT_PLATFORM, Platform
 
 
 class _DeduplicatorMixin:
@@ -122,7 +96,7 @@ class Qwen3Transcriber(_DeduplicatorMixin):
         self._language = language
         self._model = None
         self._loaded = False
-        self._use_mlx = sys.platform == "darwin"
+        self._use_mlx = CURRENT_PLATFORM == Platform.MACOS
         self._init_dedup()
 
     def load(self):
