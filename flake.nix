@@ -39,7 +39,6 @@
           packages = with pkgs; [
             python
             python.pkgs.pip
-            python.pkgs.virtualenv
           ] ++ commonDeps
             ++ pkgs.lib.optionals isDarwin darwinDeps
             ++ pkgs.lib.optionals isLinux linuxDeps;
