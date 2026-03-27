@@ -31,6 +31,7 @@ htmlcov/
 tests/fixtures/speakers/ES2014c.wav
 tests/fixtures/speakers/dev01.wav
 tests/fixtures/speakers/tst01.wav
+tests/fixtures/benchmark_2min.wav
 
 # Generated media
 docs/pipeline.mp4
