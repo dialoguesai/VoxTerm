@@ -1,0 +1,169 @@
+{
+  "audio_file": "tests/fixtures/speakers/dev00.wav",
+  "audio_duration_sec": 30.0,
+  "model": "qwen3-0.6b",
+  "fire_and_forget": {
+    "method": "Fire-and-Forget",
+    "results": [
+      {
+        "text": "Okay. Well, I think we're ready to begin.",
+        "latency_ms": 1501.5,
+        "audio_sec": 4.67
+      },
+      {
+        "text": "Right, my name is Adam Jigger. We're here because of real reaction. We have.",
+        "latency_ms": 374.4,
+        "audio_sec": 7.3
+      },
+      {
+        "text": "In a group. Oh, Ebenezer, a demonstrator. You'd like me to support it.",
+        "latency_ms": 381.6,
+        "audio_sec": 5.7
+      },
+      {
+        "text": "Um yeah go for it. N z. N z. E r. N z. And your role is. I'm the marketing expert. You're the marketing expert. Okay.",
+        "latency_ms": 959.4,
+        "audio_sec": 12.35
+      }
+    ],
+    "full_text": "Okay. Well, I think we're ready to begin. Right, my name is Adam Jigger. We're here because of real reaction. We have. In a group. Oh, Ebenezer, a demonstrator. You'd like me to support it. Um yeah go for it. N z. N z. E r. N z. And your role is. I'm the marketing expert. You're the marketing expert. Okay.",
+    "word_count": 61,
+    "call_count": 4,
+    "total_transcribe_time_ms": 3217.0,
+    "wall_time_ms": 3219.3,
+    "latencies_ms": [
+      1501.5,
+      374.4,
+      381.6,
+      959.4
+    ],
+    "mean_latency_ms": 804.2,
+    "p50_latency_ms": 670.5,
+    "p95_latency_ms": 1420.2,
+    "max_latency_ms": 1501.5
+  },
+  "local_agreement": {
+    "method": "LocalAgreement",
+    "results": [
+      {
+        "text": "Okay. Well, I think we're",
+        "pending": "ready to begin.",
+        "latency_ms": 228.3,
+        "audio_sec": 4.61
+      },
+      {
+        "text": "ready to begin.",
+        "pending": "",
+        "latency_ms": 0,
+        "audio_sec": 0,
+        "flushed": true
+      },
+      {
+        "text": "Right, my name is Adam Jigger.",
+        "pending": "We're here because of real reaction.",
+        "latency_ms": 730.8,
+        "audio_sec": 4.54
+      },
+      {
+        "text": "We're here because of real reaction.",
+        "pending": "We.",
+        "latency_ms": 453.6,
+        "audio_sec": 4.31
+      },
+      {
+        "text": "We.",
+        "pending": "",
+        "latency_ms": 0,
+        "audio_sec": 0,
+        "flushed": true
+      },
+      {
+        "text": "In a group.",
+        "pending": "Oh, Ebenezer.",
+        "latency_ms": 228.1,
+        "audio_sec": 2.37
+      },
+      {
+        "text": "Oh, Ebenezer,",
+        "pending": "a demon? Sorry.",
+        "latency_ms": 208.4,
+        "audio_sec": 2.98
+      },
+      {
+        "text": "At demoing, you like me to score it.",
+        "pending": "",
+        "latency_ms": 0,
+        "audio_sec": 0,
+        "flushed": true
+      },
+      {
+        "text": "Um.",
+        "pending": "Yeah, go for it, mate.",
+        "latency_ms": 236.5,
+        "audio_sec": 2.82
+      },
+      {
+        "text": "yeah, go for it.",
+        "pending": "Any Z.",
+        "latency_ms": 234.8,
+        "audio_sec": 4.35
+      },
+      {
+        "text": "N Z, N Z, E R. Have any sir? And your role is I'm the marketing expert.",
+        "pending": "You're the marketing expert.",
+        "latency_ms": 782.4,
+        "audio_sec": 9.42
+      },
+      {
+        "text": "You're the marketing expert.",
+        "pending": "",
+        "latency_ms": 0,
+        "audio_sec": 0,
+        "flushed": true
+      }
+    ],
+    "full_text": "Okay. Well, I think we're ready to begin. Right, my name is Adam Jigger. We're here because of real reaction. We. In a group. Oh, Ebenezer, At demoing, you like me to score it. Um. yeah, go for it. N Z, N Z, E R. Have any sir? And your role is I'm the marketing expert. You're the marketing expert.",
+    "word_count": 60,
+    "call_count": 19,
+    "ticks_with_commit": 8,
+    "ticks_with_no_commit": 11,
+    "total_transcribe_time_ms": 5667.9,
+    "wall_time_ms": 5672.1,
+    "latencies_ms": [
+      0.0,
+      221.3,
+      228.3,
+      0.0,
+      291.5,
+      730.8,
+      453.6,
+      179.4,
+      228.1,
+      208.4,
+      208.1,
+      105.4,
+      236.5,
+      234.8,
+      393.1,
+      262.3,
+      405.9,
+      498.0,
+      782.4
+    ],
+    "mean_latency_ms": 298.3,
+    "p50_latency_ms": 234.8,
+    "p95_latency_ms": 735.9,
+    "max_latency_ms": 782.4
+  },
+  "comparison": {
+    "jaccard": 0.667,
+    "common_words": 40,
+    "unique_to_a": 9,
+    "unique_to_b": 11
+  },
+  "config": {
+    "tick_interval": 1.5,
+    "min_audio": 0.8,
+    "flush_silence": 1.0
+  }
+}
