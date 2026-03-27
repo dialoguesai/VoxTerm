@@ -19,7 +19,6 @@ import hmac
 import hashlib
 import logging
 import os
-import stat
 import tempfile
 from pathlib import Path
 

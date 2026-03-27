@@ -105,7 +105,7 @@ def _get_output_device_info_linux(fallback: dict, bt_keywords: tuple) -> dict:
             capture_output=True, text=True, timeout=5,
         )
         sink_name = result.stdout.strip()
-        if not sink_name:
+        if result.returncode != 0 or not sink_name:
             return fallback
     except Exception:
         return fallback
