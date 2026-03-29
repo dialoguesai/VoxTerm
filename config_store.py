@@ -17,6 +17,8 @@ _DEFAULTS: dict[str, Any] = {
     "export_format": "markdown",
     "summarization_model": "",
     "summarization_strength": "medium",
+    "llama_server_url": "",
+    "llama_server_model": "",
 }
 
 # Expected types per key (for validation)
@@ -27,6 +29,8 @@ _TYPES: dict[str, type] = {
     "export_format": str,
     "summarization_model": str,
     "summarization_strength": str,
+    "llama_server_url": str,
+    "llama_server_model": str,
 }
 
 

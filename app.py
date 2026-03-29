@@ -50,7 +50,10 @@ from widgets.profile_screen import SpeakerProfileScreen
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
 from audio.system_capture import SystemCapture
-from transcriber.engine import Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber
+from transcriber.engine import (
+    Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber,
+    LlamaServerTranscriber, discover_llama_audio_models,
+)
 from diarization.proxy import DiarizationProxy
 from speakers.store import SpeakerStore
 from audio.vad import SileroVAD
@@ -61,6 +64,7 @@ from config import (
     DEFAULT_MODEL, AVAILABLE_MODELS, QWEN3_MODELS, FASTER_WHISPER_MODELS,
     DEFAULT_LANGUAGE, AVAILABLE_LANGUAGES,
     LIVE_DIR,
+    LLAMA_SERVER_URL, LLAMA_SERVER_MODEL, LLAMA_SERVER_MODELS,
 )
 from paths import SESSIONS_DIR, STATE_FILE as _STATE_FILE
 
@@ -139,7 +143,8 @@ class ModelSelectScreen(ModalScreen):
             dialog.border_title = "SELECT MODEL"
             options = []
             for name, repo in AVAILABLE_MODELS.items():
-                label = f"  {'▸ ' if name == self._current else '  '}{name:12s}  {repo}"
+                tag = " [llama]" if name in LLAMA_SERVER_MODELS else ""
+                label = f"  {'▸ ' if name == self._current else '  '}{name:12s}  {repo}{tag}"
                 options.append(Option(label, id=name))
             yield OptionList(*options, id="model-list")
             yield Static(
@@ -150,7 +155,8 @@ class ModelSelectScreen(ModalScreen):
 
     def on_mount(self) -> None:
         option_list = self.query_one("#model-list", OptionList)
-        for idx, name in enumerate(AVAILABLE_MODELS):
+        all_names = list(AVAILABLE_MODELS.keys())
+        for idx, name in enumerate(all_names):
             if name == self._current:
                 option_list.highlighted = idx
                 break
@@ -1019,8 +1025,8 @@ class VoxTerm(App):
                 return
             self._language = lang_code
             lang_name = AVAILABLE_LANGUAGES.get(lang_code, lang_code)
-            # Update transcriber language if it's Qwen3
-            if self._is_qwen3 and hasattr(self.transcriber, '_language'):
+            # Update transcriber language if it supports it (Qwen3, llama server)
+            if hasattr(self.transcriber, '_language'):
                 self.transcriber._language = lang_code
             _get_config().update({"last_model": self._model_name, "last_language": lang_code})
             self.query_one(TranscriptPanel).system_message(f"language set to {lang_name}")
@@ -1214,7 +1220,13 @@ class VoxTerm(App):
     def _do_swap(self, model_key: str):
         repo = AVAILABLE_MODELS[model_key]
         try:
-            if model_key in QWEN3_MODELS:
+            if model_key in LLAMA_SERVER_MODELS:
+                cfg = _get_config()
+                server_url = cfg.get("llama_server_url") or LLAMA_SERVER_URL
+                new_transcriber = LlamaServerTranscriber(
+                    server_url=server_url, model=repo, language=self._language,
+                )
+            elif model_key in QWEN3_MODELS:
                 new_transcriber = Qwen3Transcriber(model=repo, language=self._language)
             elif model_key in FASTER_WHISPER_MODELS:
                 new_transcriber = FasterWhisperTranscriber(model=repo, language=self._language)
@@ -1395,6 +1407,7 @@ class VoxTerm(App):
 
 if __name__ == "__main__":
     import argparse
+    import config as _config_mod
 
     # Resolve defaults: saved preferences > config defaults
     _cfg = _get_config()
@@ -1403,10 +1416,13 @@ if __name__ == "__main__":
     _default_model = _saved_model if _saved_model in AVAILABLE_MODELS else DEFAULT_MODEL
     _default_lang = _saved_lang if _saved_lang in AVAILABLE_LANGUAGES else DEFAULT_LANGUAGE
 
+    # Resolve llama server config: CLI > state file > config.py defaults
+    _saved_server_url = _cfg.get("llama_server_url") or LLAMA_SERVER_URL
+    _saved_server_model = _cfg.get("llama_server_model") or LLAMA_SERVER_MODEL
+
     parser = argparse.ArgumentParser(description="VOXTERM — Local Voice Transcription TUI")
     parser.add_argument(
         "-m", "--model",
-        choices=list(AVAILABLE_MODELS.keys()),
         default=_default_model,
         help=f"Transcription model (default: {_default_model})",
     )
@@ -1417,17 +1433,74 @@ if __name__ == "__main__":
         help=f"Transcription language (default: {_default_lang})",
     )
     parser.add_argument(
+        "--server-url",
+        default=_saved_server_url,
+        help="Ollama-compatible server URL (e.g. http://localhost:11434)",
+    )
+    parser.add_argument(
+        "--server-model",
+        default=_saved_server_model,
+        help="Model name on the llama server (e.g. qwen3.5:35b)",
+    )
+    parser.add_argument(
         "--list-models",
         action="store_true",
         help="List available models and exit",
     )
     args = parser.parse_args()
 
+    # Probe llama server for audio-capable models and register them
+    _server_url = args.server_url
+    _server_model = args.server_model
+    if _server_url:
+        print(f"VOXTERM // probing llama server at {_server_url}...")
+        _audio_models = discover_llama_audio_models(_server_url)
+        if _audio_models:
+            print(f"  found audio models: {', '.join(_audio_models)}")
+            for am in _audio_models:
+                short = am.replace(":", "-")
+                AVAILABLE_MODELS[short] = am
+                LLAMA_SERVER_MODELS.add(short)
+                _config_mod.LLAMA_SERVER_MODELS.add(short)
+        elif _server_model:
+            # User explicitly set a model — trust them and register it
+            print(f"  no auto-detected audio models, using configured: {_server_model}")
+            short = _server_model.replace(":", "-")
+            AVAILABLE_MODELS[short] = _server_model
+            LLAMA_SERVER_MODELS.add(short)
+            _config_mod.LLAMA_SERVER_MODELS.add(short)
+        else:
+            print("  no audio-capable models found on server")
+
+        # Persist server config and update runtime config module
+        _config_mod.LLAMA_SERVER_URL = _server_url
+        _config_mod.LLAMA_SERVER_MODEL = _server_model
+        _cfg.update({"llama_server_url": _server_url, "llama_server_model": _server_model})
+
+        # If a server model was found/configured and no explicit -m was given, prefer it
+        if LLAMA_SERVER_MODELS and args.model == _default_model:
+            # Pick the explicitly requested server model, or the first discovered one
+            if _server_model:
+                _preferred = _server_model.replace(":", "-")
+            else:
+                _preferred = next(iter(LLAMA_SERVER_MODELS))
+            if _preferred in AVAILABLE_MODELS:
+                args.model = _preferred
+                print(f"  → using llama server model: {args.model}")
+
+    # Validate model choice
+    if args.model not in AVAILABLE_MODELS:
+        print(f"Unknown model: {args.model}")
+        print(f"Available: {', '.join(AVAILABLE_MODELS.keys())}")
+        sys.exit(1)
+
     if args.list_models:
         print("Available models:")
         for name, repo in AVAILABLE_MODELS.items():
             tag = " (default)" if name == _default_model else ""
-            if name in QWEN3_MODELS:
+            if name in LLAMA_SERVER_MODELS:
+                backend = f" [llama@{_server_url}]" if _server_url else " [llama]"
+            elif name in QWEN3_MODELS:
                 backend = " [qwen3-asr]"
             elif name in FASTER_WHISPER_MODELS:
                 backend = " [faster-whisper]"
@@ -1467,7 +1540,11 @@ if __name__ == "__main__":
 
     print(f"VOXTERM // loading model ({model_name}) lang={language}...")
     print("(first run downloads the model, please wait)\n")
-    if model_name in QWEN3_MODELS:
+    if model_name in LLAMA_SERVER_MODELS:
+        transcriber = LlamaServerTranscriber(
+            server_url=_server_url, model=model_repo, language=language,
+        )
+    elif model_name in QWEN3_MODELS:
         transcriber = Qwen3Transcriber(model=model_repo, language=language)
     elif model_name in FASTER_WHISPER_MODELS:
         transcriber = FasterWhisperTranscriber(model=model_repo, language=language)

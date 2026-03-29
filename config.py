@@ -71,6 +71,11 @@ VAD_THRESHOLD = 0.5           # Silero VAD speech probability threshold
 # Session persistence & system audio capture paths
 from paths import LIVE_DIR, BIN_DIR
 
+# Llama server (Ollama-compatible) — overrides local models when configured
+LLAMA_SERVER_URL = ""       # e.g. "http://localhost:11434"
+LLAMA_SERVER_MODEL = ""     # e.g. "qwen3.5:35b"
+LLAMA_SERVER_MODELS: set[str] = set()  # populated at runtime from AVAILABLE_MODELS
+
 # Diarizer subprocess
 DIARIZER_TIMEOUT = 5.0        # seconds to wait for subprocess response
 DIARIZER_MAX_RESTARTS = 3     # max restarts before falling back to in-process
