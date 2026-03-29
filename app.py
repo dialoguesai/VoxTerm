@@ -1429,7 +1429,7 @@ class VoxTerm(App):
             import uuid
             self._p2p_node_id = str(uuid.uuid4()).replace("-", "")[:16]
 
-    def _start_discovery(self, tcp_port: int) -> None:
+    def _start_discovery(self, tcp_port: int, on_peer_found=None) -> None:
         """Start mDNS discovery with the actual TCP port."""
         if self._discovery is not None:
             self._discovery.stop()
@@ -1440,6 +1440,9 @@ class VoxTerm(App):
             tcp_port=tcp_port,
             udp_port=0,
         )
+        # Set callback BEFORE start() to avoid missing early peer events
+        if on_peer_found is not None:
+            self._discovery.on_peer_found = on_peer_found
         self._discovery.start()
 
     @work(thread=True, group="p2p_discovery")
@@ -1594,8 +1597,7 @@ class VoxTerm(App):
                         daemon=True,
                     ).start()
 
-            self._start_discovery(port)
-            self._discovery.on_peer_found = on_peer_found
+            self._start_discovery(port, on_peer_found=on_peer_found)
             self._discovery.update_session_status(True)
 
             # Connect to any already-visible peers (same tie-break)

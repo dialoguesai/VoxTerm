@@ -57,7 +57,6 @@ class PeerAudioBuffer:
     def write_frame(self, seq: int, pcm_int16: bytes) -> None:
         """Write a frame by sequence number, filling gaps with silence."""
         frame = np.frombuffer(pcm_int16, dtype=np.int16)
-        n = len(frame)
 
         with self._lock:
             # Drop out-of-order and duplicate frames — they would corrupt

@@ -629,7 +629,7 @@ session_key = HKDF(
 
 This produces a 256-bit symmetric key from the session code. All peers deriving from the same code get the same key.
 
-**Session code format**: 8 characters, alphanumeric, uppercase, with a hyphen for readability: `XXXX-XXXX`. Generated randomly by the creator. Entropy: 36^8 ≈ 2.8 trillion combinations. Sufficient for a LAN session — brute force is impractical within a session's lifetime.
+**Session code format**: 3-word BIP-39 mnemonic, lowercase, hyphen-separated, e.g. `bacon-horse-galaxy`. Generated randomly by the creator from the standard 2048-word list. Entropy: 2048^3 ≈ 2^33 ≈ 8.6 billion combinations. Sufficient for a LAN session — brute force is impractical within a session's lifetime when combined with out-of-band verbal sharing.
 
 ### Encryption
 
@@ -639,9 +639,9 @@ All traffic is encrypted. This is not optional.
 
 ```
 1. Both sides derive session_key from the session code
-2. Initiator sends: AES-256-GCM(key=session_key, nonce=random_12, plaintext="voxterm-hello")
+2. Initiator sends: AES-256-GCM(key=session_key, nonce=random_12, plaintext='{"handshake":"hello"}' as UTF-8 JSON)
 3. Responder decrypts. If it fails → wrong session code → disconnect
-4. Responder sends: AES-256-GCM(key=session_key, nonce=random_12, plaintext="voxterm-hello-ack")
+4. Responder sends: AES-256-GCM(key=session_key, nonce=random_12, plaintext='{"handshake":"ack"}' as UTF-8 JSON)
 5. Initiator decrypts. If it fails → disconnect
 6. All subsequent TCP messages: [4-byte length][12-byte nonce][encrypted payload][16-byte GCM tag]
 ```
@@ -658,7 +658,7 @@ All traffic is encrypted. This is not optional.
 
 The sequence number is in plaintext (needed to construct the nonce on the receiving side and for packet ordering), but the audio payload is fully encrypted. The GCM tag ensures integrity — tampered or injected packets fail authentication and are dropped.
 
-**Nonce construction**: For UDP, nonces are constructed as `node_id[:4] + seq_number(8 bytes)` to guarantee uniqueness without coordination. For TCP, a simple counter per connection suffices.
+**Nonce construction**: All nonces (TCP and UDP) are 12 bytes of `os.urandom()`. Random nonces are safe under AES-256-GCM given the low message volume of a LAN session (collision probability is negligible well below 2^32 messages per key).
 
 ### Peer Browser (Pre-Session)
 

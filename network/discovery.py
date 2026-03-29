@@ -189,7 +189,8 @@ class PeerDiscovery:
                 instance = name.split(".")[0]  # e.g. "bob-aabb11"
                 with self._lock:
                     for nid, peer in self._peers.items():
-                        expected = f"{peer.display_name}-{nid[:6]}"
+                        sanitized_name = self._sanitize_dns_label(peer.display_name)
+                        expected = f"{sanitized_name}-{nid[:6]}"
                         if instance == expected:
                             node_id = nid
                             break

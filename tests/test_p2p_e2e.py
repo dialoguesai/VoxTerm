@@ -332,6 +332,15 @@ def run_tests():
     return results.summary()
 
 
+import pytest
+
+
+@pytest.mark.e2e
+def test_p2p_e2e():
+    """Run the full E2E test suite as a pytest test."""
+    assert run_tests(), "E2E test failed — see output above for details"
+
+
 if __name__ == "__main__":
     success = run_tests()
     sys.exit(0 if success else 1)
