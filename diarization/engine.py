@@ -155,7 +155,7 @@ class DiarizationEngine:
             raise ValueError(f"Unknown model: {SPEAKER_MODEL_NAME}")
 
         config = MODEL_CONFIGS[SPEAKER_MODEL_NAME]
-        model_id = config["model_id"]
+        model_id = config["modelscope_id"]
         revision = config.get("revision")
 
         from modelscope.hub.snapshot_download import snapshot_download
