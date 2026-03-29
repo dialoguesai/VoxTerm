@@ -15,6 +15,7 @@ import time
 from typing import Callable
 
 from config import (
+    P2P_AUDIO_MERGE_ENABLED,
     P2P_HEARTBEAT_INTERVAL,
     P2P_HEARTBEAT_TIMEOUT,
     P2P_MAX_PEERS,
@@ -36,6 +37,8 @@ from network.crypto import (
     send_plaintext_msg,
     recv_plaintext_msg,
 )
+from audio.buffer import PeerAudioBuffer
+from network.audio_stream import AudioStreamer
 from network.peer import PeerConnection
 from network.protocol import (
     MSG_BYE,
@@ -110,11 +113,18 @@ class SessionManager:
         self._heartbeat_thread: threading.Thread | None = None
         self._read_threads: dict[str, threading.Thread] = {}
 
+        # Audio streaming (UDP)
+        self._audio_streamer: AudioStreamer | None = None
+        self._peer_audio_buffers: dict[str, PeerAudioBuffer] = {}
+        self._audio_merge_enabled = P2P_AUDIO_MERGE_ENABLED
+        self._audio_frame_seq = 0
+
         # Callbacks (called from network threads — use call_from_thread in UI)
         self.on_peer_connected: Callable[[PeerConnection], None] | None = None
         self.on_peer_disconnected: Callable[[str, str], None] | None = None  # node_id, display_name
         self.on_final_received: Callable[[str, dict], None] | None = None  # node_id, msg
         self.on_partial_received: Callable[[str, dict], None] | None = None  # node_id, msg
+        self.on_audio_frame_received: Callable[[str, int, float, bytes], None] | None = None  # node_id, seq, ts, pcm
 
     # ── properties ────────────────────────────────────────────
 
@@ -196,6 +206,12 @@ class SessionManager:
             self._send_to_peer(peer, build_bye(self._node_id))
 
         self._running = False
+
+        # Stop audio streamer
+        if self._audio_streamer:
+            self._audio_streamer.stop()
+            self._audio_streamer = None
+        self._peer_audio_buffers.clear()
 
         # Close all peer connections
         with self._lock:
@@ -282,16 +298,51 @@ class SessionManager:
         for peer in peers_snapshot:
             self._send_to_peer(peer, msg)
 
+    # ── audio streaming ──────────────────────────────────────
+
+    def send_audio_frame(self, pcm: "np.ndarray", timestamp: float) -> None:
+        """Send a mic audio frame to all audio-merge-capable peers."""
+        streamer = self._audio_streamer
+        if not streamer or not self._audio_merge_enabled:
+            return
+        addrs = self.get_audio_peer_addrs()
+        if not addrs:
+            return
+        self._audio_frame_seq += 1
+        streamer.send_frame(pcm, self._audio_frame_seq, timestamp, addrs)
+
+    def get_audio_peer_addrs(self) -> list[tuple[str, int]]:
+        """Return (ip, udp_audio_port) for all audio-merge-capable peers."""
+        with self._lock:
+            return [
+                (p.ip, p.udp_audio_port)
+                for p in self._peers.values()
+                if p.audio_merge_capable and p.udp_audio_port > 0
+            ]
+
+    def get_peer_audio_buffer(self, node_id: str) -> PeerAudioBuffer | None:
+        """Get the ring buffer for a specific peer's audio."""
+        return self._peer_audio_buffers.get(node_id)
+
     # ── server ────────────────────────────────────────────────
 
     def _start_server(self) -> None:
-        """Start the TCP server and background threads."""
+        """Start the TCP server, audio streamer, and background threads."""
         self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server_sock.bind(("0.0.0.0", self._tcp_port))
         self._server_sock.listen(P2P_MAX_PEERS)
         self._server_sock.settimeout(1.0)  # for clean shutdown
         self._running = True
+
+        # Start audio streamer if merge is enabled
+        if self._audio_merge_enabled and self._session_key:
+            node_id_bytes = self._node_id.encode("utf-8")[:16].ljust(16, b"\x00")
+            self._audio_streamer = AudioStreamer(
+                node_id_bytes, self._session_key, udp_port=self._udp_port,
+            )
+            self._audio_streamer.on_frame_received = self._on_audio_frame
+            self._audio_streamer.start()
 
         self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True, name="p2p-accept")
         self._accept_thread.start()
@@ -331,11 +382,14 @@ class SessionManager:
                 return
 
             # Exchange HELLOs (encrypted)
+            my_udp_port = self._audio_streamer.local_port if self._audio_streamer else 0
             my_hello = build_hello(
                 self._node_id, self._display_name,
                 proto_v=P2P_PROTO_VERSION,
                 sample_rate=SAMPLE_RATE,
                 channels=CHANNELS,
+                audio_merge=self._audio_merge_enabled,
+                udp_audio_port=my_udp_port,
             )
             send_encrypted_msg(conn, self._session_key, my_hello)
             their_hello = recv_encrypted_msg(conn, self._session_key)
@@ -355,6 +409,8 @@ class SessionManager:
                 udp_port=0,
                 sock=conn,
                 state="connected",
+                udp_audio_port=their_hello.get("udp_audio_port", 0),
+                audio_merge_capable=their_hello.get("audio_merge", False),
             )
             self._register_peer(peer)
 
@@ -380,11 +436,14 @@ class SessionManager:
                 return False
 
             # Exchange HELLOs (encrypted)
+            my_udp_port = self._audio_streamer.local_port if self._audio_streamer else 0
             my_hello = build_hello(
                 self._node_id, self._display_name,
                 proto_v=P2P_PROTO_VERSION,
                 sample_rate=SAMPLE_RATE,
                 channels=CHANNELS,
+                audio_merge=self._audio_merge_enabled,
+                udp_audio_port=my_udp_port,
             )
             send_encrypted_msg(sock, self._session_key, my_hello)
             their_hello = recv_encrypted_msg(sock, self._session_key)
@@ -403,6 +462,8 @@ class SessionManager:
                 udp_port=0,
                 sock=sock,
                 state="connected",
+                udp_audio_port=their_hello.get("udp_audio_port", 0),
+                audio_merge_capable=their_hello.get("audio_merge", False),
             )
             self._register_peer(peer)
             return True
@@ -455,12 +516,18 @@ class SessionManager:
             self._peers[peer.node_id] = peer
             self._read_threads[peer.node_id] = t
 
+        # Create a PeerAudioBuffer for audio-merge-capable peers
+        if peer.audio_merge_capable:
+            self._peer_audio_buffers[peer.node_id] = PeerAudioBuffer()
+
         # Close old connection OUTSIDE lock — its read loop will call
         # _remove_peer, but the identity check sees the new peer and skips.
         if old is not None:
             old.close()
 
-        log.info("Peer connected: %s (%s)", peer.display_name, peer.node_id[:8])
+        log.info("Peer connected: %s (%s) audio_merge=%s udp=%d",
+                 peer.display_name, peer.node_id[:8],
+                 peer.audio_merge_capable, peer.udp_audio_port)
         t.start()
 
         if self.on_peer_connected:
@@ -485,6 +552,9 @@ class SessionManager:
 
         if not was_present:
             return  # already removed by another thread
+
+        # Clean up audio buffer for this peer
+        self._peer_audio_buffers.pop(node_id, None)
 
         log.info("Peer disconnected: %s (%s)", display_name, node_id[:8])
 
@@ -602,3 +672,31 @@ class SessionManager:
         t2 = msg["local_ts"]  # their receive/respond time
         t3 = time.monotonic()  # now
         peer.clock.add_sample(t1, t2, t3)
+
+    # ── audio frame handling ───────────────────────────────────
+
+    def _on_audio_frame(self, node_id_bytes: bytes, seq: int, timestamp: float, pcm_bytes: bytes) -> None:
+        """Handle incoming UDP audio frame from AudioStreamer callback."""
+        # Map node_id bytes back to string key
+        node_id_str = node_id_bytes.rstrip(b"\x00").decode("utf-8", errors="replace")
+
+        # Look up peer for clock adjustment
+        with self._lock:
+            peer = self._peers.get(node_id_str)
+
+        if peer is None:
+            return
+
+        peer.stats.udp_rx += 1
+
+        # Write to peer's ring buffer
+        buf = self._peer_audio_buffers.get(node_id_str)
+        if buf is not None:
+            buf.write_frame(seq, pcm_bytes)
+
+        # Adjust timestamp to local clock
+        local_ts = peer.clock.adjust(timestamp)
+
+        # Forward to app callback for the merger
+        if self.on_audio_frame_received:
+            self.on_audio_frame_received(node_id_str, seq, local_ts, pcm_bytes)

@@ -69,7 +69,7 @@ class P2PDebugStats:
             },
         }
 
-    def format_debug_text(self, session_mgr: "SessionManager") -> str:
+    def format_debug_text(self, session_mgr: "SessionManager", mixer=None) -> str:
         """Format P2P debug info as text for the transcript panel."""
         snap = self.snapshot(session_mgr)
         if not snap["in_session"]:
@@ -89,5 +89,13 @@ class P2PDebugStats:
 
         t = snap["totals"]
         lines.append(f"  tcp tx/rx: {t['tcp_tx']}/{t['tcp_rx']}  finals rx: {t['finals_rx']}")
+
+        # Audio merge stats
+        if mixer is not None:
+            ms = mixer.get_stats()
+            lines.append(
+                f"  merge: {ms['peer_count']} peers, delay={ms['delay_ms']}ms, "
+                f"merged={ms['merge_count']}, peer_contrib={ms['peer_contributions']}"
+            )
 
         return "\n".join(lines)

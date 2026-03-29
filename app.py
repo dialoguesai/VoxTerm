@@ -54,6 +54,7 @@ from audio.system_capture import SystemCapture
 from transcriber.engine import Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber
 from diarization.proxy import DiarizationProxy
 from speakers.store import SpeakerStore
+from audio.merger import PeerAudioMixer
 from audio.vad import SileroVAD
 from config import (
     SAMPLE_RATE, CHUNK_SIZE, WAVEFORM_FPS,
@@ -62,6 +63,7 @@ from config import (
     DEFAULT_MODEL, AVAILABLE_MODELS, QWEN3_MODELS, FASTER_WHISPER_MODELS,
     DEFAULT_LANGUAGE, AVAILABLE_LANGUAGES,
     LIVE_DIR,
+    P2P_AUDIO_MERGE_ENABLED, P2P_MERGE_DELAY_MS,
 )
 from paths import SESSIONS_DIR, STATE_FILE as _STATE_FILE
 
@@ -434,6 +436,7 @@ class VoxTerm(App):
         self._assembler = TranscriptAssembler() if _P2P_AVAILABLE else None
         self._p2p_debug = P2PDebugStats() if _P2P_AVAILABLE else None
         self._p2p_send_queue: queue.Queue | None = None
+        self._peer_audio_mixer: PeerAudioMixer | None = None
 
     def compose(self) -> ComposeResult:
         yield CyberHeader()
@@ -654,10 +657,20 @@ class VoxTerm(App):
             waveform.tick()
             return
 
+        # Send raw mic audio to peers (before local mixing, so peers get clean mic signal)
+        mgr = self._session_mgr
+        if mgr and mgr.is_in_session and mic_chunks:
+            now = time.monotonic()
+            for mic_chunk in mic_chunks:
+                mgr.send_audio_frame(mic_chunk, now)
+
+        mixer = self._peer_audio_mixer
+
         for chunk in chunks:
             waveform.push_samples(chunk)
 
             # Speech detection: Silero VAD (neural) with RMS fallback
+            # VAD runs on local audio immediately (no merge delay)
             if self.vad.is_loaded:
                 is_speech = self.vad.is_speech(chunk)
             else:
@@ -667,11 +680,19 @@ class VoxTerm(App):
             if is_speech:
                 self._silence_chunks = 0
                 self._had_speech = True
-                self.audio_buffer.append(chunk)
             else:
                 self._silence_chunks += 1
-                # Only buffer silence if we're in an active speech segment
-                if self._had_speech:
+
+            # Route audio through merger if active, otherwise direct to buffer
+            if mixer and mixer.active_peers > 0:
+                merged = mixer.add_local_chunk(chunk, time.monotonic())
+                if merged is not None:
+                    if is_speech or self._had_speech:
+                        self.audio_buffer.append(merged)
+            else:
+                if is_speech:
+                    self.audio_buffer.append(chunk)
+                elif self._had_speech:
                     self.audio_buffer.append(chunk)
 
         waveform.tick()
@@ -711,7 +732,12 @@ class VoxTerm(App):
                     f"speech={self._had_speech}"
                 )
 
-        if self._had_speech and silence_duration > SILENCE_TRIGGER_SECONDS and buffer_duration > MIN_BUFFER_SECONDS:
+        # Adjust silence threshold by merge delay when peers are connected
+        effective_silence = SILENCE_TRIGGER_SECONDS
+        if mixer and mixer.active_peers > 0:
+            effective_silence += mixer.merge_delay_sec
+
+        if self._had_speech and silence_duration > effective_silence and buffer_duration > MIN_BUFFER_SECONDS:
             self._trigger_transcription()
         elif buffer_duration >= MAX_BUFFER_SECONDS:
             self._trigger_transcription()
@@ -1547,6 +1573,10 @@ class VoxTerm(App):
                 mgr.join_session(code)
             port = mgr._server_sock.getsockname()[1]
 
+            # Create audio mixer for peer audio merging
+            if P2P_AUDIO_MERGE_ENABLED:
+                self._peer_audio_mixer = PeerAudioMixer(merge_delay_ms=P2P_MERGE_DELAY_MS)
+
             # Start bounded sender thread for P2P broadcast (replaces per-call threads)
             self._p2p_send_queue = queue.Queue(maxsize=64)
             send_q = self._p2p_send_queue
@@ -1657,6 +1687,7 @@ class VoxTerm(App):
             except Exception:
                 pass
             self._session_mgr = None
+            self._peer_audio_mixer = None
             self.call_from_thread(
                 self.query_one(TranscriptPanel).system_message,
                 f"P2P session failed: {exc}",
@@ -1738,6 +1769,9 @@ class VoxTerm(App):
             )
             if self._assembler:
                 self._assembler.clear_peer(node_id)
+            # Remove peer from audio mixer
+            if self._peer_audio_mixer:
+                self._peer_audio_mixer.remove_peer(node_id)
             self.call_from_thread(self._update_telemetry)
 
         def on_final(node_id, msg):
@@ -1771,10 +1805,20 @@ class VoxTerm(App):
                 msg["start_ts"], clock_sync=clock_sync,
             )
 
+        def on_audio_frame(node_id, seq, local_ts, pcm_bytes):
+            mixer = self._peer_audio_mixer
+            if mixer is None:
+                return
+            # Convert int16 PCM bytes to float32
+            pcm_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
+            pcm_float32 = pcm_int16.astype(np.float32) / 32767.0
+            mixer.feed_peer(node_id, pcm_float32, local_ts)
+
         mgr.on_peer_connected = on_connected
         mgr.on_peer_disconnected = on_disconnected
         mgr.on_final_received = on_final
         mgr.on_partial_received = on_partial
+        mgr.on_audio_frame_received = on_audio_frame
 
     def _on_peer_transcript(self, text: str, speaker: str, peer_display_name: str):
         """Called on main thread when a peer's FINAL segment arrives."""
@@ -1793,7 +1837,7 @@ class VoxTerm(App):
         tp = self.query_one(TranscriptPanel)
         tp.system_message(f"debug mode {state}")
         if self._debug and self._session_mgr and self._session_mgr.is_in_session and self._p2p_debug:
-            tp.system_message(self._p2p_debug.format_debug_text(self._session_mgr))
+            tp.system_message(self._p2p_debug.format_debug_text(self._session_mgr, mixer=self._peer_audio_mixer))
 
     def action_clear_transcript(self):
         """Clear display only — live file stays on disk as the record."""
@@ -1814,6 +1858,9 @@ class VoxTerm(App):
         self.workers.cancel_group(self, "p2p_discovery")
         # Leave P2P session and stop discovery
         self._stop_discovery()
+        if self._peer_audio_mixer:
+            self._peer_audio_mixer.clear()
+            self._peer_audio_mixer = None
         if self._session_mgr and self._session_mgr.is_in_session:
             try:
                 self._session_mgr.leave_session()
