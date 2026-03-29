@@ -1458,14 +1458,14 @@ if __name__ == "__main__":
         if _audio_models:
             print(f"  found audio models: {', '.join(_audio_models)}")
             for am in _audio_models:
-                short = am.replace(":", "-")
+                short = am.replace(":", "-").replace("/", "-")
                 AVAILABLE_MODELS[short] = am
                 LLAMA_SERVER_MODELS.add(short)
                 _config_mod.LLAMA_SERVER_MODELS.add(short)
         elif _server_model:
             # User explicitly set a model — trust them and register it
             print(f"  no auto-detected audio models, using configured: {_server_model}")
-            short = _server_model.replace(":", "-")
+            short = _server_model.replace(":", "-").replace("/", "-")
             AVAILABLE_MODELS[short] = _server_model
             LLAMA_SERVER_MODELS.add(short)
             _config_mod.LLAMA_SERVER_MODELS.add(short)
@@ -1481,7 +1481,7 @@ if __name__ == "__main__":
         if LLAMA_SERVER_MODELS and args.model == _default_model:
             # Pick the explicitly requested server model, or the first discovered one
             if _server_model:
-                _preferred = _server_model.replace(":", "-")
+                _preferred = _server_model.replace(":", "-").replace("/", "-")
             else:
                 _preferred = next(iter(LLAMA_SERVER_MODELS))
             if _preferred in AVAILABLE_MODELS:

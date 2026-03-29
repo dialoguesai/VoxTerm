@@ -313,34 +313,78 @@ def discover_llama_audio_models(server_url: str) -> list[str]:
 
 
 class LlamaServerTranscriber(_DeduplicatorMixin):
-    """Transcriber that delegates to an Ollama-compatible server with an audio-capable model."""
+    """Transcriber that delegates to an OpenAI-compatible or Ollama server with an audio-capable model.
 
-    def __init__(self, server_url: str = "http://localhost:11434",
+    Supports two server types:
+    - llama.cpp server: uses /v1/chat/completions with input_audio content type
+    - Ollama: uses /api/chat with images field (when Ollama adds audio support)
+
+    The server type is auto-detected on load() by probing endpoints.
+    """
+
+    def __init__(self, server_url: str = "http://localhost:8080",
                  model: str = "", language: str | None = "en"):
         self.server_url = server_url.rstrip("/")
         self.model = model
         self._language = language
         self._loaded = False
+        self._server_type: str = ""  # "llamacpp" or "ollama"
         self._init_dedup()
 
-    def load(self):
-        """Verify the server is reachable and the model exists."""
+    def _probe_server_type(self) -> str:
+        """Auto-detect whether this is an Ollama or llama.cpp server."""
+        # Check /api/tags — both Ollama and llama.cpp implement this.
+        # llama.cpp's response includes "object":"list" and model "capabilities",
+        # while Ollama's does not.
         try:
             req = urllib.request.Request(f"{self.server_url}/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
-        except Exception as e:
-            raise ConnectionError(f"Cannot reach llama server at {self.server_url}: {e}")
+                if data.get("object") == "list":
+                    return "llamacpp"
+                if "models" in data:
+                    return "ollama"
+        except Exception:
+            pass
+        # Try llama.cpp /health endpoint
+        try:
+            req = urllib.request.Request(f"{self.server_url}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return "llamacpp"
+        except Exception:
+            pass
+        return "llamacpp"
 
-        model_names = [m.get("name", "") for m in data.get("models", [])]
-        if self.model not in model_names:
-            base = self.model.split(":")[0] if ":" in self.model else self.model
-            matches = [n for n in model_names if n.startswith(base)]
-            if not matches:
-                available = ", ".join(model_names[:10])
-                raise ValueError(
-                    f"Model '{self.model}' not found on server. Available: {available}"
-                )
+    def load(self):
+        """Verify the server is reachable. For Ollama, also check model exists."""
+        self._server_type = self._probe_server_type()
+
+        if self._server_type == "ollama":
+            try:
+                req = urllib.request.Request(f"{self.server_url}/api/tags", method="GET")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read())
+            except Exception as e:
+                raise ConnectionError(f"Cannot reach server at {self.server_url}: {e}")
+
+            model_names = [m.get("name", "") for m in data.get("models", [])]
+            if self.model and self.model not in model_names:
+                base = self.model.split(":")[0] if ":" in self.model else self.model
+                matches = [n for n in model_names if n.startswith(base)]
+                if not matches:
+                    available = ", ".join(model_names[:10])
+                    raise ValueError(
+                        f"Model '{self.model}' not found on server. Available: {available}"
+                    )
+        else:
+            # llama.cpp: just verify the server is up via /health
+            try:
+                req = urllib.request.Request(f"{self.server_url}/health", method="GET")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    pass
+            except Exception as e:
+                raise ConnectionError(f"Cannot reach server at {self.server_url}: {e}")
+
         self._loaded = True
 
     def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
@@ -356,19 +400,37 @@ class LlamaServerTranscriber(_DeduplicatorMixin):
             lang_name = AVAILABLE_LANGUAGES.get(self._language, self._language)
             lang_hint = f" The audio is in {lang_name}."
 
-        payload = {
-            "model": self.model,
-            "messages": [{
-                "role": "user",
-                "content": f"Transcribe the following audio exactly as spoken. Output ONLY the transcription text, nothing else.{lang_hint}",
-                "images": [wav_b64],
-            }],
-            "stream": False,
-        }
+        prompt_text = f"Transcribe the following audio exactly as spoken. Output ONLY the transcription text, nothing else.{lang_hint}"
+
+        if self._server_type == "ollama":
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt_text, "images": [wav_b64]}],
+                "stream": False,
+            }
+            endpoint = f"{self.server_url}/api/chat"
+            # Ollama response: {"message": {"content": "..."}}
+            text_path = lambda r: r.get("message", {}).get("content", "")
+        else:
+            # OpenAI-compatible (llama.cpp server)
+            payload = {
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {"type": "input_audio", "input_audio": {"data": wav_b64, "format": "wav"}},
+                    ],
+                }],
+            }
+            if self.model:
+                payload["model"] = self.model
+            endpoint = f"{self.server_url}/v1/chat/completions"
+            # OpenAI response: {"choices": [{"message": {"content": "..."}}]}
+            text_path = lambda r: (r.get("choices") or [{}])[0].get("message", {}).get("content", "")
 
         try:
             req = urllib.request.Request(
-                f"{self.server_url}/api/chat",
+                endpoint,
                 data=json.dumps(payload).encode(),
                 headers={"Content-Type": "application/json"},
                 method="POST",
@@ -378,7 +440,7 @@ class LlamaServerTranscriber(_DeduplicatorMixin):
         except Exception as e:
             return {"text": f"[server error: {e}]", "speaker": "", "speaker_id": 0}
 
-        text = result.get("message", {}).get("content", "").strip()
+        text = text_path(result).strip()
 
         if _is_hallucination(text, self._language):
             return {"text": "", "speaker": "", "speaker_id": 0}
