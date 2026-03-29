@@ -79,10 +79,13 @@ DIARIZER_RESTART_WINDOW = 60  # seconds — restart counter resets after this
 # Speaker embedding model (3D-Speaker)
 # Backend: "onnx" (default, no subprocess needed) or "pytorch" (subprocess)
 SPEAKER_MODEL_BACKEND = "onnx"
-# ONNX model name: "eres2net_large" (192-dim, best accuracy),
+# ONNX model name: "eres2net_large" (512-dim, best accuracy),
 #                   "eres2netv2" (192-dim), or "campplus" (512-dim)
 SPEAKER_MODEL_NAME = "eres2net_large"
-SPEAKER_EMBEDDING_DIM = 512  # must match the chosen model's output
+# Embedding dim is derived from the model registry to prevent desync.
+# Mapping: eres2net_large=512, eres2netv2=192, campplus=512
+_SPEAKER_DIM_REGISTRY = {"eres2net_large": 512, "eres2netv2": 192, "campplus": 512}
+SPEAKER_EMBEDDING_DIM = _SPEAKER_DIM_REGISTRY[SPEAKER_MODEL_NAME]
 SPEAKER_MODEL_ONNX_CACHE = __import__("pathlib").Path.home() / ".cache" / "3dspeaker"
 
 # Language identification (3D-Speaker LID)

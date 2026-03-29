@@ -5,7 +5,8 @@ embeddings using pure-numpy feature extraction + onnxruntime inference.
 This runs safely in the main process alongside MLX — no subprocess needed.
 
 Supported models (via export_onnx.py):
-  - ERes2Net-large (192-dim, best accuracy)
+  - ERes2Net-large (512-dim, best accuracy)
+  - ERes2Netv2 (192-dim, smaller variant)
   - CAM++ (512-dim, lighter/faster)
 
 Follows the same ONNX pattern as audio/vad.py (Silero VAD).

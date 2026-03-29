@@ -5,7 +5,7 @@ embedding and comparing it to a running set of speaker centroids.
 New speakers are created automatically when similarity falls below a threshold.
 
 Models (via 3D-Speaker):
-  - ONNX backend (default): ERes2Net-large (192-dim) or CAM++ (512-dim)
+  - ONNX backend (default): ERes2Net-large (512-dim) or CAM++ (512-dim)
     No PyTorch required — runs in-process alongside MLX.
   - PyTorch backend (fallback): loaded via speakerlab in subprocess.
 """
@@ -149,15 +149,20 @@ class DiarizationEngine:
         from config import SPEAKER_MODEL_NAME
         from diarization.onnx_embedder import ONNX_MODELS
 
-        if SPEAKER_MODEL_NAME not in ONNX_MODELS:
+        from scripts.export_onnx import _find_checkpoint, _create_model, MODEL_CONFIGS
+
+        if SPEAKER_MODEL_NAME not in MODEL_CONFIGS:
             raise ValueError(f"Unknown model: {SPEAKER_MODEL_NAME}")
 
-        model_id = ONNX_MODELS[SPEAKER_MODEL_NAME][0]
-        from modelscope.hub.snapshot_download import snapshot_download
-        model_dir = snapshot_download(model_id)
-
-        from scripts.export_onnx import _find_checkpoint, _create_model, MODEL_CONFIGS
         config = MODEL_CONFIGS[SPEAKER_MODEL_NAME]
+        model_id = config["model_id"]
+        revision = config.get("revision")
+
+        from modelscope.hub.snapshot_download import snapshot_download
+        if revision is not None:
+            model_dir = snapshot_download(model_id, revision=revision)
+        else:
+            model_dir = snapshot_download(model_id)
         model = _create_model(config)
         ckpt_path = _find_checkpoint(__import__("pathlib").Path(model_dir))
         state_dict = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
