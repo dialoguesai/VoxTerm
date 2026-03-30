@@ -294,6 +294,7 @@ class HelpScreen(ModalScreen):
                 "[bold #00e5ff]L[/]       [#c0c0c0]Switch language[/]\n"
                 "[bold #00e5ff]N[/]       [#c0c0c0]New P2P session (multi-device)[/]\n"
                 "[bold #00e5ff]J[/]       [#c0c0c0]Join P2P session by code[/]\n"
+                "[bold #00e5ff]V[/]       [#c0c0c0]Toggle merged transcript view (P2P)[/]\n"
                 "[bold #00e5ff]C[/]       [#c0c0c0]Clear transcript[/]\n"
                 "[bold #00e5ff]D[/]       [#c0c0c0]Toggle debug mode[/]\n"
                 "[bold #00e5ff]Q[/]       [#c0c0c0]Quit[/]",
@@ -385,6 +386,7 @@ class VoxTerm(App):
         Binding("c", "clear_transcript", "Clear"),
         Binding("n", "new_session", "Session"),
         Binding("j", "join_session", "Join"),
+        Binding("v", "toggle_merged_view", "View"),
         Binding("?", "show_help", "Help", key_display="?"),
         Binding("q", "quit", "Quit"),
     ]
@@ -455,6 +457,7 @@ class VoxTerm(App):
             "[bold #00e5ff]\\[T][/][#607080] Tag  [/]"
             "[bold #00e5ff]\\[P][/][#607080] Profiles  [/]"
             "[bold #00e5ff]\\[N][/][#607080] Session  [/]"
+            "[bold #00e5ff]\\[V][/][#607080] Merged  [/]"
             "[bold #00e5ff]\\[?][/][#607080] Help[/]",
             id="footer-bar",
             markup=True,
@@ -550,7 +553,8 @@ class VoxTerm(App):
         if self._session_mgr and self._session_mgr.is_in_session:
             pc = self._session_mgr.peer_count
             code = self._session_mgr.session_code or ""
-            p2p_text = f"    [#00e5ff]P2P {code} ({pc} peer{'s' if pc != 1 else ''})[/]"
+            view_tag = " MERGED" if self.query_one(TranscriptPanel).merged_view else ""
+            p2p_text = f"    [#00e5ff]P2P {code} ({pc} peer{'s' if pc != 1 else ''}){view_tag}[/]"
         elif self._discovery:
             visible = len(self._discovery.get_visible_peers())
             if visible > 0:
@@ -885,15 +889,31 @@ class VoxTerm(App):
         # Broadcast to P2P peers if in a session (via bounded queue, not per-call threads)
         if self._session_mgr and self._session_mgr.is_in_session and self._p2p_send_queue:
             self._transcript_seq += 1
+            now = time.monotonic()
             try:
                 self._p2p_send_queue.put_nowait(dict(
                     speaker_name=speaker or self._p2p_display_name,
                     seq=self._transcript_seq, text=text,
-                    start_ts=time.monotonic(), end_ts=time.monotonic(),
+                    start_ts=now, end_ts=now,
                     confidence=0.9,
                 ))
             except Exception:
                 pass  # queue full — drop rather than leak threads
+
+            # Track local segment in assembler for merged view
+            if self._assembler:
+                self._assembler.add_local(
+                    self._transcript_seq,
+                    speaker or self._p2p_display_name,
+                    text, now, now, confidence=0.9,
+                )
+                tp = self.query_one(TranscriptPanel)
+                if tp.merged_view:
+                    tp.refresh_merged(
+                        self._assembler,
+                        local_name=self._p2p_display_name or "you",
+                        peer_names=self._get_peer_names(),
+                    )
 
         # First-use onboarding tip
         if (
@@ -1865,6 +1885,7 @@ class VoxTerm(App):
                 node_id, msg["seq"], msg["speaker_name"], msg["text"],
                 msg["start_ts"], clock_sync=clock_sync,
             )
+            self.call_from_thread(self._refresh_merged_if_active)
 
         mgr.on_peer_connected = on_connected
         mgr.on_peer_disconnected = on_disconnected
@@ -1873,11 +1894,19 @@ class VoxTerm(App):
 
     def _on_peer_transcript(self, text: str, speaker: str, peer_display_name: str):
         """Called on main thread when a peer's FINAL segment arrives."""
-        self.query_one(TranscriptPanel).add_transcript(
+        tp = self.query_one(TranscriptPanel)
+        tp.add_transcript(
             text, f"{peer_display_name}:{speaker}", 0,
             confidence="",
         )
         self._append_live_transcript(text, f"{peer_display_name}:{speaker}", 0)
+        # Refresh merged view if active
+        if tp.merged_view and self._assembler:
+            tp.refresh_merged(
+                self._assembler,
+                local_name=self._p2p_display_name or "you",
+                peer_names=self._get_peer_names(),
+            )
 
     def action_show_help(self):
         self.push_screen(HelpScreen())
@@ -1889,6 +1918,45 @@ class VoxTerm(App):
         tp.system_message(f"debug mode {state}")
         if self._debug and self._session_mgr and self._session_mgr.is_in_session and self._p2p_debug:
             tp.system_message(self._p2p_debug.format_debug_text(self._session_mgr))
+
+    def action_toggle_merged_view(self):
+        """Toggle between local and merged transcript view (P2P only)."""
+        if not self._session_mgr or not self._session_mgr.is_in_session:
+            self.query_one(TranscriptPanel).system_message(
+                "merged view requires an active P2P session"
+            )
+            return
+        tp = self.query_one(TranscriptPanel)
+        new_state = not tp.merged_view
+        tp.set_merged_view(
+            new_state,
+            assembler=self._assembler,
+            local_name=self._p2p_display_name or "you",
+            peer_names=self._get_peer_names(),
+        )
+        if new_state:
+            tp.system_message("merged view — all peers, time-ordered [V] to toggle back")
+        # Update telemetry to show view mode
+        self._update_telemetry()
+
+    def _refresh_merged_if_active(self):
+        """Refresh merged view if it's currently active."""
+        tp = self.query_one(TranscriptPanel)
+        if tp.merged_view and self._assembler:
+            tp.refresh_merged(
+                self._assembler,
+                local_name=self._p2p_display_name or "you",
+                peer_names=self._get_peer_names(),
+            )
+
+    def _get_peer_names(self) -> dict[str, str]:
+        """Build node_id → display_name mapping from current peers."""
+        if not self._session_mgr:
+            return {}
+        return {
+            nid: p.display_name
+            for nid, p in self._session_mgr.peers.items()
+        }
 
     def action_clear_transcript(self):
         """Clear display only — live file stays on disk as the record."""
