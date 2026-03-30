@@ -731,9 +731,18 @@ class VoxTerm(App):
             now = time.time()
             if buffer_duration > 0.5 and now - self._last_dbg > 3:
                 self._last_dbg = now
-                self.query_one(TranscriptPanel).system_message(
+                dbg_parts = [
                     f"[dbg] buf={buffer_duration:.1f}s sil={silence_duration:.1f}s "
                     f"speech={self._had_speech}"
+                ]
+                if self._assembler and self._session_mgr and self._session_mgr.is_in_session:
+                    tp = self.query_one(TranscriptPanel)
+                    dbg_parts.append(
+                        f"  asm={self._assembler.final_count}F/{self._assembler.partial_count}P "
+                        f"view={'MERGED' if tp.merged_view else 'LOCAL'}"
+                    )
+                self.query_one(TranscriptPanel).system_message(
+                    "".join(dbg_parts)
                 )
 
         # Adjust silence threshold by merge delay when peers are connected
@@ -1866,7 +1875,10 @@ class VoxTerm(App):
         tp = self.query_one(TranscriptPanel)
         tp.system_message(f"debug mode {state}")
         if self._debug and self._session_mgr and self._session_mgr.is_in_session and self._p2p_debug:
-            tp.system_message(self._p2p_debug.format_debug_text(self._session_mgr, mixer=self._peer_audio_mixer))
+            tp.system_message(self._p2p_debug.format_debug_text(
+                self._session_mgr, mixer=self._peer_audio_mixer,
+                assembler=self._assembler, merged_view=tp.merged_view,
+            ))
 
     def action_toggle_merged_view(self):
         """Toggle between local and merged transcript view (P2P only)."""

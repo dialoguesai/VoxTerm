@@ -69,7 +69,10 @@ class P2PDebugStats:
             },
         }
 
-    def format_debug_text(self, session_mgr: "SessionManager", mixer=None) -> str:
+    def format_debug_text(
+        self, session_mgr: "SessionManager",
+        mixer=None, assembler=None, merged_view: bool = False,
+    ) -> str:
         """Format P2P debug info as text for the transcript panel."""
         snap = self.snapshot(session_mgr)
         if not snap["in_session"]:
@@ -97,5 +100,26 @@ class P2PDebugStats:
                 f"  merge: {ms['peer_count']} peers, delay={ms['delay_ms']}ms, "
                 f"merged={ms['merge_count']}, peer_contrib={ms['peer_contributions']}"
             )
+
+        # Transcript assembler stats
+        if assembler is not None:
+            from network.segments import LOCAL_NODE_ID
+            finals = assembler.get_finals()
+            local_count = sum(1 for s in finals if s.node_id == LOCAL_NODE_ID)
+            peer_count = len(finals) - local_count
+            partial_count = assembler.partial_count
+            # Per-source breakdown
+            sources: dict[str, int] = {}
+            for s in finals:
+                key = "local" if s.node_id == LOCAL_NODE_ID else s.node_id[:8]
+                sources[key] = sources.get(key, 0) + 1
+            source_str = ", ".join(f"{k}={v}" for k, v in sources.items())
+            view_str = "MERGED" if merged_view else "LOCAL"
+            lines.append(
+                f"  transcript: {len(finals)} finals ({local_count} local, {peer_count} peer), "
+                f"{partial_count} partials, view={view_str}"
+            )
+            if source_str:
+                lines.append(f"  sources: {source_str}")
 
         return "\n".join(lines)
