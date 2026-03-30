@@ -971,6 +971,7 @@ class DiarizationEngine:
                     "n_frames": activation.shape[0],
                 })
 
+
         if not chunk_data:
             label, sid = self.identify(audio, sample_rate)
             return [(label, sid, 0, len(audio))]
@@ -995,7 +996,37 @@ class DiarizationEngine:
                 results.append((label, global_sid, abs_start, abs_end))
 
         results = self._merge_overlapping(results)
-        return results
+
+        # Trim segment edges to reduce false alarms from segmentation overshoot
+        trimmed = []
+        trim = int(0.05 * sample_rate)
+        for label, sid, start, end in results:
+            duration = end - start
+            if duration > trim * 3:
+                trimmed.append((label, sid, start + trim, end - trim))
+            else:
+                trimmed.append((label, sid, start, end))
+
+        # Dense overlap infill: find time regions where 3+ speakers are active
+        # and add the remaining speakers to reduce miss at high-overlap frames
+        all_sids = sorted(set(sid for _, sid, _, _ in trimmed))
+        if len(all_sids) >= 4:
+            step_samples = frame_samples * 20  # ~68ms resolution
+            for t in range(0, len(audio), step_samples):
+                t_end = t + step_samples
+                active_at_t = set()
+                for _, sid, s, e in trimmed:
+                    if s < t_end and e > t:
+                        active_at_t.add(sid)
+                # If 3+ speakers active, add the missing ones too
+                if len(active_at_t) >= 3:
+                    missing = set(all_sids) - active_at_t
+                    for sid in missing:
+                        trimmed.append((f"Speaker {sid}", sid, t, t_end))
+
+            trimmed = self._merge_overlapping(trimmed)
+
+        return trimmed
 
     @staticmethod
     def _pad_segments(
