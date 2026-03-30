@@ -55,9 +55,23 @@ class PeerAudioMixer:
         self.merge_count: int = 0
         self.peer_contributions: int = 0  # chunks where ≥1 peer contributed
 
+        # Live weight tracking: node_id → rolling average weight (0.0–1.0)
+        # "__local__" key for local mic. Updated every merge.
+        self._live_weights: dict[str, float] = {}
+        self._weight_alpha = 0.15  # EMA smoothing factor
+
+        # Dominant source: which mic has the highest weight right now
+        self._dominant_source: str = "__local__"
+
     @property
     def merge_delay_sec(self) -> float:
         return self._merge_delay_sec
+
+    @property
+    def dominant_source(self) -> str:
+        """Node ID of the source with the highest current weight."""
+        with self._lock:
+            return self._dominant_source
 
     @property
     def active_peers(self) -> int:
@@ -133,6 +147,7 @@ class PeerAudioMixer:
             self._peer_buffers.clear()
             self.merge_count = 0
             self.peer_contributions = 0
+            self._live_weights.clear()
 
     def get_stats(self) -> dict:
         """Return stats for debug overlay."""
@@ -143,6 +158,7 @@ class PeerAudioMixer:
                 "merge_count": self.merge_count,
                 "peer_contributions": self.peer_contributions,
                 "buffered_local": len(self._local_queue),
+                "live_weights": dict(self._live_weights),
             }
 
     # ── internals (caller holds lock) ─────────────────────────
@@ -152,31 +168,32 @@ class PeerAudioMixer:
         chunk_len = len(local_chunk)
         chunk_duration = chunk_len / SAMPLE_RATE
 
-        # Collect sources: (chunk, rms)
-        sources: list[tuple[np.ndarray, float]] = []
+        # Collect sources: (node_id, chunk, rms)
+        sources: list[tuple[str, np.ndarray, float]] = []
 
         # Local source
         local_rms = float(np.sqrt(np.mean(local_chunk ** 2)))
-        sources.append((local_chunk, local_rms))
+        sources.append(("__local__", local_chunk, local_rms))
 
         # Peer sources — find the best-aligned chunk for each peer
         for node_id, peer_buf in self._peer_buffers.items():
             peer_chunk = self._get_aligned_peer_chunk(peer_buf, local_ts, chunk_len, chunk_duration)
             if peer_chunk is not None:
                 peer_rms = float(np.sqrt(np.mean(peer_chunk ** 2)))
-                sources.append((peer_chunk, peer_rms))
+                sources.append((node_id, peer_chunk, peer_rms))
 
         self.merge_count += 1
 
         # Single source — no mixing needed
         if len(sources) == 1:
+            self._update_live_weights([("__local__", 1.0)])
             return local_chunk
 
         self.peer_contributions += 1
 
         # Energy-weighted averaging
         weights = []
-        for _, rms in sources:
+        for _, _, rms in sources:
             if rms < P2P_AUDIO_QUALITY_GATE:
                 weights.append(0.0)
             else:
@@ -185,19 +202,43 @@ class PeerAudioMixer:
         total_weight = sum(weights)
         if total_weight < 1e-10:
             # All sources below gate — return local as-is
+            self._update_live_weights([(nid, 0.0) for nid, _, _ in sources])
             return local_chunk
 
         # Normalize weights
         weights = [w / total_weight for w in weights]
 
+        # Track live weights
+        self._update_live_weights(
+            [(nid, w) for (nid, _, _), w in zip(sources, weights)]
+        )
+
         # Weighted sum
         mixed = np.zeros(chunk_len, dtype=np.float32)
-        for (chunk, _), weight in zip(sources, weights):
+        for (_, chunk, _), weight in zip(sources, weights):
             if weight > 0:
                 mixed += weight * chunk
 
         # Gentle boost + clip
         return np.clip(mixed * 1.2, -1.0, 1.0)
+
+    def _update_live_weights(self, source_weights: list[tuple[str, float]]) -> None:
+        """Update EMA-smoothed live weights for each source."""
+        a = self._weight_alpha
+        seen = set()
+        for nid, w in source_weights:
+            seen.add(nid)
+            prev = self._live_weights.get(nid, 0.0)
+            self._live_weights[nid] = prev * (1 - a) + w * a
+        # Decay sources not present in this merge
+        for nid in list(self._live_weights):
+            if nid not in seen:
+                self._live_weights[nid] *= (1 - a)
+                if self._live_weights[nid] < 0.001:
+                    del self._live_weights[nid]
+        # Track dominant source
+        if self._live_weights:
+            self._dominant_source = max(self._live_weights, key=self._live_weights.get)
 
     def _get_aligned_peer_chunk(
         self,

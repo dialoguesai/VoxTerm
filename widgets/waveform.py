@@ -84,6 +84,18 @@ class WaveformWidget(Widget):
         else:
             self.border_title = "WAVEFORM // LIVE"
 
+    def set_merge_status(self, weight_text: str):
+        """Update border title with merge weight info during P2P.
+
+        weight_text: e.g. "you 62% | alice 38%" or "" to clear.
+        """
+        if not self._recording:
+            return
+        if weight_text:
+            self.border_title = f"WAVEFORM // MERGED  {weight_text}"
+        else:
+            self.border_title = "WAVEFORM // LIVE"
+
     def push_samples(self, chunk: np.ndarray):
         self._samples.extend(chunk.ravel().tolist())
         self._signal_age = 0
