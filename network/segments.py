@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 
 from network.clock import ClockSync
 
+# Sentinel node_id for locally-generated segments.
+LOCAL_NODE_ID = "__local__"
+
 
 @dataclass
 class MergedSegment:
@@ -106,6 +109,43 @@ class TranscriptAssembler:
             if node_id in self._partials and self._partials[node_id].seq == seq:
                 del self._partials[node_id]
 
+        return seg
+
+    def add_local(
+        self,
+        seq: int,
+        speaker_name: str,
+        text: str,
+        start_ts: float,
+        end_ts: float,
+        confidence: float = 0.9,
+    ) -> MergedSegment:
+        """Insert a locally-generated segment into the merged timeline."""
+        seg = MergedSegment(
+            node_id=LOCAL_NODE_ID,
+            seq=seq,
+            speaker_name=speaker_name,
+            text=text,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            confidence=confidence,
+            is_partial=False,
+            adjusted_start_ts=start_ts,
+            adjusted_end_ts=end_ts,
+        )
+        with self._lock:
+            key = (LOCAL_NODE_ID, seq)
+            if key in self._seen:
+                return seg
+            self._seen.add(key)
+            keys = [s.adjusted_start_ts for s in self._finals]
+            idx = bisect.bisect_right(keys, start_ts)
+            self._finals.insert(idx, seg)
+            if len(self._finals) > self.MAX_FINALS:
+                evicted = self._finals[:len(self._finals) - self.MAX_FINALS]
+                self._finals = self._finals[len(self._finals) - self.MAX_FINALS:]
+                for s in evicted:
+                    self._seen.discard((s.node_id, s.seq))
         return seg
 
     def on_partial(
