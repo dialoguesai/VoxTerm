@@ -1,15 +1,21 @@
-"""Speaker diarization via CAM++ embeddings + online cosine clustering.
+"""Speaker diarization via 3D-Speaker embeddings + online cosine clustering.
 
-Identifies the dominant speaker in each audio chunk by extracting a 512-dim
-speaker embedding and comparing it to a running set of speaker centroids.
+Identifies the dominant speaker in each audio chunk by extracting a speaker
+embedding and comparing it to a running set of speaker centroids.
 New speakers are created automatically when similarity falls below a threshold.
 
-Model: CAM++ (WeSpeaker, VoxCeleb-trained, ~28 MB, downloads on first use)
+Models (via 3D-Speaker):
+  - ONNX backend (default): ERes2Net-large (512-dim) or CAM++ (512-dim)
+    No PyTorch required — runs in-process alongside MLX.
+  - PyTorch backend (fallback): loaded via speakerlab in subprocess.
 """
 
 from __future__ import annotations
 
+import logging
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 _MIN_SPEECH_SAMPLES = 24000   # 1.5 s at 16 kHz — shorter → unreliable embeddings
 MAX_SPEAKERS = 8              # hard cap on simultaneous speaker clusters
@@ -36,7 +42,9 @@ class DiarizationEngine:
 
     def __init__(self):
         self._model = None
-        self._segmentation = None  # pyannote segmentation for overlap-aware embeddings
+        self._onnx_embedder = None  # OnnxSpeakerEmbedder (when backend="onnx")
+        self._backend = "pytorch"   # "onnx", "pytorch", or "mock"
+        self._segmentation = None   # pyannote segmentation for overlap-aware embeddings
         self._loaded = False
         self._speaker_centroids: dict[int, np.ndarray] = {}
         self._next_id = 1
@@ -56,6 +64,8 @@ class DiarizationEngine:
         # PLDA-lite: cached whitening transform (updated periodically)
         self._whiten_matrix: np.ndarray | None = None
         self._whiten_mean: np.ndarray | None = None
+        # Overlap metadata from last identify() call
+        self._last_identify_meta: dict = {}
         self._color_palette = [
             "#00ffcc",   # cyan
             "#ff44aa",   # pink
@@ -69,32 +79,34 @@ class DiarizationEngine:
 
     # ── lifecycle ─────────────────────────────────────────
 
-    _MODEL_URL = (
+    # Legacy CAM++ URL (WeSpeaker) — used only if speakerlab is unavailable
+    _LEGACY_MODEL_URL = (
         "https://modelscope.cn/models/"
         "iic/speech_campplus_sv_en_voxceleb_16k/resolve/master/"
         "campplus_voxceleb.bin"
     )
 
-    def load(self):
-        """Load the CAM++ speaker encoder (blocks, ~2-5 s)."""
+    def load(self, backend: str | None = None):
+        """Load the speaker embedding model.
+
+        Args:
+            backend: "onnx" or "pytorch". If None, reads from config.
+        """
         import os
         if os.environ.get("VOXTERM_MOCK_ENGINE"):
             self._model = _MockEmbeddingModel()
+            self._backend = "mock"
             self._loaded = True
             return
 
-        import torch
-        torch.set_default_device("cpu")
-        torch.set_grad_enabled(False)
-        torch.set_num_threads(1)
+        if backend is None:
+            from config import SPEAKER_MODEL_BACKEND
+            backend = SPEAKER_MODEL_BACKEND
 
-        from diarization.campplus import CAMPPlus
-
-        model_path = self._ensure_model()
-        self._model = CAMPPlus(feat_dim=80, embed_dim=512, pooling_func='TSTP')
-        state_dict = torch.load(model_path, map_location='cpu', weights_only=True)
-        self._model.load_state_dict(state_dict)
-        self._model.eval()
+        if backend == "onnx":
+            self._load_onnx()
+        else:
+            self._load_pytorch()
 
         # Load segmentation model for overlap-aware embeddings (optional)
         try:
@@ -107,9 +119,75 @@ class DiarizationEngine:
 
         self._loaded = True
 
+    def _load_onnx(self) -> None:
+        """Load 3D-Speaker model via ONNX Runtime (no PyTorch)."""
+        from config import SPEAKER_MODEL_NAME
+        from diarization.onnx_embedder import OnnxSpeakerEmbedder
+
+        self._onnx_embedder = OnnxSpeakerEmbedder(model_name=SPEAKER_MODEL_NAME)
+        self._onnx_embedder.load()
+        self._backend = "onnx"
+        log.info("Diarization engine using ONNX backend (%s)", SPEAKER_MODEL_NAME)
+
+    def _load_pytorch(self) -> None:
+        """Load speaker model via PyTorch (subprocess-safe path)."""
+        import torch
+        torch.set_default_device("cpu")
+        torch.set_grad_enabled(False)
+        torch.set_num_threads(1)
+
+        try:
+            # Prefer speakerlab (3D-Speaker) if available
+            self._load_pytorch_speakerlab()
+        except ImportError:
+            # Fallback to vendored CAM++ (WeSpeaker)
+            self._load_pytorch_legacy()
+
+        self._backend = "pytorch"
+
+    def _load_pytorch_speakerlab(self) -> None:
+        """Load 3D-Speaker model via speakerlab package."""
+        import torch
+        from config import SPEAKER_MODEL_NAME
+        from diarization.onnx_embedder import ONNX_MODELS
+
+        from scripts.export_onnx import _find_checkpoint, _create_model, MODEL_CONFIGS
+
+        if SPEAKER_MODEL_NAME not in MODEL_CONFIGS:
+            raise ValueError(f"Unknown model: {SPEAKER_MODEL_NAME}")
+
+        config = MODEL_CONFIGS[SPEAKER_MODEL_NAME]
+        model_id = config["modelscope_id"]
+        revision = config.get("revision")
+
+        from modelscope.hub.snapshot_download import snapshot_download
+        if revision is not None:
+            model_dir = snapshot_download(model_id, revision=revision)
+        else:
+            model_dir = snapshot_download(model_id)
+        model = _create_model(config)
+        ckpt_path = _find_checkpoint(__import__("pathlib").Path(model_dir))
+        state_dict = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
+        model.load_state_dict(state_dict)
+        model.eval()
+        self._model = model
+        log.info("Diarization engine using PyTorch/speakerlab backend (%s)", SPEAKER_MODEL_NAME)
+
+    def _load_pytorch_legacy(self) -> None:
+        """Load vendored CAM++ from WeSpeaker (legacy fallback)."""
+        import torch
+        from diarization.campplus import CAMPPlus
+
+        model_path = self._ensure_legacy_model()
+        self._model = CAMPPlus(feat_dim=80, embed_dim=512, pooling_func="TSTP")
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+        self._model.load_state_dict(state_dict)
+        self._model.eval()
+        log.info("Diarization engine using PyTorch/legacy CAM++ backend")
+
     @classmethod
-    def _ensure_model(cls) -> str:
-        """Download CAM++ weights on first use, cache locally."""
+    def _ensure_legacy_model(cls) -> str:
+        """Download legacy CAM++ weights on first use, cache locally."""
         from pathlib import Path
         cache_dir = Path.home() / ".cache" / "wespeaker" / "campplus_voxceleb"
         model_path = cache_dir / "campplus_voxceleb.bin"
@@ -117,12 +195,21 @@ class DiarizationEngine:
             return str(model_path)
         cache_dir.mkdir(parents=True, exist_ok=True)
         import urllib.request
-        urllib.request.urlretrieve(cls._MODEL_URL, str(model_path))
+        urllib.request.urlretrieve(cls._LEGACY_MODEL_URL, str(model_path))
         return str(model_path)
 
     @property
     def is_loaded(self) -> bool:
         return self._loaded
+
+    def get_last_identify_meta(self) -> dict:
+        """Return metadata from the last identify() call.
+
+        Returns dict with:
+            is_overlap: bool — True if overlapping speech detected
+            overlap_speakers: list[int] — speaker IDs involved in overlap
+        """
+        return self._last_identify_meta.copy()
 
     # ── speaker identification ────────────────────────────
 
@@ -133,10 +220,12 @@ class DiarizationEngine:
             label      – custom name or "Speaker 1", "Speaker 2", …
             speaker_id – integer key (1-based)
         """
-        if not self._loaded or self._model is None:
+        if not self._loaded:
             return "Speaker 1", 1
-
-        import torch
+        if self._backend == "pytorch" and self._model is None:
+            return "Speaker 1", 1
+        if self._backend == "onnx" and self._onnx_embedder is None:
+            return "Speaker 1", 1
 
         # Ensure mono float32
         if audio.ndim > 1:
@@ -217,6 +306,15 @@ class DiarizationEngine:
             # Case 2: both top-2 exceed a moderate threshold (both speakers present)
             elif scores[0][0] > 0.30 and scores[1][0] > 0.25:
                 is_ambiguous = True
+
+        # Store overlap metadata for UI consumption
+        overlap_speakers = []
+        if is_ambiguous and len(scores) >= 2:
+            overlap_speakers = [scores[0][1], scores[1][1]]
+        self._last_identify_meta = {
+            "is_overlap": is_ambiguous,
+            "overlap_speakers": overlap_speakers,
+        }
 
         # Adaptive new-speaker threshold: gets stricter over time
         # Early session: easy to create speakers (discover who's present)
@@ -325,13 +423,20 @@ class DiarizationEngine:
         return self._extract_embedding_raw(audio, sample_rate)
 
     def _extract_embedding_raw(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray | None:
-        """Extract a 512-dim speaker embedding (Fbank + CAM++ forward).
+        """Extract a speaker embedding via the active backend.
 
         Returns None if audio is too short or model not loaded.
         """
-        if not self._loaded or self._model is None:
+        if not self._loaded:
             return None
         if len(audio) < _MIN_SPEECH_SAMPLES:
+            return None
+
+        if self._backend == "onnx" and self._onnx_embedder is not None:
+            return self._onnx_embedder.extract(audio, sample_rate)
+
+        # PyTorch path
+        if self._model is None:
             return None
 
         feats = self._compute_fbank(audio, sample_rate)
@@ -344,7 +449,16 @@ class DiarizationEngine:
         return embedding
 
     def _compute_fbank(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray | None:
-        """Compute 80-dim Fbank features with CMN."""
+        """Compute 80-dim Fbank features with CMN.
+
+        Uses pure-numpy fbank when ONNX backend is active,
+        torchaudio when PyTorch backend is active.
+        """
+        if self._backend == "onnx":
+            from diarization.fbank import compute_fbank
+            feats = compute_fbank(audio, sample_rate=sample_rate)
+            return feats if feats.shape[0] > 0 else None
+
         import torch
         import torchaudio
 
@@ -364,9 +478,17 @@ class DiarizationEngine:
         sample_rate: int = 16000,
     ) -> np.ndarray | None:
         """Extract embedding with feature-level weighting from segmentation."""
-        if not self._loaded or self._model is None:
+        if not self._loaded:
             return None
         if len(audio) < _MIN_SPEECH_SAMPLES:
+            return None
+
+        # ONNX path: use the embedder's built-in weighted extraction
+        if self._backend == "onnx" and self._onnx_embedder is not None:
+            return self._onnx_embedder.extract_weighted(audio, frame_weights, sample_rate)
+
+        # PyTorch path
+        if self._model is None:
             return None
 
         feats = self._compute_fbank(audio, sample_rate)
@@ -382,7 +504,6 @@ class DiarizationEngine:
             seg_idx = min(int(i * fbank_dur / seg_dur), len(frame_weights) - 1)
             fbank_weights[i] = frame_weights[seg_idx]
 
-        # Apply weights to features
         feats = feats * fbank_weights[:, None]
 
         import torch
@@ -458,7 +579,7 @@ class DiarizationEngine:
         Returns list of (label, speaker_id, start_sample, end_sample).
         Falls back to single identify() when audio is too short for SCD.
         """
-        if not self._loaded or self._model is None:
+        if not self._loaded:
             return [("Speaker 1", 1, 0, len(audio))]
 
         # Ensure mono float32
@@ -535,7 +656,7 @@ class DiarizationEngine:
         Multiple entries can cover the same time range (= overlap).
         Falls back to single identify() when segmentation is unavailable.
         """
-        if not self._loaded or self._model is None:
+        if not self._loaded:
             return [("Speaker 1", 1, 0, len(audio))]
 
         if audio.ndim > 1:
@@ -931,12 +1052,18 @@ class DiarizationEngine:
         return smoothed
 
     def _spectral_recluster(self) -> None:
-        """Re-cluster all session embeddings using spectral clustering.
+        """Re-cluster all session embeddings using 3D-Speaker algorithms.
 
-        Uses eigengap analysis on the cosine affinity matrix to estimate the
-        true number of speakers, then merges over-segmented clusters.
+        Uses auto_cluster() which selects AHC for small sample counts (< 40)
+        and spectral clustering with p-value pruning for larger sets.
         Runs every RECLUSTER_INTERVAL identify() calls.
         """
+        from config import (
+            CLUSTER_AHC_MAX_SAMPLES, CLUSTER_AHC_THRESHOLD,
+            CLUSTER_SPECTRAL_PVAL_BETA,
+        )
+        from diarization.cluster import auto_cluster
+
         # Collect all segment embeddings with their speaker assignments
         all_embs: list[np.ndarray] = []
         seg_speaker_ids: list[int] = []
@@ -955,55 +1082,23 @@ class DiarizationEngine:
 
         X = np.stack(all_embs)  # (N, embed_dim)
 
-        # Cosine similarity affinity matrix
-        norms = np.linalg.norm(X, axis=1, keepdims=True) + 1e-10
-        X_norm = X / norms
-        A = X_norm @ X_norm.T  # (N, N)
-
-        # Clean affinity matrix: zero diagonal, clamp negatives
-        np.fill_diagonal(A, 0.0)
-        np.maximum(A, 0.0, out=A)
-
-        # Symmetric normalized Laplacian: L_sym = I - D^{-1/2} A D^{-1/2}
-        degrees = A.sum(axis=1)
-        d_inv_sqrt = np.where(degrees > 1e-10, 1.0 / np.sqrt(degrees), 0.0)
-        L_sym = np.eye(n) - (d_inv_sqrt[:, None] * A * d_inv_sqrt[None, :])
-
-        # Eigendecomposition (smallest eigenvalues of L_sym)
-        eigenvalues, eigenvectors = np.linalg.eigh(L_sym)
-
-        # Eigengap analysis: find k that maximizes gap between eigenvalue[k-1] and eigenvalue[k]
-        max_k = min(MAX_SPEAKERS, len(current_speakers), n // 2)
-        if max_k < 2:
-            return
-        gaps = np.diff(eigenvalues[: max_k + 1])
-        # Search from k=2 (enforce minimum 2 speakers — meetings always have 2+)
-        # Only merge to k=1 would mean everyone is the same speaker, which is
-        # almost never correct and causes catastrophic drift in long sessions
-        if len(gaps) < 2:
-            return
-        best_gap_idx = int(np.argmax(gaps[1:])) + 1  # skip gap[0]
-        k = best_gap_idx + 1
-
-        # Require the chosen gap to be significantly larger than noise
-        # (prevents merging when all gaps are equally tiny)
-        median_gap = float(np.median(gaps[1:])) if len(gaps) > 2 else 0.0
-        if gaps[best_gap_idx] < max(median_gap * 5, 0.01):
-            return  # no clear cluster structure — don't merge
-
-        if k >= len(current_speakers):
-            return  # spectral clustering says we have the right count (or more)
-
-        # K-means on the first k eigenvectors
-        features = eigenvectors[:, :k].copy()
-        # Row-normalize for normalized spectral clustering
-        row_norms = np.linalg.norm(features, axis=1, keepdims=True) + 1e-10
-        features /= row_norms
-        labels = self._kmeans(features, k)
+        # Run 3D-Speaker clustering (auto-selects AHC vs spectral)
+        labels = auto_cluster(
+            X,
+            max_speakers=min(MAX_SPEAKERS, len(current_speakers)),
+            threshold=CLUSTER_AHC_THRESHOLD,
+            p_value_beta=CLUSTER_SPECTRAL_PVAL_BETA,
+            ahc_max_samples=CLUSTER_AHC_MAX_SAMPLES,
+        )
 
         # VBx-style HMM smoothing: apply Viterbi with loopP to reduce rapid switching
+        k = int(labels.max()) + 1
+        if k < 2:
+            return
+        if k >= len(current_speakers):
+            return  # clustering says we have the right count (or more)
         if len(self._segment_order) >= n:
-            labels = self._viterbi_smooth(labels, k)
+            labels = self._viterbi_smooth(labels.tolist(), k)
 
         # Build mapping: new_label → set of original speaker_ids
         label_to_sids: dict[int, set[int]] = {}
@@ -1121,17 +1216,18 @@ class DiarizationEngine:
 
 
 class _MockEmbeddingModel:
-    """Lightweight stand-in for CAM++ (testing only).
+    """Lightweight stand-in for speaker embedding model (testing only).
 
-    Returns deterministic 512-dim embeddings derived from the audio content
+    Returns deterministic embeddings derived from the audio content
     so that different audio produces different speakers.
     """
 
     def __call__(self, feats):
         import torch
+        from config import SPEAKER_EMBEDDING_DIM
         # Derive embedding from feature content for deterministic but varied results
         feat_np = feats.squeeze().numpy()
         rng = np.random.RandomState(int(abs(feat_np[:100].sum()) * 1000) % 2**31)
-        emb = rng.randn(512).astype(np.float32)
+        emb = rng.randn(SPEAKER_EMBEDDING_DIM).astype(np.float32)
         emb /= np.linalg.norm(emb) + 1e-10
         return torch.tensor(emb).unsqueeze(0)

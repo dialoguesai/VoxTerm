@@ -5,7 +5,7 @@ import pytest
 
 from diarization.engine import DiarizationEngine
 
-EMBEDDING_DIM = 512
+from config import SPEAKER_EMBEDDING_DIM as EMBEDDING_DIM
 
 
 class TestSpeakerNames:
