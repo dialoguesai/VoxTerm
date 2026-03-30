@@ -63,6 +63,7 @@ SUBPROCESSES (fallback only — not used when ONNX models available)
 | `diarization/fbank.py` | Pure-numpy Mel filterbank (Kaldi-compatible, no PyTorch) |
 | `diarization/onnx_embedder.py` | ONNX-based speaker embedding extraction (3D-Speaker models) |
 | `diarization/campplus.py` | CAM++ model architecture (legacy, vendored from WeSpeaker) |
+| `diarization/cluster.py` | 3D-Speaker clustering algorithms: spectral (p-value pruning), AHC, auto-select |
 | `diarization/engine.py` | Online speaker clustering with ONNX/PyTorch backend dispatch |
 | `diarization/proxy.py` | DiarizationProxy — direct (ONNX), subprocess, or inprocess modes |
 | `diarization/subprocess_worker.py` | Subprocess entry point: loads model, read-process-write loop |
