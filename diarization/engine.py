@@ -36,7 +36,7 @@ class DiarizationEngine:
     RECLUSTER_MIN_SEGMENTS = 4    # min total segments before re-clustering kicks in
     LOOP_PROB = 0.99              # VBx-style HMM self-transition probability
     WHITEN_MIN_SEGMENTS = 8       # min segments before PLDA-lite whitening kicks in
-    SCD_CHANGE_THRESHOLD = 0.6    # cosine distance above this → speaker change detected
+    SCD_CHANGE_THRESHOLD = 0.35   # cosine distance above this → speaker change detected
     SCD_WINDOW_SEC = 2.0          # sliding window duration for SCD embedding extraction
     SCD_HOP_SEC = 0.5             # hop between consecutive SCD windows
 
@@ -372,7 +372,8 @@ class DiarizationEngine:
 
             if should_update:
                 self._prev_centroids[sid] = self._speaker_centroids[sid].copy()
-                self._speaker_centroids[sid] = self._speaker_centroids[sid] + embedding
+                duration_weight = np.sqrt(len(audio) / sample_rate)
+                self._speaker_centroids[sid] = self._speaker_centroids[sid] + embedding * duration_weight
         elif best_score >= adaptive_new_threshold and best_id is not None:
             # Uncertain zone: assign to closest but skip centroid update
             sid = best_id
