@@ -1455,7 +1455,11 @@ if __name__ == "__main__":
     if _server_url:
         print(f"VOXTERM // probing llama server at {_server_url}...")
         _audio_models = discover_llama_audio_models(_server_url)
-        if _audio_models:
+        if _audio_models is None:
+            print(f"  WARNING: server at {_server_url} is unreachable")
+            if not _server_model:
+                _server_url = ""  # don't use unreachable server
+        elif _audio_models:
             print(f"  found audio models: {', '.join(_audio_models)}")
             for am in _audio_models:
                 short = am.replace(":", "-").replace("/", "-")
