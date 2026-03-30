@@ -186,6 +186,6 @@ session_speakers (
 | Conflict margin | 0.05 | If top-2 within this, prefer more established speaker |
 | Cluster merge | 0.50 | Periodic pairwise merge threshold |
 | Quality RMS gate | 0.003 | Min RMS energy for centroid updates |
-| SCD change threshold | 0.4 | Cosine distance for speaker change detection |
+| SCD change threshold | 0.35 | Cosine distance for speaker change detection |
 | SCD window / hop | 2.0s / 0.5s | Sliding window for embedding-based SCD |
 | HMM loopP | 0.99 | VBx-style self-transition probability (continuity prior) |
