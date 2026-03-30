@@ -12,6 +12,12 @@ _SPEAKER_COLORS = [
     "#aa88ff", "#ff6644", "#44ddff", "#ffff44",
 ]
 
+# Peer source colours for merged view (distinct from speaker palette)
+_PEER_COLORS = [
+    "#00e5ff", "#ff44aa", "#44ff88", "#ffaa44",
+    "#bb88ff", "#ff8844", "#44ddff", "#ccff44",
+]
+
 
 class TranscriptPanel(RichLog):
     """Cyberpunk-styled live transcription panel with speaker attribution."""
@@ -41,34 +47,41 @@ class TranscriptPanel(RichLog):
         self._color_overrides: dict[int, str] = {}
         # Per-speaker confidence scores for display
         self._speaker_confidence: dict[int, tuple[str, float]] = {}  # sid → (tier, score)
+        # Merged view state
+        self._merged_view = False
+        self._peer_color_map: dict[str, str] = {}  # node_id → color
+        self._peer_names: dict[str, str] = {}  # node_id → display_name
 
     def system_message(self, msg: str):
         """Add a system message."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._entries.append((timestamp, "system", msg, "", 0, ""))
-        text = Text()
-        text.append("SYSTEM [SYS]  ", Style(color="#ff6600", bold=True))
-        text.append(msg, Style(color="#607080"))
-        self.write(text)
+        if not self._merged_view:
+            text = Text()
+            text.append("SYSTEM [SYS]  ", Style(color="#ff6600", bold=True))
+            text.append(msg, Style(color="#607080"))
+            self.write(text)
 
     def add_transcript(
         self, content: str, speaker: str = "", speaker_id: int = 0,
-        confidence: str = "",
+        confidence: str = "", overlap: bool = False,
     ):
         """Add transcribed text with optional speaker attribution.
 
         confidence: "" = default, "high" = auto-recognized,
                     "medium" = suggested, "new" = unknown new speaker
+        overlap: True if overlapping speech detected in this segment
         """
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._entries.append((timestamp, "transcript", content, speaker, speaker_id, confidence))
 
-        text = self._render_entry(timestamp, content, speaker, speaker_id, confidence)
-        self.write(text)
+        if not self._merged_view:
+            text = self._render_entry(timestamp, content, speaker, speaker_id, confidence, overlap)
+            self.write(text)
 
     def _render_entry(
         self, timestamp: str, content: str, speaker: str, speaker_id: int,
-        confidence: str = "",
+        confidence: str = "", overlap: bool = False,
     ) -> Text:
         """Render a single transcript entry as Rich Text."""
         text = Text()
@@ -79,6 +92,11 @@ class TranscriptPanel(RichLog):
                 speaker_id,
                 _SPEAKER_COLORS[(speaker_id - 1) % len(_SPEAKER_COLORS)],
             )
+
+            # Overlap indicator
+            if overlap:
+                text.append("[+] ", Style(color="#ff6600", bold=True))
+
             text.append(f"{speaker}", Style(color=color, bold=True))
 
             # Confidence indicator
@@ -99,6 +117,117 @@ class TranscriptPanel(RichLog):
 
         text.append(content, Style(color="#c0c0c0"))
         return text
+
+    # ── merged view ──────────────────────────────────────────
+
+    @property
+    def merged_view(self) -> bool:
+        return self._merged_view
+
+    def set_merged_view(
+        self, enabled: bool, assembler=None,
+        local_name: str = "you", peer_names: dict[str, str] | None = None,
+    ):
+        """Toggle between local and merged transcript view.
+
+        When enabling, pass the TranscriptAssembler to render the merged timeline.
+        peer_names: optional mapping of node_id → display_name for peers.
+        """
+        self._merged_view = enabled
+        if peer_names:
+            self._peer_names = peer_names
+        if enabled:
+            self.border_title = "TRANSCRIPT // MERGED"
+            if assembler:
+                self._render_merged(assembler, local_name)
+        else:
+            self.border_title = "TRANSCRIPT // LIVE"
+            self._rerender()
+
+    def refresh_merged(
+        self, assembler, local_name: str = "you",
+        peer_names: dict[str, str] | None = None,
+    ):
+        """Re-render the merged timeline (call when new segments arrive while in merged view)."""
+        if not self._merged_view:
+            return
+        if peer_names:
+            self._peer_names = peer_names
+        self._render_merged(assembler, local_name)
+
+    def _get_peer_color(self, node_id: str) -> str:
+        """Assign a stable color to a peer node_id."""
+        if node_id not in self._peer_color_map:
+            idx = len(self._peer_color_map) % len(_PEER_COLORS)
+            self._peer_color_map[node_id] = _PEER_COLORS[idx]
+        return self._peer_color_map[node_id]
+
+    def _render_merged(self, assembler, local_name: str):
+        """Render all segments from the assembler in time order."""
+        from network.segments import LOCAL_NODE_ID
+
+        super().clear()
+        finals = assembler.get_finals()
+        partials = assembler.get_partials()
+
+        for seg in finals:
+            text = self._render_merged_segment(seg, local_name)
+            self.write(text)
+
+        # Render in-progress partials dimmed at the bottom
+        for seg in partials:
+            text = self._render_merged_segment(seg, local_name, is_partial=True)
+            self.write(text)
+
+    def _render_merged_segment(self, seg, local_name: str, is_partial: bool = False) -> Text:
+        """Render a single MergedSegment."""
+        from network.segments import LOCAL_NODE_ID
+        from datetime import datetime as dt
+
+        text = Text()
+
+        # Timestamp from adjusted_start_ts (monotonic → wall-clock approximation)
+        try:
+            import time
+            wall = time.time() - time.monotonic() + seg.adjusted_start_ts
+            ts_str = dt.fromtimestamp(wall).strftime("%H:%M:%S")
+        except Exception:
+            ts_str = "??:??:??"
+
+        text.append(f"[{ts_str}]  ", Style(color="#004455"))
+
+        # Source label
+        is_local = seg.node_id == LOCAL_NODE_ID
+        if is_local:
+            source_color = "#00ffcc"
+            source_label = local_name
+        else:
+            source_color = self._get_peer_color(seg.node_id)
+            source_label = self._peer_names.get(seg.node_id, seg.node_id[:8])
+
+        text.append(f"{source_label}", Style(color=source_color, bold=True))
+
+        # Speaker name (if different from source)
+        if seg.speaker_name and seg.speaker_name != source_label:
+            text.append(f"/{seg.speaker_name}", Style(color="#607080"))
+
+        # Dominant mic indicator for local segments (which mic contributed most)
+        if is_local and seg.dominant_mic and seg.dominant_mic != LOCAL_NODE_ID:
+            mic_name = self._peer_names.get(seg.dominant_mic, seg.dominant_mic[:6])
+            text.append(f" via {mic_name}", Style(color="#607080", italic=True))
+
+        text.append("  ", Style())
+
+        # Content — dim if partial
+        content_style = Style(color="#606060", italic=True) if (is_partial or seg.is_partial) else Style(color="#c0c0c0")
+        text.append(seg.text, content_style)
+
+        if is_partial or seg.is_partial:
+            text.append(" …", Style(color="#404040"))
+
+        return text
+
+    # ── existing methods ─────────────────────────────────────
 
     def set_speaker_confidence(
         self, speaker_id: int, tier: str, score: float = 0.0
@@ -125,7 +254,8 @@ class TranscriptPanel(RichLog):
             else:
                 updated.append((ts, typ, content, spk, sid, conf))
         self._entries = updated
-        self._rerender()
+        if not self._merged_view:
+            self._rerender()
 
     def _rerender(self) -> None:
         """Clear and re-render all transcript entries."""
@@ -149,6 +279,10 @@ class TranscriptPanel(RichLog):
         self._entries.clear()
         self._color_overrides.clear()
         self._speaker_confidence.clear()
+        self._peer_color_map.clear()
+        self._peer_names.clear()
+        self._merged_view = False
+        self.border_title = "TRANSCRIPT // LIVE"
 
     def get_entries(self) -> list[tuple]:
         """Return all transcript entries."""

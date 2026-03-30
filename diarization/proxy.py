@@ -166,6 +166,13 @@ class DiarizationProxy:
     def is_loaded(self) -> bool:
         return self._loaded
 
+    def get_last_identify_meta(self) -> dict:
+        """Return overlap metadata from the last identify() call."""
+        if self._mode in ("inprocess", "direct"):
+            return self._engine.get_last_identify_meta()
+        # Subprocess mode: overlap info not available via IPC
+        return {"is_overlap": False, "overlap_speakers": []}
+
     # ── speaker identification (main API) ─────────────────
 
     def identify(self, audio: np.ndarray, sample_rate: int = 16000) -> tuple[str, int]:

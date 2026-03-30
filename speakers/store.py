@@ -1,9 +1,9 @@
 """Persistent speaker profile storage backed by SQLite.
 
-Stores 3D-Speaker embeddings (configurable dim, default 192-dim float32)
-as encrypted BLOBs (AES-256-CBC with HMAC-SHA256, key in macOS Keychain).
-Uses WAL mode for safe concurrent access from the worker thread and the
-Textual event loop.
+Stores 3D-Speaker embeddings (configurable dim; default model eres2net_large
+uses 512-dim float32) as encrypted BLOBs (AES-256-CBC with HMAC-SHA256,
+key in macOS Keychain). Uses WAL mode for safe concurrent access from the
+worker thread and the Textual event loop.
 """
 
 from __future__ import annotations
@@ -628,7 +628,7 @@ class SpeakerStore:
                 (_SCHEMA_VERSION,),
             )
             self._conn.execute(
-                "INSERT OR REPLACE INTO metadata (key, value) VALUES ('model_id', ?)",
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES ('model_name', ?)",
                 (SPEAKER_MODEL_NAME,),
             )
             self._conn.commit()
@@ -640,7 +640,7 @@ class SpeakerStore:
                     "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
                 )
                 self._conn.execute(
-                    "INSERT OR REPLACE INTO metadata (key, value) VALUES ('model_id', ?)",
+                    "INSERT OR REPLACE INTO metadata (key, value) VALUES ('model_name', ?)",
                     (SPEAKER_MODEL_NAME,),
                 )
                 self._conn.execute(
@@ -661,7 +661,7 @@ class SpeakerStore:
         # Check model_id mismatch (v2 schema)
         try:
             row = self._conn.execute(
-                "SELECT value FROM metadata WHERE key = 'model_id'"
+                "SELECT value FROM metadata WHERE key = 'model_name'"
             ).fetchone()
             if row and row[0] != SPEAKER_MODEL_NAME:
                 log.info(
@@ -671,7 +671,7 @@ class SpeakerStore:
                 self._conn.execute("DELETE FROM speakers")
                 self._conn.execute("DELETE FROM session_speakers")
                 self._conn.execute(
-                    "UPDATE metadata SET value = ? WHERE key = 'model_id'",
+                    "UPDATE metadata SET value = ? WHERE key = 'model_name'",
                     (SPEAKER_MODEL_NAME,),
                 )
                 self._conn.commit()

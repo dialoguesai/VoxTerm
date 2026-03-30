@@ -84,11 +84,20 @@ DIARIZER_RESTART_WINDOW = 60  # seconds — restart counter resets after this
 # Speaker embedding model (3D-Speaker)
 # Backend: "onnx" (default, no subprocess needed) or "pytorch" (subprocess)
 SPEAKER_MODEL_BACKEND = "onnx"
-# ONNX model name: "eres2net_large" (192-dim, best accuracy),
+# ONNX model name: "eres2net_large" (512-dim, best accuracy),
 #                   "eres2netv2" (192-dim), or "campplus" (512-dim)
 SPEAKER_MODEL_NAME = "eres2net_large"
-SPEAKER_EMBEDDING_DIM = 512  # must match the chosen model's output
+# Embedding dim is derived from the model registry to prevent desync.
+# Mapping: eres2net_large=512, eres2netv2=192, campplus=512
+_SPEAKER_DIM_REGISTRY = {"eres2net_large": 512, "eres2netv2": 192, "campplus": 512}
+SPEAKER_EMBEDDING_DIM = _SPEAKER_DIM_REGISTRY[SPEAKER_MODEL_NAME]
 SPEAKER_MODEL_ONNX_CACHE = __import__("pathlib").Path.home() / ".cache" / "3dspeaker"
+
+# Clustering (3D-Speaker algorithms for periodic re-clustering)
+CLUSTER_AHC_THRESHOLD = 0.50       # AHC cosine distance stop threshold
+CLUSTER_SPECTRAL_PVAL_BETA = 1.0   # p-value pruning aggressiveness (higher = more pruning)
+CLUSTER_AHC_MAX_SAMPLES = 40       # above this, switch from AHC to spectral
+
 
 # Language identification (3D-Speaker LID)
 LID_ENABLED = True
@@ -98,6 +107,11 @@ LID_AUTO_SWITCH = False        # auto-switch transcription language on detection
 
 # Crash reporting
 CRASH_LOG_MAX_COUNT = 50      # max crash logs to keep (rotated on startup)
+
+# Dictation mode
+DICTATION_HOTKEY_MACOS = ("cmd", "shift", "d")
+DICTATION_HOTKEY_LINUX = ("super", "shift", "d")
+DICTATION_INTER_KEY_DELAY_MS = 1
 
 # Waveform
 WAVEFORM_FPS = 15
@@ -116,3 +130,17 @@ ACTIVE_COLOR = "#00ff88"
 
 # Block characters for waveform (high to low intensity)
 WAVE_BLOCKS = ["█", "▓", "▒", "░", "·"]
+
+# P2P networking
+P2P_TCP_PORT = 9900
+P2P_UDP_PORT = 9901
+P2P_HEARTBEAT_INTERVAL = 1.0       # seconds between heartbeats
+P2P_HEARTBEAT_TIMEOUT = 5.0        # seconds without heartbeat → peer dead
+P2P_PROTO_VERSION = 1
+P2P_MAX_PEERS = 20
+P2P_AUDIO_FRAME_MS = 20            # milliseconds per UDP audio frame
+P2P_AUDIO_MERGE_ENABLED = True     # merge peer audio before transcription
+P2P_MERGE_DELAY_MS = 60            # jitter buffer delay for audio merging
+P2P_AUDIO_QUALITY_GATE = 0.003     # min RMS to include a source in the mix
+P2P_CLOCK_SYNC_WINDOW = 20         # sliding window of offset samples
+P2P_SERVICE_TYPE = "_voxterm._tcp.local."

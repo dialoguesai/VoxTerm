@@ -22,7 +22,6 @@ def compute_fbank(
     low_freq: float = 20.0,
     high_freq: float = 0.0,
     window_type: str = "hamming",
-    use_energy: bool = False,
     cmn: bool = True,
 ) -> np.ndarray:
     """Compute log-Mel filterbank features matching Kaldi conventions.
