@@ -99,7 +99,8 @@ class TestSpeakerStore:
         )
 
         # Create a near-orthogonal embedding to force a low match
-        orthogonal = np.zeros(512, dtype=np.float32)
+        from tests.conftest import EMBEDDING_DIM
+        orthogonal = np.zeros(EMBEDDING_DIM, dtype=np.float32)
         orthogonal[0] = 1.0  # unit vector along dim 0
         # Subtract any projection onto emb to make it truly orthogonal
         orthogonal -= np.dot(orthogonal, emb) * emb

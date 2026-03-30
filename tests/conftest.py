@@ -15,13 +15,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Enable mock engine for all tests — avoids PyTorch/SpeechBrain model loading
 os.environ["VOXTERM_MOCK_ENGINE"] = "1"
 
-EMBEDDING_DIM = 512
+from config import SPEAKER_EMBEDDING_DIM
+
+EMBEDDING_DIM = SPEAKER_EMBEDDING_DIM
 SAMPLE_RATE = 16000
 
 
 @pytest.fixture
 def random_embedding():
-    """Generate a random L2-normalized 512-dim float32 embedding."""
+    """Generate a random L2-normalized embedding matching configured dim."""
     def _make(seed=None):
         rng = np.random.RandomState(seed)
         emb = rng.randn(EMBEDDING_DIM).astype(np.float32)

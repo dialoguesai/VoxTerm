@@ -1,11 +1,15 @@
-"""DiarizationProxy — subprocess-backed speaker diarization.
+"""DiarizationProxy — flexible speaker diarization with multiple backends.
 
-Drop-in replacement for DiarizationEngine. Same public API, but delegates
-all PyTorch/SpeechBrain work to a child process so MLX and PyTorch never
-share an address space (preventing C++ runtime segfaults).
+Drop-in replacement for DiarizationEngine. Same public API, with three modes:
 
-Falls back to in-process DiarizationEngine if the subprocess fails
-repeatedly (3 crashes within 60 seconds).
+  - "direct" (default when ONNX model available): Runs DiarizationEngine
+    in-process using ONNX backend. No subprocess, no PyTorch. Safe with MLX.
+
+  - "subprocess": Delegates all PyTorch work to a child process so MLX and
+    PyTorch never share an address space (preventing C++ runtime segfaults).
+
+  - "inprocess": Fallback mode — runs PyTorch DiarizationEngine in-process
+    with threading.Lock protection. Used when subprocess crashes repeatedly.
 """
 
 from __future__ import annotations
@@ -34,37 +38,81 @@ log = logging.getLogger(__name__)
 _WORKER_MODULE = "diarization.subprocess_worker"
 
 
-class DiarizationProxy:
-    """Subprocess-backed speaker diarization with same API as DiarizationEngine."""
 
-    def __init__(self):
+class DiarizationProxy:
+    """Flexible speaker diarization with same API as DiarizationEngine.
+
+    Supports three modes: "direct" (ONNX in-process), "subprocess" (PyTorch
+    in child process), and "inprocess" (PyTorch fallback with lock).
+    """
+
+    def __init__(self, mode: str | None = None):
+        """Initialize the proxy.
+
+        Args:
+            mode: "direct", "subprocess", or None (auto-detect).
+                  If None, uses "direct" when ONNX model is available,
+                  otherwise "subprocess".
+        """
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()  # serializes IPC calls
         self._loaded = False
-        self._mode = "subprocess"  # "subprocess" or "inprocess"
+        self._mode = mode or self._auto_detect_mode()
         self._needs_respawn = False  # set on crash, handled outside lock
 
         # Crash tracking for fallback
         self._crash_times: list[float] = []
 
-        # In-process fallback (lazy-loaded)
+        # In-process engine (used in "direct" and "inprocess" modes)
         self._engine = None
-        self._engine_lock = threading.Lock()  # protects PyTorch calls in inprocess mode
+        self._engine_lock = threading.Lock()  # protects calls in inprocess/direct mode
 
         # Callback for crash notifications (set by app.py)
         self.on_subprocess_crash: callable | None = None
         self.on_subprocess_ready: callable | None = None
         self._last_debug: dict = {}  # debug info from last identify() call
 
+    @staticmethod
+    def _auto_detect_mode() -> str:
+        """Choose the best mode based on available ONNX model."""
+        from config import SPEAKER_MODEL_BACKEND, SPEAKER_MODEL_NAME, SPEAKER_MODEL_ONNX_CACHE
+        if SPEAKER_MODEL_BACKEND == "onnx":
+            from diarization.onnx_embedder import ONNX_MODELS
+            if SPEAKER_MODEL_NAME in ONNX_MODELS:
+                _, filename, _ = ONNX_MODELS[SPEAKER_MODEL_NAME]
+                onnx_path = SPEAKER_MODEL_ONNX_CACHE / SPEAKER_MODEL_NAME / filename
+                if onnx_path.exists():
+                    return "direct"
+                # Try auto-export on load
+                return "direct"
+        return "subprocess"
+
     # ── lifecycle ─────────────────────────────────────────
 
     def load(self):
-        """Spawn the diarizer subprocess and wait for it to be ready."""
+        """Load the diarization engine in the configured mode."""
+        if self._mode == "direct":
+            try:
+                self._load_direct()
+                self._loaded = True
+                return
+            except Exception as e:
+                log.warning("Direct ONNX mode failed (%s), falling back to subprocess", e)
+                self._mode = "subprocess"
+
+        # Subprocess mode
         try:
             self._spawn()
             self._loaded = True
         except Exception:
             self._fallback_to_inprocess()
+
+    def _load_direct(self):
+        """Load DiarizationEngine in-process with ONNX backend."""
+        from diarization.engine import DiarizationEngine
+        self._engine = DiarizationEngine()
+        self._engine.load(backend="onnx")
+        log.info("Diarization proxy: direct mode (ONNX, in-process)")
 
     def _spawn(self):
         """Start the subprocess worker."""
@@ -103,7 +151,7 @@ class DiarizationProxy:
 
     def shutdown(self):
         """Cleanly stop the subprocess."""
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             return
         with self._lock:
             if self._proc is not None:
@@ -118,10 +166,17 @@ class DiarizationProxy:
     def is_loaded(self) -> bool:
         return self._loaded
 
+    def get_last_identify_meta(self) -> dict:
+        """Return overlap metadata from the last identify() call."""
+        if self._mode in ("inprocess", "direct"):
+            return self._engine.get_last_identify_meta()
+        # Subprocess mode: overlap info not available via IPC
+        return {"is_overlap": False, "overlap_speakers": []}
+
     # ── speaker identification (main API) ─────────────────
 
     def identify(self, audio: np.ndarray, sample_rate: int = 16000) -> tuple[str, int]:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             with self._engine_lock:
                 return self._engine.identify(audio, sample_rate)
 
@@ -146,7 +201,7 @@ class DiarizationProxy:
 
         Returns list of (label, speaker_id, start_sample, end_sample).
         """
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             with self._engine_lock:
                 return self._engine.identify_segments(audio, sample_rate)
 
@@ -180,7 +235,7 @@ class DiarizationProxy:
     # ── speaker queries ───────────────────────────────────
 
     def get_speaker_color(self, speaker_id: int) -> str:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             return self._engine.get_speaker_color(speaker_id)
         resp = self._call({"type": MSG_GET_COLOR, "speaker_id": speaker_id})
         if resp is None:
@@ -188,7 +243,7 @@ class DiarizationProxy:
         return resp.get("color", "#00ffcc")
 
     def get_speaker_name(self, speaker_id: int) -> str:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             return self._engine.get_speaker_name(speaker_id)
         resp = self._call({"type": MSG_GET_NAME, "speaker_id": speaker_id})
         if resp is None:
@@ -196,7 +251,7 @@ class DiarizationProxy:
         return resp.get("name", f"Speaker {speaker_id}")
 
     def get_speaker_names(self) -> dict[int, str]:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             return self._engine.get_speaker_names()
         resp = self._call({"type": MSG_GET_NAMES})
         if resp is None:
@@ -205,7 +260,7 @@ class DiarizationProxy:
 
     @property
     def num_speakers(self) -> int:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             return self._engine.num_speakers
         resp = self._call({"type": MSG_NUM_SPEAKERS})
         if resp is None:
@@ -213,7 +268,7 @@ class DiarizationProxy:
         return resp.get("count", 0)
 
     def set_speaker_name(self, speaker_id: int, name: str) -> None:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             self._engine.set_speaker_name(speaker_id, name)
             return
         self._call({"type": MSG_SET_NAME, "speaker_id": speaker_id, "name": name})
@@ -221,7 +276,7 @@ class DiarizationProxy:
     # ── session state queries ─────────────────────────────
 
     def get_all_session_speakers(self) -> dict[int, int]:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             return self._engine.get_all_session_speakers()
         resp = self._call({"type": MSG_GET_STATE})
         if resp is None:
@@ -229,7 +284,7 @@ class DiarizationProxy:
         return {int(k): v for k, v in resp.get("session_speakers", {}).items()}
 
     def get_segment_embeddings(self, speaker_id: int) -> list[tuple[np.ndarray, float]]:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             return self._engine.get_segment_embeddings(speaker_id)
         resp = self._call({"type": MSG_GET_EMBEDDINGS, "speaker_id": speaker_id})
         if resp is None:
@@ -243,7 +298,7 @@ class DiarizationProxy:
             return []
 
     def get_session_centroid(self, speaker_id: int) -> np.ndarray | None:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             return self._engine.get_session_centroid(speaker_id)
         resp = self._call({"type": MSG_GET_CENTROID, "speaker_id": speaker_id})
         if resp is None:
@@ -257,7 +312,7 @@ class DiarizationProxy:
             return None
 
     def is_speaker_stable(self, speaker_id: int) -> bool:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             return self._engine.is_speaker_stable(speaker_id)
         resp = self._call({"type": MSG_IS_STABLE, "speaker_id": speaker_id})
         if resp is None:
@@ -265,13 +320,13 @@ class DiarizationProxy:
         return resp.get("stable", False)
 
     def mark_matched(self, speaker_id: int) -> None:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             self._engine.mark_matched(speaker_id)
             return
         self._call({"type": MSG_MARK_MATCHED, "speaker_id": speaker_id})
 
     def is_matched(self, speaker_id: int) -> bool:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             return self._engine.is_matched(speaker_id)
         resp = self._call({"type": MSG_IS_MATCHED, "speaker_id": speaker_id})
         if resp is None:
@@ -279,13 +334,13 @@ class DiarizationProxy:
         return resp.get("matched", False)
 
     def merge_speakers(self, source_id: int, target_id: int) -> None:
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             self._engine.merge_speakers(source_id, target_id)
             return
         self._call({"type": MSG_MERGE, "source_id": source_id, "target_id": target_id})
 
     def reset_session(self):
-        if self._mode == "inprocess":
+        if self._mode in ("inprocess", "direct"):
             self._engine.reset_session()
             return
         self._call({"type": MSG_RESET})
@@ -365,7 +420,7 @@ class DiarizationProxy:
     def _fallback_to_inprocess(self):
         """Fall back to running diarization in-process with lock protection."""
         with self._lock:
-            if self._mode == "inprocess":
+            if self._mode in ("inprocess", "direct"):
                 return
             self._mode = "inprocess"
             self._kill()
