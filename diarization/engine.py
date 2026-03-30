@@ -64,6 +64,8 @@ class DiarizationEngine:
         # PLDA-lite: cached whitening transform (updated periodically)
         self._whiten_matrix: np.ndarray | None = None
         self._whiten_mean: np.ndarray | None = None
+        # Overlap metadata from last identify() call
+        self._last_identify_meta: dict = {}
         self._color_palette = [
             "#00ffcc",   # cyan
             "#ff44aa",   # pink
@@ -200,6 +202,15 @@ class DiarizationEngine:
     def is_loaded(self) -> bool:
         return self._loaded
 
+    def get_last_identify_meta(self) -> dict:
+        """Return metadata from the last identify() call.
+
+        Returns dict with:
+            is_overlap: bool — True if overlapping speech detected
+            overlap_speakers: list[int] — speaker IDs involved in overlap
+        """
+        return self._last_identify_meta.copy()
+
     # ── speaker identification ────────────────────────────
 
     def identify(self, audio: np.ndarray, sample_rate: int = 16000) -> tuple[str, int]:
@@ -295,6 +306,15 @@ class DiarizationEngine:
             # Case 2: both top-2 exceed a moderate threshold (both speakers present)
             elif scores[0][0] > 0.30 and scores[1][0] > 0.25:
                 is_ambiguous = True
+
+        # Store overlap metadata for UI consumption
+        overlap_speakers = []
+        if is_ambiguous and len(scores) >= 2:
+            overlap_speakers = [scores[0][1], scores[1][1]]
+        self._last_identify_meta = {
+            "is_overlap": is_ambiguous,
+            "overlap_speakers": overlap_speakers,
+        }
 
         # Adaptive new-speaker threshold: gets stricter over time
         # Early session: easy to create speakers (discover who's present)
@@ -1032,12 +1052,18 @@ class DiarizationEngine:
         return smoothed
 
     def _spectral_recluster(self) -> None:
-        """Re-cluster all session embeddings using spectral clustering.
+        """Re-cluster all session embeddings using 3D-Speaker algorithms.
 
-        Uses eigengap analysis on the cosine affinity matrix to estimate the
-        true number of speakers, then merges over-segmented clusters.
+        Uses auto_cluster() which selects AHC for small sample counts (< 40)
+        and spectral clustering with p-value pruning for larger sets.
         Runs every RECLUSTER_INTERVAL identify() calls.
         """
+        from config import (
+            CLUSTER_AHC_MAX_SAMPLES, CLUSTER_AHC_THRESHOLD,
+            CLUSTER_SPECTRAL_PVAL_BETA,
+        )
+        from diarization.cluster import auto_cluster
+
         # Collect all segment embeddings with their speaker assignments
         all_embs: list[np.ndarray] = []
         seg_speaker_ids: list[int] = []
@@ -1056,55 +1082,23 @@ class DiarizationEngine:
 
         X = np.stack(all_embs)  # (N, embed_dim)
 
-        # Cosine similarity affinity matrix
-        norms = np.linalg.norm(X, axis=1, keepdims=True) + 1e-10
-        X_norm = X / norms
-        A = X_norm @ X_norm.T  # (N, N)
-
-        # Clean affinity matrix: zero diagonal, clamp negatives
-        np.fill_diagonal(A, 0.0)
-        np.maximum(A, 0.0, out=A)
-
-        # Symmetric normalized Laplacian: L_sym = I - D^{-1/2} A D^{-1/2}
-        degrees = A.sum(axis=1)
-        d_inv_sqrt = np.where(degrees > 1e-10, 1.0 / np.sqrt(degrees), 0.0)
-        L_sym = np.eye(n) - (d_inv_sqrt[:, None] * A * d_inv_sqrt[None, :])
-
-        # Eigendecomposition (smallest eigenvalues of L_sym)
-        eigenvalues, eigenvectors = np.linalg.eigh(L_sym)
-
-        # Eigengap analysis: find k that maximizes gap between eigenvalue[k-1] and eigenvalue[k]
-        max_k = min(MAX_SPEAKERS, len(current_speakers), n // 2)
-        if max_k < 2:
-            return
-        gaps = np.diff(eigenvalues[: max_k + 1])
-        # Search from k=2 (enforce minimum 2 speakers — meetings always have 2+)
-        # Only merge to k=1 would mean everyone is the same speaker, which is
-        # almost never correct and causes catastrophic drift in long sessions
-        if len(gaps) < 2:
-            return
-        best_gap_idx = int(np.argmax(gaps[1:])) + 1  # skip gap[0]
-        k = best_gap_idx + 1
-
-        # Require the chosen gap to be significantly larger than noise
-        # (prevents merging when all gaps are equally tiny)
-        median_gap = float(np.median(gaps[1:])) if len(gaps) > 2 else 0.0
-        if gaps[best_gap_idx] < max(median_gap * 5, 0.01):
-            return  # no clear cluster structure — don't merge
-
-        if k >= len(current_speakers):
-            return  # spectral clustering says we have the right count (or more)
-
-        # K-means on the first k eigenvectors
-        features = eigenvectors[:, :k].copy()
-        # Row-normalize for normalized spectral clustering
-        row_norms = np.linalg.norm(features, axis=1, keepdims=True) + 1e-10
-        features /= row_norms
-        labels = self._kmeans(features, k)
+        # Run 3D-Speaker clustering (auto-selects AHC vs spectral)
+        labels = auto_cluster(
+            X,
+            max_speakers=min(MAX_SPEAKERS, len(current_speakers)),
+            threshold=CLUSTER_AHC_THRESHOLD,
+            p_value_beta=CLUSTER_SPECTRAL_PVAL_BETA,
+            ahc_max_samples=CLUSTER_AHC_MAX_SAMPLES,
+        )
 
         # VBx-style HMM smoothing: apply Viterbi with loopP to reduce rapid switching
+        k = int(labels.max()) + 1
+        if k < 2:
+            return
+        if k >= len(current_speakers):
+            return  # clustering says we have the right count (or more)
         if len(self._segment_order) >= n:
-            labels = self._viterbi_smooth(labels, k)
+            labels = self._viterbi_smooth(labels.tolist(), k)
 
         # Build mapping: new_label → set of original speaker_ids
         label_to_sids: dict[int, set[int]] = {}

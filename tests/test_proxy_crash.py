@@ -10,8 +10,8 @@ from diarization.proxy import DiarizationProxy
 
 @pytest.fixture
 def proxy():
-    """Instantiate a DiarizationProxy, load it, yield, then shut down."""
-    p = DiarizationProxy()
+    """Instantiate a DiarizationProxy in subprocess mode, load it, yield, then shut down."""
+    p = DiarizationProxy(mode="subprocess")
     p.load()
     yield p
     p.shutdown()

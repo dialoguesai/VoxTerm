@@ -688,84 +688,73 @@ class VoxTerm(App):
 
             text = result.get("text", "")
 
-            # 2. Speaker ID via subprocess (non-blocking to main thread)
-            #    Use SCD to split audio at speaker changes, diarize each segment
+            # 2. Speaker ID — use SCD for longer buffers, single identify for short
             speaker_label, speaker_id = "", 0
             confidence = ""
+            is_overlap = False
             if text and self._diarizer_loaded:
                 try:
-                    speaker_label, speaker_id = self.diarizer.identify(
-                        audio.copy()
-                    )
+                    # Use speaker-change detection for buffers >= 3s
+                    if len(audio) >= 48000:
+                        segments = self.diarizer.identify_segments(
+                            audio.copy()
+                        )
+                    else:
+                        lbl, sid = self.diarizer.identify(audio.copy())
+                        segments = [(lbl, sid, 0, len(audio))]
+
+                    # Check overlap metadata from last identify() call
+                    meta = self.diarizer.get_last_identify_meta()
+                    is_overlap = meta.get("is_overlap", False)
+
+                    # Use last segment as the "current" speaker for cross-session matching
+                    speaker_label, speaker_id = segments[-1][0], segments[-1][1]
 
                     # Debug: show speaker assignment info
                     if self._debug:
                         dbg = getattr(self.diarizer, '_last_debug', {})
                         n_spk = dbg.get('debug_speakers', '?')
                         rms = dbg.get('debug_rms', '?')
+                        seg_info = f"segs={len(segments)}" if len(segments) > 1 else ""
+                        overlap_info = " [OVERLAP]" if is_overlap else ""
                         self.call_from_thread(
                             self.query_one(TranscriptPanel).system_message,
                             f"[dbg] → {speaker_label} (id={speaker_id}) "
-                            f"speakers={n_spk} rms={rms}",
+                            f"speakers={n_spk} rms={rms} {seg_info}{overlap_info}",
                         )
 
-                    # 3. Cross-session matching — if speaker stable and not yet matched
-                    if (
-                        speaker_id > 0
-                        and self.speaker_store.is_open
-                        and not self.diarizer.is_matched(speaker_id)
-                        and speaker_id not in self._speaker_profile_map
-                        and self.diarizer.is_speaker_stable(speaker_id)
-                    ):
-                        centroid = self.diarizer.get_session_centroid(speaker_id)
-                        if centroid is not None:
-                            match = self.speaker_store.classify_match(centroid)
-
-                            if match.tier == "high":
-                                # Auto-assign: name this speaker
-                                speaker_label = match.name
-                                confidence = "high"
-                                self.diarizer.set_speaker_name(speaker_id, match.name)
-                                self.diarizer.mark_matched(speaker_id)
-                                self._speaker_profile_map[speaker_id] = match.profile_id
-
-                                # Update profile if mature enough
-                                if self.speaker_store.is_profile_mature(match.profile_id):
-                                    seg_data = self.diarizer.get_segment_embeddings(speaker_id)
-                                    for emb, dur in seg_data:
-                                        if dur >= 3.0:
-                                            self.speaker_store.update_profile_embedding(
-                                                match.profile_id, emb,
-                                                duration=dur, confirmed=False,
-                                            )
-
-                                # Apply color + confidence on main thread
-                                self.call_from_thread(
-                                    self._on_auto_recognition,
-                                    speaker_id, match.name, match.color,
-                                    "high", match.score,
-                                )
-
-                            elif match.tier == "medium":
-                                # Suggest but don't auto-assign
-                                speaker_label = f"{match.name}?"
-                                confidence = "medium"
-                                self.diarizer.mark_matched(speaker_id)
-
-                                self.call_from_thread(
-                                    self._on_auto_recognition,
-                                    speaker_id, f"{match.name}?", match.color,
-                                    "medium", match.score,
-                                )
+                    # 3. Cross-session matching for each unique speaker in segments
+                    seen_sids = set()
+                    for seg_label, seg_sid, _, _ in segments:
+                        if seg_sid in seen_sids or seg_sid <= 0:
+                            continue
+                        seen_sids.add(seg_sid)
+                        self._try_cross_session_match(seg_sid)
 
                 except Exception:
-                    pass
+                    segments = [("", 0, 0, len(audio))]
+
+            else:
+                segments = [("", 0, 0, len(audio))]
 
             if text:
-                self.call_from_thread(
-                    self._on_transcription, text, speaker_label, speaker_id,
-                    confidence,
-                )
+                if len(segments) > 1:
+                    # Split text across segments proportionally by duration
+                    seg_texts = self._split_text_by_segments(text, segments)
+                    for seg_text, seg_label, seg_sid in seg_texts:
+                        if seg_text.strip():
+                            seg_overlap = is_overlap and seg_sid == speaker_id
+                            self.call_from_thread(
+                                self._on_transcription, seg_text, seg_label,
+                                seg_sid, confidence,
+                                seg_overlap,
+                            )
+                else:
+                    self.call_from_thread(
+                        self._on_transcription, text, speaker_label,
+                        speaker_id, confidence,
+                        is_overlap,
+                    )
         except Exception as e:
             self._write_crash_dump("_transcribe_audio", e)
             self.call_from_thread(
@@ -776,12 +765,90 @@ class VoxTerm(App):
             # ALWAYS unblock — even if worker is cancelled or crashes
             self._transcribing.clear()
 
+    def _try_cross_session_match(self, speaker_id: int) -> None:
+        """Attempt cross-session matching for a speaker (worker thread)."""
+        if not (
+            self.speaker_store.is_open
+            and not self.diarizer.is_matched(speaker_id)
+            and speaker_id not in self._speaker_profile_map
+            and self.diarizer.is_speaker_stable(speaker_id)
+        ):
+            return
+
+        centroid = self.diarizer.get_session_centroid(speaker_id)
+        if centroid is None:
+            return
+
+        match = self.speaker_store.classify_match(centroid)
+
+        if match.tier == "high":
+            self.diarizer.set_speaker_name(speaker_id, match.name)
+            self.diarizer.mark_matched(speaker_id)
+            self._speaker_profile_map[speaker_id] = match.profile_id
+
+            if self.speaker_store.is_profile_mature(match.profile_id):
+                seg_data = self.diarizer.get_segment_embeddings(speaker_id)
+                for emb, dur in seg_data:
+                    if dur >= 3.0:
+                        self.speaker_store.update_profile_embedding(
+                            match.profile_id, emb,
+                            duration=dur, confirmed=False,
+                        )
+
+            self.call_from_thread(
+                self._on_auto_recognition,
+                speaker_id, match.name, match.color,
+                "high", match.score,
+            )
+
+        elif match.tier == "medium":
+            self.diarizer.mark_matched(speaker_id)
+            self.call_from_thread(
+                self._on_auto_recognition,
+                speaker_id, f"{match.name}?", match.color,
+                "medium", match.score,
+            )
+
+    @staticmethod
+    def _split_text_by_segments(
+        text: str,
+        segments: list[tuple[str, int, int, int]],
+    ) -> list[tuple[str, str, int]]:
+        """Split transcribed text across segments proportionally by duration.
+
+        Returns list of (text_portion, speaker_label, speaker_id).
+        """
+        words = text.split()
+        if not words or not segments:
+            return [(text, "", 0)]
+
+        total_samples = sum(end - start for _, _, start, end in segments)
+        if total_samples <= 0:
+            return [(text, segments[0][0], segments[0][1])]
+
+        result = []
+        word_idx = 0
+        for i, (label, sid, start, end) in enumerate(segments):
+            duration_frac = (end - start) / total_samples
+            if i == len(segments) - 1:
+                # Last segment gets remaining words
+                n_words = len(words) - word_idx
+            else:
+                n_words = max(1, round(len(words) * duration_frac))
+
+            seg_words = words[word_idx:word_idx + n_words]
+            word_idx += n_words
+            result.append((" ".join(seg_words), label, sid))
+
+        return result
+
     def _on_transcription(
         self, text: str, speaker: str = "", speaker_id: int = 0,
-        confidence: str = "",
+        confidence: str = "", overlap: bool = False,
     ):
         self.query_one(TranscriptPanel).add_transcript(
             text, speaker, speaker_id, confidence=confidence,
+            overlap=overlap,
         )
         self._append_live_transcript(text, speaker, speaker_id)
         self._update_telemetry()

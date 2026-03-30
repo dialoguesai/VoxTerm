@@ -88,6 +88,11 @@ _SPEAKER_DIM_REGISTRY = {"eres2net_large": 512, "eres2netv2": 192, "campplus": 5
 SPEAKER_EMBEDDING_DIM = _SPEAKER_DIM_REGISTRY[SPEAKER_MODEL_NAME]
 SPEAKER_MODEL_ONNX_CACHE = __import__("pathlib").Path.home() / ".cache" / "3dspeaker"
 
+# Clustering (3D-Speaker algorithms for periodic re-clustering)
+CLUSTER_AHC_THRESHOLD = 0.50       # AHC cosine distance stop threshold
+CLUSTER_SPECTRAL_PVAL_BETA = 1.0   # p-value pruning aggressiveness (higher = more pruning)
+CLUSTER_AHC_MAX_SAMPLES = 40       # above this, switch from AHC to spectral
+
 # Language identification (3D-Speaker LID)
 LID_ENABLED = True
 LID_MODEL_NAME = "campplus_lid"
