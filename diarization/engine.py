@@ -905,6 +905,282 @@ class DiarizationEngine:
         self._prev_centroids.pop(source_id, None)
         self._matched_speakers.discard(source_id)
 
+    # ── offline diarization ───────────────────────────────
+
+    def diarize_offline(
+        self, audio: np.ndarray, sample_rate: int = 16000, chunk_seconds: float = 10.0,
+    ) -> list[tuple[str, int, int, int]]:
+        """Offline diarization using segmentation model + embedding clustering.
+
+        Processes audio in overlapping windows using pyannote segmentation to detect
+        per-frame speaker activity, extracts speaker embeddings per local speaker
+        per chunk, then clusters embeddings to produce global speaker labels.
+
+        Returns list of (label, speaker_id, start_sample, end_sample) with
+        overlapping segments for simultaneous speakers.
+        """
+        if not self._loaded or self._segmentation is None:
+            # Fall back to online chunked approach
+            return self._diarize_online_fallback(audio, sample_rate, chunk_seconds)
+
+        if audio.ndim > 1:
+            audio = audio[:, 0]
+
+        chunk_samples = int(chunk_seconds * sample_rate)
+        hop_samples = chunk_samples // 5  # 80% overlap between chunks
+        frame_samples = 270  # pyannote segmentation frame step (~16.9ms)
+
+        # Phase 1: Extract local speaker activations and embeddings per chunk
+        chunk_data = []
+        for start in range(0, len(audio), hop_samples):
+            end = min(start + chunk_samples, len(audio))
+            chunk = audio[start:end]
+            if len(chunk) < sample_rate:  # skip < 1s
+                continue
+
+            activation = self._segmentation.segment(chunk)
+            active_speakers = self._segmentation.get_active_speakers(activation)
+            if not active_speakers:
+                continue
+
+            for spk_info in active_speakers:
+                spk_idx = spk_info["speaker_idx"]
+                # Extract weighted embedding for this local speaker
+                emb = self._extract_weighted_embedding(
+                    chunk, activation[:, spk_idx], sample_rate
+                )
+                if emb is None:
+                    emb = self._extract_embedding_raw(chunk, sample_rate)
+                if emb is None:
+                    continue
+
+                # Find active frames for this speaker
+                active_frames = []
+                for f in range(activation.shape[0]):
+                    if activation[f, spk_idx] >= 0.42:
+                        active_frames.append(f)
+
+                if not active_frames:
+                    continue
+
+                chunk_data.append({
+                    "chunk_start": start,
+                    "embedding": emb,
+                    "active_frames": active_frames,
+                    "activation": activation[:, spk_idx],
+                    "n_frames": activation.shape[0],
+                })
+
+        if not chunk_data:
+            label, sid = self.identify(audio, sample_rate)
+            return [(label, sid, 0, len(audio))]
+
+        # Phase 2: Cluster embeddings to assign global speaker IDs
+        embeddings = np.stack([d["embedding"] for d in chunk_data])
+        from diarization.cluster import ahc_cluster
+        labels = ahc_cluster(embeddings, threshold=0.48)
+
+        # Phase 3: Build hypothesis segments from activations + global labels
+        results = []
+        for i, d in enumerate(chunk_data):
+            global_sid = labels[i] + 1  # 1-based speaker IDs
+            chunk_start = d["chunk_start"]
+            active_frames = d["active_frames"]
+
+            segments = self._frames_to_segments(active_frames, frame_samples, len(audio) - chunk_start)
+            for seg_start, seg_end in segments:
+                abs_start = chunk_start + seg_start
+                abs_end = chunk_start + seg_end
+                label = f"Speaker {global_sid}"
+                results.append((label, global_sid, abs_start, abs_end))
+
+        results = self._merge_overlapping(results)
+        return results
+
+    @staticmethod
+    def _pad_segments(
+        results: list[tuple[str, int, int, int]],
+        pad_samples: int = 8000,
+        max_sample: int = 0,
+    ) -> list[tuple[str, int, int, int]]:
+        """Extend each segment by pad_samples on both sides."""
+        padded = []
+        for label, sid, start, end in results:
+            new_start = max(0, start - pad_samples)
+            new_end = min(max_sample, end + pad_samples) if max_sample > 0 else end + pad_samples
+            padded.append((label, sid, new_start, new_end))
+        return padded
+
+    @staticmethod
+    def _constrained_ahc(
+        embeddings: np.ndarray,
+        cannot_link: list[tuple[int, int]],
+        threshold: float = 0.45,
+    ) -> np.ndarray:
+        """AHC with cannot-link constraints (same-chunk speakers must differ).
+
+        Uses average-linkage with constraint checking before each merge.
+        """
+        from diarization.cluster import cosine_affinity
+
+        n = embeddings.shape[0]
+        if n < 2:
+            return np.zeros(n, dtype=int)
+
+        # Build affinity matrix
+        A = cosine_affinity(embeddings)
+        np.fill_diagonal(A, 1.0)
+        dist = 1.0 - A  # cosine distance
+        np.fill_diagonal(dist, 0.0)
+
+        # Build cannot-link set (on cluster IDs)
+        cl_set = set()
+        for i, j in cannot_link:
+            cl_set.add((min(i, j), max(i, j)))
+
+        # Each point starts as its own cluster
+        clusters = {i: [i] for i in range(n)}
+        labels = list(range(n))
+
+        while len(clusters) > 1:
+            # Find closest pair of clusters (average linkage) that can be merged
+            best_dist = float("inf")
+            best_pair = None
+
+            cluster_ids = list(clusters.keys())
+            for ii in range(len(cluster_ids)):
+                for jj in range(ii + 1, len(cluster_ids)):
+                    ci, cj = cluster_ids[ii], cluster_ids[jj]
+                    # Check cannot-link: if merging would violate any constraint
+                    can_merge = True
+                    for a in clusters[ci]:
+                        for b in clusters[cj]:
+                            key = (min(a, b), max(a, b))
+                            if key in cl_set:
+                                can_merge = False
+                                break
+                        if not can_merge:
+                            break
+
+                    if not can_merge:
+                        continue
+
+                    # Average linkage distance
+                    total_dist = 0.0
+                    count = 0
+                    for a in clusters[ci]:
+                        for b in clusters[cj]:
+                            total_dist += dist[a, b]
+                            count += 1
+                    avg_dist = total_dist / count if count > 0 else float("inf")
+
+                    if avg_dist < best_dist:
+                        best_dist = avg_dist
+                        best_pair = (ci, cj)
+
+            if best_pair is None or best_dist > threshold:
+                break
+
+            # Merge clusters
+            ci, cj = best_pair
+            clusters[ci].extend(clusters[cj])
+            del clusters[cj]
+            # Update labels
+            for idx in clusters[ci]:
+                labels[idx] = ci
+
+        # Relabel to consecutive integers
+        unique = sorted(set(labels))
+        mapping = {old: new for new, old in enumerate(unique)}
+        return np.array([mapping[l] for l in labels])
+
+    @staticmethod
+    def _cluster_embeddings(sim_matrix: np.ndarray, threshold: float = 0.50) -> np.ndarray:
+        """Simple agglomerative clustering on cosine similarity matrix."""
+        n = sim_matrix.shape[0]
+        labels = list(range(n))
+
+        # Greedy single-linkage: merge if similarity > threshold
+        for i in range(n):
+            for j in range(i + 1, n):
+                if sim_matrix[i, j] >= threshold:
+                    old_label = labels[j]
+                    new_label = labels[i]
+                    for k in range(n):
+                        if labels[k] == old_label:
+                            labels[k] = new_label
+
+        # Relabel to consecutive integers
+        unique = sorted(set(labels))
+        mapping = {old: new for new, old in enumerate(unique)}
+        return np.array([mapping[l] for l in labels])
+
+    @staticmethod
+    def _frames_to_segments(
+        active_frames: list[int], frame_samples: int, max_samples: int,
+    ) -> list[tuple[int, int]]:
+        """Convert list of active frame indices to contiguous sample ranges."""
+        if not active_frames:
+            return []
+        segments = []
+        seg_start = active_frames[0] * frame_samples
+        prev_end = seg_start + frame_samples
+        for f in active_frames[1:]:
+            f_start = f * frame_samples
+            if f_start <= prev_end + frame_samples:  # allow 1 frame gap
+                prev_end = f_start + frame_samples
+            else:
+                segments.append((seg_start, min(prev_end, max_samples)))
+                seg_start = f_start
+                prev_end = f_start + frame_samples
+        segments.append((seg_start, min(prev_end, max_samples)))
+        return segments
+
+    @staticmethod
+    def _merge_overlapping(
+        results: list[tuple[str, int, int, int]],
+    ) -> list[tuple[str, int, int, int]]:
+        """Merge overlapping segments for the same speaker."""
+        if not results:
+            return results
+        # Group by speaker ID
+        by_speaker: dict[int, list[tuple[int, int]]] = {}
+        labels: dict[int, str] = {}
+        for label, sid, start, end in results:
+            by_speaker.setdefault(sid, []).append((start, end))
+            labels[sid] = label
+
+        merged = []
+        for sid, segs in by_speaker.items():
+            segs.sort()
+            cur_start, cur_end = segs[0]
+            for s, e in segs[1:]:
+                if s <= cur_end:
+                    cur_end = max(cur_end, e)
+                else:
+                    merged.append((labels[sid], sid, cur_start, cur_end))
+                    cur_start, cur_end = s, e
+            merged.append((labels[sid], sid, cur_start, cur_end))
+
+        return merged
+
+    def _diarize_online_fallback(
+        self, audio: np.ndarray, sample_rate: int, chunk_seconds: float,
+    ) -> list[tuple[str, int, int, int]]:
+        """Fallback: online chunked diarization when segmentation unavailable."""
+        chunk_samples = int(chunk_seconds * sample_rate)
+        results = []
+        self.reset_session()
+        for start in range(0, len(audio), chunk_samples):
+            end = min(start + chunk_samples, len(audio))
+            chunk = audio[start:end]
+            if len(chunk) < sample_rate:
+                continue
+            segs = self.identify_segments(chunk, sample_rate)
+            for label, sid, seg_start, seg_end in segs:
+                results.append((label, sid, start + seg_start, start + seg_end))
+        return results
+
     # ── session management ────────────────────────────────
 
     def reset_session(self):
