@@ -708,6 +708,26 @@ class VoxTerm(App):
 
         waveform.tick()
 
+        # Update waveform merge indicator (~every 0.5s, not every frame)
+        if mixer and mixer.active_peers > 0 and self._recording:
+            self._merge_display_counter = getattr(self, '_merge_display_counter', 0) + 1
+            if self._merge_display_counter % 8 == 0:  # ~0.5s at 15fps
+                stats = mixer.get_stats()
+                weights = stats.get("live_weights", {})
+                if weights:
+                    names = self._get_peer_names()
+                    parts = []
+                    for nid, w in sorted(weights.items(), key=lambda x: -x[1]):
+                        name = "you" if nid == "__local__" else names.get(nid, nid[:6])
+                        parts.append(f"{name} {int(w*100)}%")
+                    waveform.set_merge_status(" | ".join(parts))
+                else:
+                    waveform.set_merge_status("")
+        elif not mixer or mixer.active_peers == 0:
+            if getattr(self, '_merge_display_counter', 0) > 0:
+                self._merge_display_counter = 0
+                waveform.set_merge_status("")
+
         # Check transcription trigger
         merge_delay = self._peer_mixer.merge_delay if self._peer_mixer else 0.0
         silence_duration = self._silence_chunks * self._chunk_duration
@@ -743,15 +763,24 @@ class VoxTerm(App):
                     f"[dbg] buf={buffer_duration:.1f}s sil={silence_duration:.1f}s "
                     f"speech={self._had_speech}"
                 ]
-                if self._peer_mixer and self._peer_mixer.peer_count > 0:
-                    mi = self._peer_mixer.debug_info()
-                    dbg_parts.append(f" merge={mi['peer_count']}peers/{mi['merge_delay_ms']}ms")
-                if self._assembler and self._session_mgr and self._session_mgr.is_in_session:
+                if self._session_mgr and self._session_mgr.is_in_session:
                     tp = self.query_one(TranscriptPanel)
-                    dbg_parts.append(
-                        f"  asm={self._assembler.final_count}F/{self._assembler.partial_count}P "
-                        f"view={'MERGED' if tp.merged_view else 'LOCAL'}"
-                    )
+                    mixer = self._peer_mixer
+                    if self._assembler:
+                        dbg_parts.append(
+                            f"  asm={self._assembler.final_count}F/{self._assembler.partial_count}P "
+                            f"view={'MERGED' if tp.merged_view else 'LOCAL'}"
+                        )
+                    if mixer and mixer.active_peers > 0:
+                        stats = mixer.get_stats()
+                        weights = stats.get("live_weights", {})
+                        if weights:
+                            names = self._get_peer_names()
+                            parts = []
+                            for nid, w in sorted(weights.items(), key=lambda x: -x[1]):
+                                name = "you" if nid == "__local__" else names.get(nid, nid[:6])
+                                parts.append(f"{name}={int(w*100)}%")
+                            dbg_parts.append(f"  mix=[{' | '.join(parts)}]")
                 self.query_one(TranscriptPanel).system_message(
                     "".join(dbg_parts)
                 )
@@ -910,10 +939,14 @@ class VoxTerm(App):
 
             # Track local segment in assembler for merged view
             if self._assembler:
+                dom = ""
+                if self._peer_mixer and self._peer_mixer.active_peers > 0:
+                    dom = self._peer_mixer.dominant_source
                 self._assembler.add_local(
                     self._transcript_seq,
                     speaker or self._p2p_display_name,
                     text, now, now, confidence=0.9,
+                    dominant_mic=dom,
                 )
                 tp = self.query_one(TranscriptPanel)
                 if tp.merged_view:
@@ -1926,7 +1959,7 @@ class VoxTerm(App):
         tp.system_message(f"debug mode {state}")
         if self._debug and self._session_mgr and self._session_mgr.is_in_session and self._p2p_debug:
             tp.system_message(self._p2p_debug.format_debug_text(
-                self._session_mgr, mixer=self._peer_audio_mixer,
+                self._session_mgr, mixer=self._peer_mixer,
                 assembler=self._assembler, merged_view=tp.merged_view,
             ))
 

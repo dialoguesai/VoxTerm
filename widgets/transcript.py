@@ -205,6 +205,11 @@ class TranscriptPanel(RichLog):
         if seg.speaker_name and seg.speaker_name != source_label:
             text.append(f"/{seg.speaker_name}", Style(color="#607080"))
 
+        # Dominant mic indicator for local segments (which mic contributed most)
+        if is_local and seg.dominant_mic and seg.dominant_mic != LOCAL_NODE_ID:
+            mic_name = self._peer_names.get(seg.dominant_mic, seg.dominant_mic[:6])
+            text.append(f" via {mic_name}", Style(color="#607080", italic=True))
+
         text.append("  ", Style())
 
         # Content — dim if partial

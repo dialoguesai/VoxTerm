@@ -34,6 +34,7 @@ class MergedSegment:
     is_partial: bool
     adjusted_start_ts: float = 0.0   # converted to local clock
     adjusted_end_ts: float = 0.0     # converted to local clock
+    dominant_mic: str = ""           # node_id of dominant audio source (local segments only)
 
     def __post_init__(self):
         if self.adjusted_start_ts == 0.0:
@@ -119,6 +120,7 @@ class TranscriptAssembler:
         start_ts: float,
         end_ts: float,
         confidence: float = 0.9,
+        dominant_mic: str = "",
     ) -> MergedSegment:
         """Insert a locally-generated segment into the merged timeline."""
         seg = MergedSegment(
@@ -132,6 +134,7 @@ class TranscriptAssembler:
             is_partial=False,
             adjusted_start_ts=start_ts,
             adjusted_end_ts=end_ts,
+            dominant_mic=dominant_mic,
         )
         with self._lock:
             key = (LOCAL_NODE_ID, seq)

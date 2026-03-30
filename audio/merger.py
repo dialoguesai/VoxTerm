@@ -46,6 +46,18 @@ class PeerAudioMixer:
         self._peer_clocks: dict[str, ClockSync] = {}
         self._lock = threading.Lock()  # protects _peer_buffers/_peer_clocks
 
+        # Live weight tracking: node_id → rolling average weight (0.0–1.0)
+        # "__local__" key for local mic. Updated every merge.
+        self._live_weights: dict[str, float] = {}
+        self._weight_alpha = 0.15  # EMA smoothing factor
+
+        # Dominant source: which mic has the highest weight right now
+        self._dominant_source: str = "__local__"
+
+        # Counters for stats
+        self._merge_count = 0
+        self._peer_contributions = 0
+
     # ── public properties ────────────────────────────────────
 
     @property
@@ -57,7 +69,18 @@ class PeerAudioMixer:
         return self._merge_delay_s
 
     @property
+    def dominant_source(self) -> str:
+        """Node ID of the source with the highest current weight."""
+        with self._lock:
+            return self._dominant_source
+
+    @property
     def peer_count(self) -> int:
+        with self._lock:
+            return len(self._peer_buffers)
+
+    @property
+    def active_peers(self) -> int:
         with self._lock:
             return len(self._peer_buffers)
 
@@ -119,61 +142,26 @@ class PeerAudioMixer:
             merged.append(self._merge_chunk(local_chunk))
         return merged
 
-    # ── internal mixing ──────────────────────────────────────
+    # ── stats / debug ─────────────────────────────────────────
 
-    def _merge_chunk(self, local_chunk: np.ndarray) -> np.ndarray:
-        """Energy-weighted merge of local chunk with peer audio."""
-        chunk_duration = len(local_chunk) / SAMPLE_RATE
-
-        # Collect all sources: local + each peer
-        sources: list[np.ndarray] = [local_chunk]
-
+    def get_stats(self) -> dict:
+        """Return stats for debug overlay."""
         with self._lock:
-            for node_id, buf in self._peer_buffers.items():
-                peer_chunk = buf.read(chunk_duration)
-                if len(peer_chunk) >= len(local_chunk):
-                    sources.append(peer_chunk[:len(local_chunk)])
-                elif len(peer_chunk) > 0:
-                    # Pad short peer chunk with silence
-                    padded = np.zeros_like(local_chunk)
-                    padded[:len(peer_chunk)] = peer_chunk
-                    sources.append(padded)
-                else:
-                    # No data from this peer — skip
-                    continue
-
-        if len(sources) == 1:
-            return local_chunk
-
-        # Compute per-source RMS and weights
-        weights = np.empty(len(sources), dtype=np.float32)
-        for i, src in enumerate(sources):
-            rms = float(np.sqrt(np.mean(src ** 2)))
-            if rms < P2P_AUDIO_QUALITY_GATE:
-                weights[i] = 0.0
-            else:
-                weights[i] = np.sqrt(rms)
-
-        total_weight = weights.sum()
-        if total_weight < 1e-8:
-            # All sources are silence — return local as-is
-            return local_chunk
-
-        weights /= total_weight
-
-        # Weighted average
-        mixed = np.zeros_like(local_chunk)
-        for i, src in enumerate(sources):
-            if weights[i] > 0:
-                mixed += weights[i] * src
-
-        # Gentle boost to compensate for averaging, then clip
-        return np.clip(mixed * 1.2, -1.0, 1.0)
-
-    # ── debug info ───────────────────────────────────────────
+            return {
+                "peer_count": len(self._peer_buffers),
+                "delay_ms": int(self._merge_delay_s * 1000),
+                "merge_count": self._merge_count,
+                "peer_contributions": self._peer_contributions,
+                "buffered_chunks": len(self._delay_buf),
+                "live_weights": dict(self._live_weights),
+                "peer_frames": {
+                    nid: buf.frames_received
+                    for nid, buf in self._peer_buffers.items()
+                },
+            }
 
     def debug_info(self) -> dict:
-        """Return merge stats for the debug overlay."""
+        """Return merge stats for the debug overlay (legacy compat)."""
         with self._lock:
             peer_ids = list(self._peer_buffers.keys())
             peer_frames = {
@@ -185,4 +173,85 @@ class PeerAudioMixer:
             "merge_delay_ms": int(self._merge_delay_s * 1000),
             "buffered_chunks": len(self._delay_buf),
             "peer_frames": peer_frames,
+            "live_weights": dict(self._live_weights),
         }
+
+    # ── internal mixing ──────────────────────────────────────
+
+    def _merge_chunk(self, local_chunk: np.ndarray) -> np.ndarray:
+        """Energy-weighted merge of local chunk with peer audio."""
+        chunk_duration = len(local_chunk) / SAMPLE_RATE
+
+        # Collect all sources: (node_id, chunk)
+        sources: list[tuple[str, np.ndarray]] = [("__local__", local_chunk)]
+
+        with self._lock:
+            for node_id, buf in self._peer_buffers.items():
+                peer_chunk = buf.read(chunk_duration)
+                if len(peer_chunk) >= len(local_chunk):
+                    sources.append((node_id, peer_chunk[:len(local_chunk)]))
+                elif len(peer_chunk) > 0:
+                    # Pad short peer chunk with silence
+                    padded = np.zeros_like(local_chunk)
+                    padded[:len(peer_chunk)] = peer_chunk
+                    sources.append((node_id, padded))
+                else:
+                    # No data from this peer — skip
+                    continue
+
+        self._merge_count += 1
+
+        if len(sources) == 1:
+            self._update_live_weights([("__local__", 1.0)])
+            return local_chunk
+
+        self._peer_contributions += 1
+
+        # Compute per-source RMS and weights
+        weights = np.empty(len(sources), dtype=np.float32)
+        for i, (nid, src) in enumerate(sources):
+            rms = float(np.sqrt(np.mean(src ** 2)))
+            if rms < P2P_AUDIO_QUALITY_GATE:
+                weights[i] = 0.0
+            else:
+                weights[i] = np.sqrt(rms)
+
+        total_weight = weights.sum()
+        if total_weight < 1e-8:
+            # All sources are silence — return local as-is
+            self._update_live_weights([(nid, 0.0) for nid, _ in sources])
+            return local_chunk
+
+        weights /= total_weight
+
+        # Track live weights
+        self._update_live_weights(
+            [(nid, float(w)) for (nid, _), w in zip(sources, weights)]
+        )
+
+        # Weighted average
+        mixed = np.zeros_like(local_chunk)
+        for i, (nid, src) in enumerate(sources):
+            if weights[i] > 0:
+                mixed += weights[i] * src
+
+        # Gentle boost to compensate for averaging, then clip
+        return np.clip(mixed * 1.2, -1.0, 1.0)
+
+    def _update_live_weights(self, source_weights: list[tuple[str, float]]) -> None:
+        """Update EMA-smoothed live weights for each source."""
+        a = self._weight_alpha
+        seen = set()
+        for nid, w in source_weights:
+            seen.add(nid)
+            prev = self._live_weights.get(nid, 0.0)
+            self._live_weights[nid] = prev * (1 - a) + w * a
+        # Decay sources not present in this merge
+        for nid in list(self._live_weights):
+            if nid not in seen:
+                self._live_weights[nid] *= (1 - a)
+                if self._live_weights[nid] < 0.001:
+                    del self._live_weights[nid]
+        # Track dominant source
+        if self._live_weights:
+            self._dominant_source = max(self._live_weights, key=self._live_weights.get)

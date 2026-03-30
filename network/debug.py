@@ -100,6 +100,28 @@ class P2PDebugStats:
                 f"  merge: {ms['peer_count']} peers, delay={ms['delay_ms']}ms, "
                 f"merged={ms['merge_count']}, peer_contrib={ms['peer_contributions']}"
             )
+            # Live weight bars — shows which mic is dominant right now
+            weights = ms.get("live_weights", {})
+            if weights:
+                # Build name map: __local__ → local name, node_ids → display names
+                peer_info = snap["peers"]
+                name_map = {"__local__": "you"}
+                for p in peer_info:
+                    # Match by prefix since live_weights uses full node_id
+                    for nid in weights:
+                        if nid != "__local__" and nid.startswith(p["node_id"]):
+                            name_map[nid] = p["display_name"]
+                            break
+
+                bar_parts = []
+                for nid, w in sorted(weights.items(), key=lambda x: -x[1]):
+                    name = name_map.get(nid, nid[:8])
+                    pct = int(w * 100)
+                    bar_len = max(1, int(w * 20))
+                    bar = "█" * bar_len + "░" * (20 - bar_len)
+                    bar_parts.append(f"  {name:<12} {bar} {pct}%")
+                lines.append("  ── mic weights ──")
+                lines.extend(bar_parts)
 
         # Transcript assembler stats
         if assembler is not None:
