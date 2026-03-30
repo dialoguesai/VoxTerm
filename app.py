@@ -1487,9 +1487,6 @@ class VoxTerm(App):
                 if peer_info.node_id == self._p2p_node_id:
                     return
                 self.call_from_thread(self._update_telemetry)
-                # If the peer is live, show a toast
-                if peer_info.in_session:
-                    self.call_from_thread(self._show_peer_toast, peer_info)
 
             def on_lost(node_id):
                 self.call_from_thread(self._update_telemetry)
