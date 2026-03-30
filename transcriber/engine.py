@@ -209,6 +209,243 @@ class WhisperTranscriber(_DeduplicatorMixin):
         return self._loaded
 
 
+class CrossModelTranscriber(_DeduplicatorMixin):
+    """Cross-model validation transcriber — runs multiple models and uses
+    majority voting at the word level to produce the best output.
+
+    Inspired by SynthVision's cross-model validation approach and ROVER
+    (Recognizer Output Voting Error Reduction). Models with different
+    architectures have complementary error patterns — word-level voting
+    lets the majority correct individual model mistakes.
+
+    Supports 2 or 3 models. With 3 models, true majority voting is possible.
+    """
+
+    def __init__(
+        self,
+        primary_model: str = "Qwen/Qwen3-ASR-0.6B",
+        secondary_model: str = "mlx-community/whisper-small-mlx",
+        primary_type: str = "qwen3",
+        secondary_type: str = "whisper",
+        tertiary_model: str | None = None,
+        tertiary_type: str | None = None,
+        language: str | None = "en",
+    ):
+        self._models = []
+        for model_id, model_type in [
+            (primary_model, primary_type),
+            (secondary_model, secondary_type),
+        ]:
+            if model_type == "qwen3":
+                self._models.append(Qwen3Transcriber(model=model_id, language=language))
+            else:
+                self._models.append(WhisperTranscriber(model=model_id))
+        if tertiary_model and tertiary_type:
+            if tertiary_type == "qwen3":
+                self._models.append(Qwen3Transcriber(model=tertiary_model, language=language))
+            else:
+                self._models.append(WhisperTranscriber(model=tertiary_model))
+
+        self._loaded = False
+        self._init_dedup()
+        self._stats = {
+            "all_agree": 0, "majority_vote": 0, "rescued": 0,
+            "all_empty": 0, "fallback_primary": 0, "total": 0,
+        }
+
+    def load(self):
+        """Load all models."""
+        for m in self._models:
+            m.load()
+        self._loaded = True
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Normalize text for comparison."""
+        import re
+        t = text.lower().strip()
+        t = re.sub(r'[^\w\s]', '', t)
+        t = re.sub(r'\s+', ' ', t).strip()
+        return t
+
+    @staticmethod
+    def _align_pair(words_a: list[str], words_b: list[str]) -> list[tuple]:
+        """Align two word sequences via edit distance. Returns aligned pairs."""
+        n, m = len(words_a), len(words_b)
+        dp = [[0] * (m + 1) for _ in range(n + 1)]
+        for i in range(n + 1):
+            dp[i][0] = i
+        for j in range(m + 1):
+            dp[0][j] = j
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                if words_a[i - 1] == words_b[j - 1]:
+                    dp[i][j] = dp[i - 1][j - 1]
+                else:
+                    dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+
+        aligned = []
+        i, j = n, m
+        while i > 0 or j > 0:
+            if i > 0 and j > 0 and words_a[i - 1] == words_b[j - 1]:
+                aligned.append((words_a[i - 1], words_b[j - 1]))
+                i -= 1; j -= 1
+            elif i > 0 and j > 0 and dp[i][j] == dp[i - 1][j - 1] + 1:
+                aligned.append((words_a[i - 1], words_b[j - 1]))
+                i -= 1; j -= 1
+            elif i > 0 and dp[i][j] == dp[i - 1][j] + 1:
+                aligned.append((words_a[i - 1], None))
+                i -= 1
+            elif j > 0:
+                aligned.append((None, words_b[j - 1]))
+                j -= 1
+            else:
+                if i > 0:
+                    aligned.append((words_a[i - 1], None))
+                    i -= 1
+
+        aligned.reverse()
+        return aligned
+
+    def _rover_merge(self, texts: list[str]) -> tuple[str, bool]:
+        """ROVER-style word-level voting across multiple transcriptions.
+
+        Builds a confusion network by aligning each hypothesis to the primary
+        backbone, then votes at each slot. Properly tracks word positions to
+        avoid duplication bugs.
+
+        Returns (merged_text, had_disagreement).
+        """
+        if not texts:
+            return "", False
+        if len(texts) == 1:
+            return texts[0], False
+
+        raw_words = [t.split() for t in texts]
+        norm_words = [[self._normalize(w) for w in ws] for ws in raw_words]
+        n_models = len(texts)
+
+        # Build confusion network from pairwise alignments to backbone
+        backbone_norm = norm_words[0]
+        backbone_raw = raw_words[0]
+
+        # Each slot: {normalized_word: (raw_word, count)}
+        # Plus epsilon ("") for deletions
+        network: list[dict[str, tuple[str, int]]] = []
+        for nw, rw in zip(backbone_norm, backbone_raw):
+            network.append({nw: (rw, 1)})
+
+        for sec_idx in range(1, n_models):
+            sec_norm = norm_words[sec_idx]
+            sec_raw = raw_words[sec_idx]
+            alignment = self._align_pair(backbone_norm, sec_norm)
+
+            # Track consumed positions in secondary to get correct raw word
+            sec_consumed = 0
+            backbone_pos = 0
+            insertions: list[tuple[int, str, str]] = []  # (position, norm, raw)
+
+            for a_word, b_word in alignment:
+                if a_word is not None and b_word is not None:
+                    # Both aligned — vote into backbone_pos slot
+                    # Find the raw word from secondary at the right position
+                    b_raw_word = sec_raw[sec_consumed] if sec_consumed < len(sec_raw) else b_word
+                    slot = network[backbone_pos]
+                    if b_word in slot:
+                        old_raw, old_cnt = slot[b_word]
+                        slot[b_word] = (old_raw, old_cnt + 1)
+                    else:
+                        slot[b_word] = (b_raw_word, 1)
+                    backbone_pos += 1
+                    sec_consumed += 1
+                elif a_word is not None:
+                    # Backbone has word, secondary doesn't — epsilon vote
+                    slot = network[backbone_pos]
+                    if "" in slot:
+                        old_raw, old_cnt = slot[""]
+                        slot[""] = ("", old_cnt + 1)
+                    else:
+                        slot[""] = ("", 1)
+                    backbone_pos += 1
+                else:
+                    # Secondary has extra word — record insertion
+                    b_raw_word = sec_raw[sec_consumed] if sec_consumed < len(sec_raw) else b_word
+                    insertions.append((backbone_pos, b_word, b_raw_word))
+                    sec_consumed += 1
+
+            # Apply insertions in reverse order so positions stay valid
+            for pos, ins_norm, ins_raw in reversed(insertions):
+                # Insert a new slot where only this secondary voted for the word
+                # and all other models voted epsilon
+                new_slot = {"": ("", n_models - 1), ins_norm: (ins_raw, 1)}
+                network.insert(pos, new_slot)
+
+        # Vote: pick highest-count candidate at each slot, skip epsilon winners
+        merged = []
+        had_disagreement = False
+        for slot in network:
+            if len(slot) > 1:
+                had_disagreement = True
+            # Pick winner: highest count, break ties by preferring non-empty
+            best_word = ""
+            best_raw = ""
+            best_count = 0
+            for word, (raw, count) in slot.items():
+                if count > best_count or (count == best_count and word and not best_word):
+                    best_word = word
+                    best_raw = raw
+                    best_count = count
+            if best_word:  # Skip epsilon winners
+                merged.append(best_raw)
+
+        return " ".join(merged), had_disagreement
+
+    def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
+        """Transcribe using cross-model voting."""
+        self._stats["total"] += 1
+
+        # Run all models
+        results = []
+        for m in self._models:
+            m._init_dedup()  # Reset dedup per model per sample
+            r = m.transcribe(audio, **kwargs)
+            results.append(r.get("text", "").strip())
+
+        non_empty = [t for t in results if t]
+
+        # All empty → noise
+        if not non_empty:
+            self._stats["all_empty"] += 1
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        # Only one model produced text → rescue
+        if len(non_empty) == 1:
+            self._stats["rescued"] += 1
+            text = non_empty[0]
+        elif len(non_empty) >= 2:
+            text, had_disagreement = self._rover_merge(non_empty)
+            if had_disagreement:
+                self._stats["majority_vote"] += 1
+            else:
+                self._stats["all_agree"] += 1
+        else:
+            self._stats["fallback_primary"] += 1
+            text = results[0]
+
+        if self._is_duplicate(text):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        return {"text": text, "speaker": "", "speaker_id": 0}
+
+    @property
+    def stats(self) -> dict:
+        return dict(self._stats)
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+
 class FasterWhisperTranscriber(_DeduplicatorMixin):
     """Cross-platform transcriber using faster-whisper (CTranslate2 backend).
 
