@@ -50,11 +50,14 @@ class _MacOSHotkey(GlobalHotkey):
     _kCGEventFlagMaskShift = 0x00020000
     _REQUIRED_FLAGS = _kCGEventFlagMaskCommand | _kCGEventFlagMaskShift
 
+    _DEBOUNCE_SEC = 0.4  # ignore repeated key events within this window
+
     def __init__(self, callback: Callable[[], None]):
         super().__init__(callback)
         self._thread: threading.Thread | None = None
         self._running = False
         self._run_loop_ref = None
+        self._last_fire: float = 0
 
     def start(self) -> None:
         if self._running:
@@ -111,10 +114,14 @@ class _MacOSHotkey(GlobalHotkey):
 
                 if (keycode == self._KEY_D and
                         (flags & self._REQUIRED_FLAGS) == self._REQUIRED_FLAGS):
-                    try:
-                        callback_ref._callback()
-                    except Exception:
-                        pass
+                    import time as _time
+                    now = _time.monotonic()
+                    if now - callback_ref._last_fire >= callback_ref._DEBOUNCE_SEC:
+                        callback_ref._last_fire = now
+                        try:
+                            callback_ref._callback()
+                        except Exception:
+                            pass
             return event
 
         # CGEventGetIntegerValueField
@@ -195,10 +202,13 @@ class _X11Hotkey(GlobalHotkey):
     Grabs Super+Shift+D globally.  Runs in a daemon thread.
     """
 
+    _DEBOUNCE_SEC = 0.4
+
     def __init__(self, callback: Callable[[], None]):
         super().__init__(callback)
         self._thread: threading.Thread | None = None
         self._running = False
+        self._last_fire: float = 0
 
     def start(self) -> None:
         if self._running:
@@ -248,6 +258,11 @@ class _X11Hotkey(GlobalHotkey):
                 if disp.pending_events():
                     event = disp.next_event()
                     if event.type == X.KeyPress and event.detail == keycode:
+                        import time as _time
+                        now = _time.monotonic()
+                        if now - self._last_fire < self._DEBOUNCE_SEC:
+                            continue
+                        self._last_fire = now
                         try:
                             self._callback()
                         except Exception:
