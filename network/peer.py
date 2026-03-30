@@ -41,6 +41,8 @@ class PeerConnection:
     pending_partial: MergedSegment | None = None
     stats: PeerStats = field(default_factory=PeerStats)
     send_lock: threading.Lock = field(default_factory=threading.Lock)
+    audio_merge_capable: bool = False
+    udp_audio_port: int = 0
 
     def is_alive(self, timeout: float = 5.0) -> bool:
         """Check if the peer is still alive based on heartbeat timeout."""

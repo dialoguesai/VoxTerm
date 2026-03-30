@@ -85,6 +85,8 @@ try:
     from network.crypto import generate_session_code, derive_session_key
     from network.debug import P2PDebugStats
     from network.discovery import PeerDiscovery
+    from network.audio_stream import AudioStreamer
+    from audio.merger import PeerAudioMixer
     from widgets.peer_browser import SessionCreateScreen, SessionJoinScreen
     _P2P_AVAILABLE = True
 except ImportError:
@@ -434,6 +436,9 @@ class VoxTerm(App):
         self._assembler = TranscriptAssembler() if _P2P_AVAILABLE else None
         self._p2p_debug = P2PDebugStats() if _P2P_AVAILABLE else None
         self._p2p_send_queue: queue.Queue | None = None
+        self._audio_streamer: AudioStreamer | None = None if _P2P_AVAILABLE else None
+        self._peer_mixer: PeerAudioMixer | None = None if _P2P_AVAILABLE else None
+        self._audio_send_seq: int = 0
 
     def compose(self) -> ComposeResult:
         yield CyberHeader()
@@ -649,6 +654,19 @@ class VoxTerm(App):
 
         mic_chunks = self.audio_capture.drain()
         sys_chunks = self.system_capture.drain()
+
+        # Send raw mic audio to peers via UDP (before mixing with system)
+        if mic_chunks and self._audio_streamer and self._session_mgr:
+            peer_addrs = self._get_peer_udp_addrs()
+            if peer_addrs:
+                now = time.monotonic()
+                for chunk in mic_chunks:
+                    self._audio_streamer.send_frame(
+                        chunk, seq=self._audio_send_seq,
+                        timestamp=now, peer_addrs=peer_addrs,
+                    )
+                    self._audio_send_seq += 1
+
         chunks = self._mix_chunks(mic_chunks, sys_chunks) if sys_chunks else mic_chunks
         if not chunks:
             waveform.tick()
@@ -658,6 +676,7 @@ class VoxTerm(App):
             waveform.push_samples(chunk)
 
             # Speech detection: Silero VAD (neural) with RMS fallback
+            # Runs on local audio immediately (no merge delay)
             if self.vad.is_loaded:
                 is_speech = self.vad.is_speech(chunk)
             else:
@@ -667,16 +686,26 @@ class VoxTerm(App):
             if is_speech:
                 self._silence_chunks = 0
                 self._had_speech = True
-                self.audio_buffer.append(chunk)
             else:
                 self._silence_chunks += 1
-                # Only buffer silence if we're in an active speech segment
-                if self._had_speech:
+
+            # Feed chunk through the merger (adds peer audio, applies jitter delay)
+            if self._peer_mixer is not None:
+                merged_chunks = self._peer_mixer.add_local_chunk(chunk, time.monotonic())
+                for mc in merged_chunks:
+                    if self._had_speech or is_speech:
+                        self.audio_buffer.append(mc)
+            else:
+                # No merger — original behavior
+                if is_speech:
+                    self.audio_buffer.append(chunk)
+                elif self._had_speech:
                     self.audio_buffer.append(chunk)
 
         waveform.tick()
 
         # Check transcription trigger
+        merge_delay = self._peer_mixer.merge_delay if self._peer_mixer else 0.0
         silence_duration = self._silence_chunks * self._chunk_duration
         buffer_duration = self.audio_buffer.duration
 
@@ -706,12 +735,17 @@ class VoxTerm(App):
             now = time.time()
             if buffer_duration > 0.5 and now - self._last_dbg > 3:
                 self._last_dbg = now
+                merge_info = ""
+                if self._peer_mixer and self._peer_mixer.peer_count > 0:
+                    mi = self._peer_mixer.debug_info()
+                    merge_info = f" merge={mi['peer_count']}peers/{mi['merge_delay_ms']}ms"
                 self.query_one(TranscriptPanel).system_message(
                     f"[dbg] buf={buffer_duration:.1f}s sil={silence_duration:.1f}s "
-                    f"speech={self._had_speech}"
+                    f"speech={self._had_speech}{merge_info}"
                 )
 
-        if self._had_speech and silence_duration > SILENCE_TRIGGER_SECONDS and buffer_duration > MIN_BUFFER_SECONDS:
+        effective_silence_trigger = SILENCE_TRIGGER_SECONDS + merge_delay
+        if self._had_speech and silence_duration > effective_silence_trigger and buffer_duration > MIN_BUFFER_SECONDS:
             self._trigger_transcription()
         elif buffer_duration >= MAX_BUFFER_SECONDS:
             self._trigger_transcription()
@@ -1532,8 +1566,36 @@ class VoxTerm(App):
                 except Exception:
                     pass
 
+            # Start audio streamer for multi-mic merging
+            from config import P2P_AUDIO_MERGE_ENABLED
+            audio_merge = P2P_AUDIO_MERGE_ENABLED and _P2P_AVAILABLE
+            node_id_bytes = self._p2p_node_id.encode("utf-8")[:16].ljust(16, b"\x00")
+            session_key = derive_session_key(code)
+
+            if audio_merge:
+                streamer = AudioStreamer(node_id_bytes, session_key, udp_port=0)
+                streamer.start()
+                udp_audio_port = streamer.local_port
+
+                mixer = PeerAudioMixer()
+                self._audio_streamer = streamer
+                self._peer_mixer = mixer
+                self._audio_send_seq = 0
+
+                # Wire audio frame reception into the mixer
+                def on_audio_frame(nid_bytes, seq, timestamp, pcm_bytes):
+                    nid = nid_bytes.rstrip(b"\x00").decode("utf-8", errors="replace")
+                    mixer.peer_frame(nid, seq, pcm_bytes)
+
+                streamer.on_frame_received = on_audio_frame
+            else:
+                udp_audio_port = 0
+                self._audio_streamer = None
+                self._peer_mixer = None
+
             mgr = SessionManager(
                 self._p2p_display_name, node_id=self._p2p_node_id, tcp_port=0,
+                audio_merge=audio_merge, udp_audio_port=udp_audio_port,
             )
             self._session_mgr = mgr
             self._wire_session_callbacks()
@@ -1651,6 +1713,7 @@ class VoxTerm(App):
         except Exception as exc:
             # Clean up the half-initialized session manager so the user
             # isn't stuck in "already in a session" state forever.
+            self._stop_audio_merge()
             try:
                 if self._session_mgr is not None:
                     self._session_mgr.leave_session()
@@ -1717,6 +1780,29 @@ class VoxTerm(App):
                 f"connection error: {exc}"
             )
 
+    def _stop_audio_merge(self) -> None:
+        """Stop audio streamer and flush the merger."""
+        if self._audio_streamer:
+            self._audio_streamer.stop()
+            self._audio_streamer = None
+        if self._peer_mixer:
+            # Flush remaining buffered chunks into the audio buffer
+            for chunk in self._peer_mixer.flush():
+                self.audio_buffer.append(chunk)
+            self._peer_mixer = None
+
+    def _get_peer_udp_addrs(self) -> list[tuple[str, int]]:
+        """Return (ip, udp_audio_port) for all connected peers that support audio merge."""
+        mgr = self._session_mgr
+        if not mgr:
+            return []
+        peers = mgr.peers
+        return [
+            (p.ip, p.udp_audio_port)
+            for p in peers.values()
+            if p.audio_merge_capable and p.udp_audio_port > 0
+        ]
+
     def _p2p_debug_msg(self, text: str) -> None:
         """Show a P2P debug message in the transcript."""
         self.query_one(TranscriptPanel).system_message(f"[P2P] {text}")
@@ -1725,13 +1811,22 @@ class VoxTerm(App):
         mgr = self._session_mgr
 
         def on_connected(peer):
+            # Register peer in the audio mixer for multi-mic merging
+            if self._peer_mixer and peer.audio_merge_capable:
+                self._peer_mixer.register_peer(peer.node_id, peer.clock)
+                merge_msg = " (audio merge)"
+            else:
+                merge_msg = ""
             self.call_from_thread(
                 self.query_one(TranscriptPanel).system_message,
-                f"{peer.display_name} connected"
+                f"{peer.display_name} connected{merge_msg}"
             )
             self.call_from_thread(self._update_telemetry)
 
         def on_disconnected(node_id, display_name):
+            # Remove peer from audio mixer
+            if self._peer_mixer:
+                self._peer_mixer.remove_peer(node_id)
             self.call_from_thread(
                 self.query_one(TranscriptPanel).system_message,
                 f"{display_name} disconnected"
@@ -1814,6 +1909,7 @@ class VoxTerm(App):
         self.workers.cancel_group(self, "p2p_discovery")
         # Leave P2P session and stop discovery
         self._stop_discovery()
+        self._stop_audio_merge()
         if self._session_mgr and self._session_mgr.is_in_session:
             try:
                 self._session_mgr.leave_session()

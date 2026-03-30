@@ -89,11 +89,15 @@ class SessionManager:
         node_id: str,
         tcp_port: int = P2P_TCP_PORT,
         udp_port: int = P2P_UDP_PORT,
+        audio_merge: bool = False,
+        udp_audio_port: int = 0,
     ):
         self._display_name = display_name
         self._node_id = node_id
         self._tcp_port = tcp_port
         self._udp_port = udp_port
+        self._audio_merge = audio_merge
+        self._udp_audio_port = udp_audio_port
 
         self._session_code: str | None = None
         self._session_key: bytes | None = None
@@ -336,6 +340,8 @@ class SessionManager:
                 proto_v=P2P_PROTO_VERSION,
                 sample_rate=SAMPLE_RATE,
                 channels=CHANNELS,
+                audio_merge=self._audio_merge,
+                udp_audio_port=self._udp_audio_port,
             )
             send_encrypted_msg(conn, self._session_key, my_hello)
             their_hello = recv_encrypted_msg(conn, self._session_key)
@@ -352,9 +358,11 @@ class SessionManager:
                 display_name=their_hello["display_name"],
                 ip=addr[0],
                 tcp_port=addr[1],
-                udp_port=0,
+                udp_port=their_hello.get("udp_audio_port", 0),
                 sock=conn,
                 state="connected",
+                audio_merge_capable=bool(their_hello.get("audio_merge")),
+                udp_audio_port=their_hello.get("udp_audio_port", 0),
             )
             self._register_peer(peer)
 
@@ -385,6 +393,8 @@ class SessionManager:
                 proto_v=P2P_PROTO_VERSION,
                 sample_rate=SAMPLE_RATE,
                 channels=CHANNELS,
+                audio_merge=self._audio_merge,
+                udp_audio_port=self._udp_audio_port,
             )
             send_encrypted_msg(sock, self._session_key, my_hello)
             their_hello = recv_encrypted_msg(sock, self._session_key)
@@ -400,9 +410,11 @@ class SessionManager:
                 display_name=their_hello["display_name"],
                 ip=ip,
                 tcp_port=port,
-                udp_port=0,
+                udp_port=their_hello.get("udp_audio_port", 0),
                 sock=sock,
                 state="connected",
+                audio_merge_capable=bool(their_hello.get("audio_merge")),
+                udp_audio_port=their_hello.get("udp_audio_port", 0),
             )
             self._register_peer(peer)
             return True

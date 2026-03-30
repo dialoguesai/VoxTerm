@@ -38,6 +38,8 @@ def build_hello(
     sample_rate: int = 16000,
     channels: int = 1,
     encoding: str = "pcm_s16le",
+    audio_merge: bool = False,
+    udp_audio_port: int = 0,
 ) -> dict:
     return {
         "type": MSG_HELLO,
@@ -47,6 +49,8 @@ def build_hello(
         "sample_rate": sample_rate,
         "channels": channels,
         "encoding": encoding,
+        "audio_merge": audio_merge,
+        "udp_audio_port": udp_audio_port,
     }
 
 
