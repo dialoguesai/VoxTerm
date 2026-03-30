@@ -26,19 +26,15 @@ from paths import DB_PATH as DEFAULT_DB_PATH, BACKUP_DIR
 
 log = logging.getLogger(__name__)
 
-# Import configured embedding dim (set by config.py based on chosen model)
-from config import SPEAKER_EMBEDDING_DIM, SPEAKER_MODEL_NAME
+# Import configured embedding dim and thresholds from central config
+from config import (
+    SPEAKER_EMBEDDING_DIM, SPEAKER_MODEL_NAME,
+    CROSS_SESSION_HIGH_BASE, CROSS_SESSION_MEDIUM, ADAPTIVE_BOOST,
+    ADAPTIVE_DECAY_RATE, CONFLICT_MARGIN, COLD_START_MIN_CONFIRMED,
+)
 
 EMBEDDING_DIM = SPEAKER_EMBEDDING_DIM
 EMBEDDING_BYTES = EMBEDDING_DIM * 4  # float32
-
-# Cross-session confidence thresholds
-CROSS_SESSION_HIGH_BASE = 0.55   # base threshold for auto-assign
-CROSS_SESSION_MEDIUM = 0.35      # below this → unknown
-ADAPTIVE_BOOST = 0.15            # extra strictness for new profiles
-ADAPTIVE_DECAY_RATE = 10         # how fast the boost decays with samples
-CONFLICT_MARGIN = 0.05           # if top-2 are within this, treat as ambiguous
-COLD_START_MIN_CONFIRMED = 10    # min confirmed before auto-updates allowed
 
 
 @dataclass
@@ -607,7 +603,7 @@ class SpeakerStore:
             for old in backups[:-7]:
                 old.unlink()
         except Exception:
-            pass  # backup must never block the app
+            log.warning("speaker backup failed", exc_info=True)
 
     # ── internals ────────────────────────────────────────────
 

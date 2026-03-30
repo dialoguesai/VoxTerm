@@ -102,14 +102,11 @@ from config_store import ConfigStore
 
 log = logging.getLogger(__name__)
 
-# Module-level config store instance (lazy init for import safety)
-_config: ConfigStore | None = None
+# Module-level config store instance
+_config = ConfigStore(path=_STATE_FILE)
 
 
 def _get_config() -> ConfigStore:
-    global _config
-    if _config is None:
-        _config = ConfigStore(path=_STATE_FILE)
     return _config
 
 
@@ -660,6 +657,44 @@ class VoxTerm(App):
         mixed.extend(sys[n:])
         return mixed
 
+    def _stream_mic_to_peers(self, mic_chunks: list) -> None:
+        """Forward raw mic audio to P2P peers via UDP."""
+        if not mic_chunks or not self._audio_streamer or not self._session_mgr:
+            return
+        peer_addrs = self._get_peer_udp_addrs()
+        if not peer_addrs:
+            return
+        now = time.monotonic()
+        for chunk in mic_chunks:
+            self._audio_streamer.send_frame(
+                chunk, seq=self._audio_send_seq,
+                timestamp=now, peer_addrs=peer_addrs,
+            )
+            self._audio_send_seq += 1
+
+    def _update_merge_display(self) -> None:
+        """Update waveform merge weight indicator for P2P sessions."""
+        mixer = self._peer_mixer
+        if mixer and mixer.active_peers > 0 and self._recording:
+            self._merge_display_counter = getattr(self, '_merge_display_counter', 0) + 1
+            if self._merge_display_counter % 8 == 0:
+                stats = mixer.get_stats()
+                weights = stats.get("live_weights", {})
+                waveform = self.query_one(WaveformWidget)
+                if weights:
+                    names = self._get_peer_names()
+                    parts = []
+                    for nid, w in sorted(weights.items(), key=lambda x: -x[1]):
+                        name = "you" if nid == "__local__" else names.get(nid, nid[:6])
+                        parts.append(f"{name} {int(w*100)}%")
+                    waveform.set_merge_status(" | ".join(parts))
+                else:
+                    waveform.set_merge_status("")
+        elif not mixer or mixer.active_peers == 0:
+            if getattr(self, '_merge_display_counter', 0) > 0:
+                self._merge_display_counter = 0
+                self.query_one(WaveformWidget).set_merge_status("")
+
     def _process_audio_inner(self):
         waveform = self.query_one(WaveformWidget)
 
@@ -671,16 +706,7 @@ class VoxTerm(App):
         sys_chunks = self.system_capture.drain()
 
         # Send raw mic audio to peers via UDP (before mixing with system)
-        if mic_chunks and self._audio_streamer and self._session_mgr:
-            peer_addrs = self._get_peer_udp_addrs()
-            if peer_addrs:
-                now = time.monotonic()
-                for chunk in mic_chunks:
-                    self._audio_streamer.send_frame(
-                        chunk, seq=self._audio_send_seq,
-                        timestamp=now, peer_addrs=peer_addrs,
-                    )
-                    self._audio_send_seq += 1
+        self._stream_mic_to_peers(mic_chunks)
 
         chunks = self._mix_chunks(mic_chunks, sys_chunks) if sys_chunks else mic_chunks
         if not chunks:
@@ -720,25 +746,7 @@ class VoxTerm(App):
         waveform.tick()
 
         # Update waveform merge indicator (~every 0.5s, not every frame)
-        mixer = self._peer_mixer
-        if mixer and mixer.active_peers > 0 and self._recording:
-            self._merge_display_counter = getattr(self, '_merge_display_counter', 0) + 1
-            if self._merge_display_counter % 8 == 0:  # ~0.5s at 15fps
-                stats = mixer.get_stats()
-                weights = stats.get("live_weights", {})
-                if weights:
-                    names = self._get_peer_names()
-                    parts = []
-                    for nid, w in sorted(weights.items(), key=lambda x: -x[1]):
-                        name = "you" if nid == "__local__" else names.get(nid, nid[:6])
-                        parts.append(f"{name} {int(w*100)}%")
-                    waveform.set_merge_status(" | ".join(parts))
-                else:
-                    waveform.set_merge_status("")
-        elif not mixer or mixer.active_peers == 0:
-            if getattr(self, '_merge_display_counter', 0) > 0:
-                self._merge_display_counter = 0
-                waveform.set_merge_status("")
+        self._update_merge_display()
 
         # Check transcription trigger (overlapping-chunk agreement pipeline)
         silence_duration = self._silence_chunks * self._chunk_duration

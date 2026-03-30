@@ -11,6 +11,7 @@ Typical overhead is negligible vs the ~100ms diarization latency.
 from __future__ import annotations
 
 import json
+import select
 import struct
 import sys
 from typing import IO
@@ -70,27 +71,31 @@ def send_msg(pipe: IO[bytes], msg: dict) -> None:
     pipe.flush()
 
 
-def recv_msg(pipe: IO[bytes]) -> dict | None:
+def recv_msg(pipe: IO[bytes], timeout: float | None = None) -> dict | None:
     """Read a length-prefixed JSON message from a pipe.
 
-    Returns None on EOF (subprocess exited).
+    Returns None on EOF (subprocess exited) or timeout.
     """
-    header = _read_exact(pipe, _HEADER.size)
+    header = _read_exact(pipe, _HEADER.size, timeout)
     if header is None:
         return None
     (length,) = _HEADER.unpack(header)
     if length > 50_000_000:  # sanity: 50MB max
         return None
-    payload = _read_exact(pipe, length)
+    payload = _read_exact(pipe, length, timeout)
     if payload is None:
         return None
     return json.loads(payload.decode("utf-8"))
 
 
-def _read_exact(pipe: IO[bytes], n: int) -> bytes | None:
-    """Read exactly n bytes from a pipe. Returns None on EOF."""
+def _read_exact(pipe: IO[bytes], n: int, timeout: float | None = None) -> bytes | None:
+    """Read exactly n bytes from a pipe. Returns None on EOF or timeout."""
     data = b""
     while len(data) < n:
+        if timeout is not None:
+            ready, _, _ = select.select([pipe], [], [], timeout)
+            if not ready:
+                return None  # timeout
         chunk = pipe.read(n - len(data))
         if not chunk:
             return None

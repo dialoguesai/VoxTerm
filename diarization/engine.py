@@ -15,6 +15,13 @@ from __future__ import annotations
 import logging
 import numpy as np
 
+from config import (
+    MATCH_THRESHOLD, NEW_SPEAKER_THRESHOLD, CONTINUITY_BONUS, CONFLICT_MARGIN,
+    MERGE_THRESHOLD, QUALITY_RMS_THRESHOLD, MERGE_INTERVAL, RECLUSTER_INTERVAL,
+    RECLUSTER_MIN_SEGMENTS, LOOP_PROB, WHITEN_MIN_SEGMENTS,
+    SCD_CHANGE_THRESHOLD, SCD_WINDOW_SEC, SCD_HOP_SEC,
+)
+
 log = logging.getLogger(__name__)
 
 _MIN_SPEECH_SAMPLES = 24000   # 1.5 s at 16 kHz — shorter → unreliable embeddings
@@ -24,21 +31,6 @@ _SCD_MIN_SAMPLES = 48000     # 3.0 s at 16 kHz — minimum audio length for SCD
 
 class DiarizationEngine:
     """Online speaker identification using ECAPA-TDNN embeddings."""
-
-    MATCH_THRESHOLD = 0.35        # cosine sim above this → assign to existing speaker
-    NEW_SPEAKER_THRESHOLD = 0.30  # must be below this vs ALL centroids to create new speaker
-    CONTINUITY_BONUS = 0.0        # disabled — was causing speaker transitions to stick
-    CONFLICT_MARGIN = 0.05        # if top-2 within this → prefer more established speaker
-    MERGE_THRESHOLD = 0.50        # pairwise cosine sim above this → merge clusters
-    QUALITY_RMS_THRESHOLD = 0.003 # min RMS energy for quality-gated centroid update
-    MERGE_INTERVAL = 3            # check for cluster merges every N identify() calls
-    RECLUSTER_INTERVAL = 8        # spectral re-clustering every N identify() calls
-    RECLUSTER_MIN_SEGMENTS = 4    # min total segments before re-clustering kicks in
-    LOOP_PROB = 0.99              # VBx-style HMM self-transition probability
-    WHITEN_MIN_SEGMENTS = 8       # min segments before PLDA-lite whitening kicks in
-    SCD_CHANGE_THRESHOLD = 0.6    # cosine distance above this → speaker change detected
-    SCD_WINDOW_SEC = 2.0          # sliding window duration for SCD embedding extraction
-    SCD_HOP_SEC = 0.5             # hop between consecutive SCD windows
 
     def __init__(self):
         self._model = None
@@ -242,7 +234,7 @@ class DiarizationEngine:
 
         # Quality gate: check RMS energy of speech portion
         rms = float(np.sqrt(np.mean(audio ** 2)))
-        is_high_quality = rms >= self.QUALITY_RMS_THRESHOLD
+        is_high_quality = rms >= QUALITY_RMS_THRESHOLD
 
         # Overlap-aware embedding: use segmentation to weight frames
         # so overlapping speech doesn't contaminate the embedding
@@ -278,7 +270,7 @@ class DiarizationEngine:
             score = self._cosine_sim(emb_for_sim, c_for_sim)
             # Continuity bias: boost the most recent speaker
             if sid == self._last_speaker_id:
-                score += self.CONTINUITY_BONUS
+                score += CONTINUITY_BONUS
             scores.append((score, sid))
         scores.sort(reverse=True)
 
@@ -290,7 +282,7 @@ class DiarizationEngine:
         if len(scores) >= 2:
             top_score, top_id = scores[0]
             sec_score, sec_id = scores[1]
-            if top_score - sec_score < self.CONFLICT_MARGIN:
+            if top_score - sec_score < CONFLICT_MARGIN:
                 top_count = len(self._segment_embeddings.get(top_id, []))
                 sec_count = len(self._segment_embeddings.get(sec_id, []))
                 if sec_count > top_count:
@@ -301,7 +293,7 @@ class DiarizationEngine:
         if len(scores) >= 2:
             gap = scores[0][0] - scores[1][0]
             # Case 1: top-2 are very close (original check)
-            if gap < self.CONFLICT_MARGIN:
+            if gap < CONFLICT_MARGIN:
                 is_ambiguous = True
             # Case 2: both top-2 exceed a moderate threshold (both speakers present)
             elif scores[0][0] > 0.30 and scores[1][0] > 0.25:
@@ -321,10 +313,10 @@ class DiarizationEngine:
         # After warmup: freeze speaker creation (only merge, no new)
         n_existing = len(self._speaker_centroids)
         can_create_new = is_high_quality
-        adaptive_new_threshold = self.NEW_SPEAKER_THRESHOLD
+        adaptive_new_threshold = NEW_SPEAKER_THRESHOLD
         if n_existing >= 2:
             # Stricter threshold per extra speaker
-            adaptive_new_threshold = max(0.10, self.NEW_SPEAKER_THRESHOLD - 0.05 * (n_existing - 2))
+            adaptive_new_threshold = max(0.10, NEW_SPEAKER_THRESHOLD - 0.05 * (n_existing - 2))
         # After warmup: only allow new speakers if clearly different from ALL existing
         # Threshold gets stricter as more speakers are created (diminishing returns)
         if self._identify_count > 20 and self._next_id > 4:
@@ -334,7 +326,7 @@ class DiarizationEngine:
             if best_score > freeze_threshold:
                 can_create_new = False
 
-        if best_score >= self.MATCH_THRESHOLD and best_id is not None:
+        if best_score >= MATCH_THRESHOLD and best_id is not None:
             sid = best_id
             should_update = is_high_quality and not is_ambiguous
 
@@ -350,7 +342,7 @@ class DiarizationEngine:
                     ]
                     avg_recent_sim = sum(recent_sims) / len(recent_sims)
 
-                    if avg_recent_sim < self.MATCH_THRESHOLD * 0.6:
+                    if avg_recent_sim < MATCH_THRESHOLD * 0.6:
                         should_update = False
                         # Check if another existing speaker is a better match
                         # for the recent-embedding comparison
@@ -405,10 +397,10 @@ class DiarizationEngine:
 
         # Periodic maintenance
         self._identify_count += 1
-        if self._identify_count % self.RECLUSTER_INTERVAL == 0:
+        if self._identify_count % RECLUSTER_INTERVAL == 0:
             self._spectral_recluster()
         # Refresh centroids and check merges on every merge cycle
-        if self._identify_count % self.MERGE_INTERVAL == 0:
+        if self._identify_count % MERGE_INTERVAL == 0:
             self._refresh_centroids()
             self._maybe_merge_clusters()
 
@@ -592,8 +584,8 @@ class DiarizationEngine:
             return [(label, sid, 0, len(audio))]
 
         # 1. Extract embeddings with sliding window
-        window_samples = int(self.SCD_WINDOW_SEC * sample_rate)
-        hop_samples = int(self.SCD_HOP_SEC * sample_rate)
+        window_samples = int(SCD_WINDOW_SEC * sample_rate)
+        hop_samples = int(SCD_HOP_SEC * sample_rate)
 
         embeddings: list[np.ndarray] = []
         positions: list[int] = []
@@ -613,7 +605,7 @@ class DiarizationEngine:
         change_points = [0]
         for i in range(1, len(embeddings)):
             dist = 1.0 - self._cosine_sim(embeddings[i], embeddings[i - 1])
-            if dist > self.SCD_CHANGE_THRESHOLD:
+            if dist > SCD_CHANGE_THRESHOLD:
                 change_points.append(positions[i])
         change_points.append(len(audio))
 
@@ -745,7 +737,7 @@ class DiarizationEngine:
         for li, sid, score in all_scores:
             if li in assigned_local or sid in used_global:
                 continue
-            if score >= self.MATCH_THRESHOLD:
+            if score >= MATCH_THRESHOLD:
                 local_to_global[li] = sid
                 assigned_local.add(li)
                 used_global.add(sid)
@@ -801,10 +793,10 @@ class DiarizationEngine:
             return [(label, sid, 0, len(audio))]
 
         self._identify_count += 1
-        if self._identify_count % self.RECLUSTER_INTERVAL == 0:
+        if self._identify_count % RECLUSTER_INTERVAL == 0:
             self._spectral_recluster()
             self._refresh_centroids()
-        elif self._identify_count % self.MERGE_INTERVAL == 0:
+        elif self._identify_count % MERGE_INTERVAL == 0:
             self._maybe_merge_clusters()
 
         return results
@@ -935,7 +927,7 @@ class DiarizationEngine:
             if len(embs) >= 2
         }
         total = sum(len(e) for e in speakers_with_data.values())
-        if len(speakers_with_data) < 2 or total < self.WHITEN_MIN_SEGMENTS:
+        if len(speakers_with_data) < 2 or total < WHITEN_MIN_SEGMENTS:
             return
 
         # Compute within-speaker scatter matrix
@@ -1019,7 +1011,7 @@ class DiarizationEngine:
         if n < 2 or k < 2:
             return labels
 
-        loop_p = self.LOOP_PROB
+        loop_p = LOOP_PROB
         switch_p = (1.0 - loop_p) / (k - 1)
 
         # Log transition matrix
@@ -1073,7 +1065,7 @@ class DiarizationEngine:
                 seg_speaker_ids.append(sid)
 
         n = len(all_embs)
-        if n < self.RECLUSTER_MIN_SEGMENTS:
+        if n < RECLUSTER_MIN_SEGMENTS:
             return
 
         current_speakers = list(self._speaker_centroids.keys())
@@ -1175,7 +1167,7 @@ class DiarizationEngine:
                     best_sim = sim
                     best_pair = (sids[i], sids[j])
 
-        if best_sim < self.MERGE_THRESHOLD or best_pair is None:
+        if best_sim < MERGE_THRESHOLD or best_pair is None:
             return
 
         # Merge smaller cluster into larger (by segment count)
