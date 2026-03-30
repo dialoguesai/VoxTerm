@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-from config import DIARIZER_MAX_RESTARTS, DIARIZER_RESTART_WINDOW
+from config import DIARIZER_MAX_RESTARTS, DIARIZER_RESTART_WINDOW, DIARIZER_TIMEOUT
 from diarization.ipc import (
     MSG_ERROR, MSG_GET_CENTROID, MSG_GET_COLOR,
     MSG_GET_EMBEDDINGS, MSG_GET_NAME, MSG_GET_NAMES, MSG_GET_STATE,
@@ -44,6 +44,11 @@ class DiarizationProxy:
 
     Supports three modes: "direct" (ONNX in-process), "subprocess" (PyTorch
     in child process), and "inprocess" (PyTorch fallback with lock).
+
+    Lock ordering (always acquire in this order to prevent deadlocks):
+      1. _lock — serializes IPC calls to subprocess (subprocess mode only)
+      2. _engine_lock — protects in-process engine calls (direct/inprocess modes)
+    These locks are never held simultaneously; each mode uses only one.
     """
 
     def __init__(self, mode: str | None = None):
@@ -126,15 +131,17 @@ class DiarizationProxy:
         )
 
         # Wait for READY message (model loading can take 5-30s)
-        resp = recv_msg(self._proc.stdout)
+        resp = recv_msg(self._proc.stdout, timeout=30.0)
         if resp is None or resp.get("type") != MSG_READY:
-            # Grab stderr for error context
+            # Kill first to ensure stderr is closed, then read for diagnostics
             stderr_out = ""
             try:
+                self._proc.kill()
+                self._proc.wait(timeout=2)
                 stderr_out = self._proc.stderr.read(2000).decode("utf-8", errors="replace")
             except Exception:
                 pass
-            self._kill()
+            self._proc = None
             raise RuntimeError(
                 f"Diarizer subprocess did not start: {stderr_out[:200]}"
             )
@@ -360,7 +367,7 @@ class DiarizationProxy:
                 if self._proc is None or self._proc.stdin is None:
                     raise BrokenPipeError("no subprocess")
                 send_msg(self._proc.stdin, msg)
-                resp = recv_msg(self._proc.stdout)
+                resp = recv_msg(self._proc.stdout, timeout=DIARIZER_TIMEOUT)
                 if resp is None:
                     raise BrokenPipeError("subprocess EOF")
                 if resp.get("type") == MSG_ERROR:
