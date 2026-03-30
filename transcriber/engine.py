@@ -21,6 +21,10 @@ class _DeduplicatorMixin:
     def _init_dedup(self):
         self._recent: list[str] = []
 
+    def reset_dedup(self):
+        """Clear dedup state (public API for cross-model orchestration)."""
+        self._recent.clear()
+
     def _is_duplicate(self, text: str) -> bool:
         normalized = text.lower().strip().rstrip(".")
         if normalized in self._recent:
@@ -168,8 +172,9 @@ class Qwen3Transcriber(_DeduplicatorMixin):
 class WhisperTranscriber(_DeduplicatorMixin):
     """Legacy mlx-whisper transcriber (fallback)."""
 
-    def __init__(self, model: str = "mlx-community/whisper-small-mlx"):
+    def __init__(self, model: str = "mlx-community/whisper-small-mlx", language: str | None = "en"):
         self.model = model
+        self._language = language
         self._loaded = False
         self._init_dedup()
 
@@ -196,7 +201,7 @@ class WhisperTranscriber(_DeduplicatorMixin):
         )
 
         text = result.get("text", "").strip()
-        if _is_hallucination(text):
+        if _is_hallucination(text, self._language):
             return {"text": "", "speaker": "", "speaker_id": 0}
 
         if self._is_duplicate(text):
@@ -207,6 +212,9 @@ class WhisperTranscriber(_DeduplicatorMixin):
     @property
     def is_loaded(self) -> bool:
         return self._loaded
+
+
+_ALLOWED_MODEL_TYPES = {"qwen3", "whisper"}
 
 
 class CrossModelTranscriber(_DeduplicatorMixin):
@@ -232,19 +240,27 @@ class CrossModelTranscriber(_DeduplicatorMixin):
         language: str | None = "en",
     ):
         self._models = []
-        for model_id, model_type in [
-            (primary_model, primary_type),
-            (secondary_model, secondary_type),
+        for model_id, model_type, role in [
+            (primary_model, primary_type, "primary_type"),
+            (secondary_model, secondary_type, "secondary_type"),
         ]:
+            if model_type not in _ALLOWED_MODEL_TYPES:
+                raise ValueError(
+                    f"Unknown {role} '{model_type}'. Expected one of {sorted(_ALLOWED_MODEL_TYPES)}."
+                )
             if model_type == "qwen3":
                 self._models.append(Qwen3Transcriber(model=model_id, language=language))
             else:
-                self._models.append(WhisperTranscriber(model=model_id))
+                self._models.append(WhisperTranscriber(model=model_id, language=language))
         if tertiary_model and tertiary_type:
+            if tertiary_type not in _ALLOWED_MODEL_TYPES:
+                raise ValueError(
+                    f"Unknown tertiary_type '{tertiary_type}'. Expected one of {sorted(_ALLOWED_MODEL_TYPES)}."
+                )
             if tertiary_type == "qwen3":
                 self._models.append(Qwen3Transcriber(model=tertiary_model, language=language))
             else:
-                self._models.append(WhisperTranscriber(model=tertiary_model))
+                self._models.append(WhisperTranscriber(model=tertiary_model, language=language))
 
         self._loaded = False
         self._init_dedup()
@@ -289,10 +305,12 @@ class CrossModelTranscriber(_DeduplicatorMixin):
         while i > 0 or j > 0:
             if i > 0 and j > 0 and words_a[i - 1] == words_b[j - 1]:
                 aligned.append((words_a[i - 1], words_b[j - 1]))
-                i -= 1; j -= 1
+                i -= 1
+                j -= 1
             elif i > 0 and j > 0 and dp[i][j] == dp[i - 1][j - 1] + 1:
                 aligned.append((words_a[i - 1], words_b[j - 1]))
-                i -= 1; j -= 1
+                i -= 1
+                j -= 1
             elif i > 0 and dp[i][j] == dp[i - 1][j] + 1:
                 aligned.append((words_a[i - 1], None))
                 i -= 1
@@ -335,6 +353,13 @@ class CrossModelTranscriber(_DeduplicatorMixin):
         for nw, rw in zip(backbone_norm, backbone_raw):
             network.append({nw: (rw, 1)})
 
+        # Map from original backbone positions to current network indices.
+        # Insertions shift later slots, so we track the offset.
+        backbone_to_net = list(range(len(backbone_norm)))
+        # Track insertion slots: (backbone_pos, norm_word) → network index
+        # so later models can vote into existing insertion slots.
+        insertion_slots: dict[tuple[int, str], int] = {}
+
         for sec_idx in range(1, n_models):
             sec_norm = norm_words[sec_idx]
             sec_raw = raw_words[sec_idx]
@@ -343,14 +368,14 @@ class CrossModelTranscriber(_DeduplicatorMixin):
             # Track consumed positions in secondary to get correct raw word
             sec_consumed = 0
             backbone_pos = 0
-            insertions: list[tuple[int, str, str]] = []  # (position, norm, raw)
+            insertions: list[tuple[int, int, str, str]] = []  # (backbone_pos, net_index, norm, raw)
 
             for a_word, b_word in alignment:
                 if a_word is not None and b_word is not None:
-                    # Both aligned — vote into backbone_pos slot
-                    # Find the raw word from secondary at the right position
+                    # Both aligned — vote into the correct network slot
+                    net_idx = backbone_to_net[backbone_pos]
                     b_raw_word = sec_raw[sec_consumed] if sec_consumed < len(sec_raw) else b_word
-                    slot = network[backbone_pos]
+                    slot = network[net_idx]
                     if b_word in slot:
                         old_raw, old_cnt = slot[b_word]
                         slot[b_word] = (old_raw, old_cnt + 1)
@@ -360,7 +385,8 @@ class CrossModelTranscriber(_DeduplicatorMixin):
                     sec_consumed += 1
                 elif a_word is not None:
                     # Backbone has word, secondary doesn't — epsilon vote
-                    slot = network[backbone_pos]
+                    net_idx = backbone_to_net[backbone_pos]
+                    slot = network[net_idx]
                     if "" in slot:
                         old_raw, old_cnt = slot[""]
                         slot[""] = ("", old_cnt + 1)
@@ -368,17 +394,46 @@ class CrossModelTranscriber(_DeduplicatorMixin):
                         slot[""] = ("", 1)
                     backbone_pos += 1
                 else:
-                    # Secondary has extra word — record insertion
+                    # Secondary has extra word — check if a prior model already
+                    # inserted this word at the same backbone position.
                     b_raw_word = sec_raw[sec_consumed] if sec_consumed < len(sec_raw) else b_word
-                    insertions.append((backbone_pos, b_word, b_raw_word))
+                    ins_key = (backbone_pos, b_word)
+                    if ins_key in insertion_slots:
+                        # Vote into existing insertion slot
+                        existing_idx = insertion_slots[ins_key]
+                        slot = network[existing_idx]
+                        if b_word in slot:
+                            old_raw, old_cnt = slot[b_word]
+                            slot[b_word] = (old_raw, old_cnt + 1)
+                        else:
+                            slot[b_word] = (b_raw_word, 1)
+                        # Reduce epsilon count since this model votes for the word
+                        if "" in slot:
+                            eps_raw, eps_cnt = slot[""]
+                            if eps_cnt > 1:
+                                slot[""] = ("", eps_cnt - 1)
+                            else:
+                                del slot[""]
+                    else:
+                        # Record new insertion
+                        net_idx = backbone_to_net[backbone_pos] if backbone_pos < len(backbone_to_net) else len(network)
+                        insertions.append((backbone_pos, net_idx, b_word, b_raw_word))
                     sec_consumed += 1
 
-            # Apply insertions in reverse order so positions stay valid
-            for pos, ins_norm, ins_raw in reversed(insertions):
-                # Insert a new slot where only this secondary voted for the word
-                # and all other models voted epsilon
+            # Apply insertions in reverse order so earlier positions stay valid
+            for bp, pos, ins_norm, ins_raw in reversed(insertions):
                 new_slot = {"": ("", n_models - 1), ins_norm: (ins_raw, 1)}
                 network.insert(pos, new_slot)
+                # Record this insertion slot for later models
+                insertion_slots[(bp, ins_norm)] = pos
+                # Shift backbone_to_net: all mappings at or after pos move forward by 1
+                for k in range(len(backbone_to_net)):
+                    if backbone_to_net[k] >= pos:
+                        backbone_to_net[k] += 1
+                # Shift existing insertion_slots that are at or after pos
+                for key, idx in insertion_slots.items():
+                    if key != (bp, ins_norm) and idx >= pos:
+                        insertion_slots[key] = idx + 1
 
         # Vote: pick highest-count candidate at each slot, skip epsilon winners
         merged = []
@@ -407,7 +462,7 @@ class CrossModelTranscriber(_DeduplicatorMixin):
         # Run all models
         results = []
         for m in self._models:
-            m._init_dedup()  # Reset dedup per model per sample
+            m.reset_dedup()  # Reset dedup per model per sample
             r = m.transcribe(audio, **kwargs)
             results.append(r.get("text", "").strip())
 
