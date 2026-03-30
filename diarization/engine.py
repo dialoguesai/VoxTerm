@@ -32,6 +32,22 @@ _SCD_MIN_SAMPLES = 48000     # 3.0 s at 16 kHz — minimum audio length for SCD
 class DiarizationEngine:
     """Online speaker identification using ECAPA-TDNN embeddings."""
 
+    # Expose config thresholds as class attributes for backward compatibility
+    MATCH_THRESHOLD = MATCH_THRESHOLD
+    NEW_SPEAKER_THRESHOLD = NEW_SPEAKER_THRESHOLD
+    CONTINUITY_BONUS = CONTINUITY_BONUS
+    CONFLICT_MARGIN = CONFLICT_MARGIN
+    MERGE_THRESHOLD = MERGE_THRESHOLD
+    QUALITY_RMS_THRESHOLD = QUALITY_RMS_THRESHOLD
+    MERGE_INTERVAL = MERGE_INTERVAL
+    RECLUSTER_INTERVAL = RECLUSTER_INTERVAL
+    RECLUSTER_MIN_SEGMENTS = RECLUSTER_MIN_SEGMENTS
+    LOOP_PROB = LOOP_PROB
+    WHITEN_MIN_SEGMENTS = WHITEN_MIN_SEGMENTS
+    SCD_CHANGE_THRESHOLD = SCD_CHANGE_THRESHOLD
+    SCD_WINDOW_SEC = SCD_WINDOW_SEC
+    SCD_HOP_SEC = SCD_HOP_SEC
+
     def __init__(self):
         self._model = None
         self._onnx_embedder = None  # OnnxSpeakerEmbedder (when backend="onnx")

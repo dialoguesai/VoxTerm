@@ -11,9 +11,11 @@ Typical overhead is negligible vs the ~100ms diarization latency.
 from __future__ import annotations
 
 import json
+import os
 import select
 import struct
 import sys
+import time
 from typing import IO
 
 import numpy as np
@@ -75,28 +77,39 @@ def recv_msg(pipe: IO[bytes], timeout: float | None = None) -> dict | None:
     """Read a length-prefixed JSON message from a pipe.
 
     Returns None on EOF (subprocess exited) or timeout.
+    Timeout is enforced as a total wall-clock deadline across both header
+    and payload reads.
     """
-    header = _read_exact(pipe, _HEADER.size, timeout)
+    deadline = (time.monotonic() + timeout) if timeout is not None else None
+    header = _read_exact(pipe, _HEADER.size, deadline)
     if header is None:
         return None
     (length,) = _HEADER.unpack(header)
     if length > 50_000_000:  # sanity: 50MB max
         return None
-    payload = _read_exact(pipe, length, timeout)
+    payload = _read_exact(pipe, length, deadline)
     if payload is None:
         return None
     return json.loads(payload.decode("utf-8"))
 
 
-def _read_exact(pipe: IO[bytes], n: int, timeout: float | None = None) -> bytes | None:
-    """Read exactly n bytes from a pipe. Returns None on EOF or timeout."""
+def _read_exact(pipe: IO[bytes], n: int, deadline: float | None = None) -> bytes | None:
+    """Read exactly n bytes from a pipe. Returns None on EOF or timeout.
+
+    Uses os.read() on the underlying fd to avoid buffered-IO hangs with select,
+    and a deadline (absolute time) so the total wall-clock wait is bounded.
+    """
+    fd = pipe.fileno()
     data = b""
     while len(data) < n:
-        if timeout is not None:
-            ready, _, _ = select.select([pipe], [], [], timeout)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None  # timeout
+            ready, _, _ = select.select([fd], [], [], remaining)
             if not ready:
                 return None  # timeout
-        chunk = pipe.read(n - len(data))
+        chunk = os.read(fd, n - len(data))
         if not chunk:
             return None
         data += chunk

@@ -133,13 +133,15 @@ class DiarizationProxy:
         # Wait for READY message (model loading can take 5-30s)
         resp = recv_msg(self._proc.stdout, timeout=30.0)
         if resp is None or resp.get("type") != MSG_READY:
-            # Grab stderr for error context
+            # Kill first to ensure stderr is closed, then read for diagnostics
             stderr_out = ""
             try:
+                self._proc.kill()
+                self._proc.wait(timeout=2)
                 stderr_out = self._proc.stderr.read(2000).decode("utf-8", errors="replace")
             except Exception:
                 pass
-            self._kill()
+            self._proc = None
             raise RuntimeError(
                 f"Diarizer subprocess did not start: {stderr_out[:200]}"
             )
