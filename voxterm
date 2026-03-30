@@ -1,4 +1,10 @@
 #!/bin/bash
 # VOXTERM launcher — uses the bundled venv automatically
 DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [[ "$1" == "--dictate" || "$1" == "-D" ]]; then
+    shift
+    exec "$DIR/.venv/bin/python3" -m dictation "$@"
+fi
+
 exec "$DIR/.venv/bin/python3" "$DIR/app.py" "$@"

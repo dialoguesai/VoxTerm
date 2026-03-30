@@ -79,6 +79,11 @@ DIARIZER_RESTART_WINDOW = 60  # seconds — restart counter resets after this
 # Crash reporting
 CRASH_LOG_MAX_COUNT = 50      # max crash logs to keep (rotated on startup)
 
+# Dictation mode
+DICTATION_HOTKEY_MACOS = ("cmd", "shift", "d")
+DICTATION_HOTKEY_LINUX = ("super", "shift", "d")
+DICTATION_INTER_KEY_DELAY_MS = 1
+
 # Waveform
 WAVEFORM_FPS = 15
 WAVEFORM_HEIGHT = 11
