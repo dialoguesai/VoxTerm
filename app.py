@@ -709,6 +709,7 @@ class VoxTerm(App):
         waveform.tick()
 
         # Update waveform merge indicator (~every 0.5s, not every frame)
+        mixer = self._peer_mixer
         if mixer and mixer.active_peers > 0 and self._recording:
             self._merge_display_counter = getattr(self, '_merge_display_counter', 0) + 1
             if self._merge_display_counter % 8 == 0:  # ~0.5s at 15fps
