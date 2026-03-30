@@ -64,23 +64,24 @@ class TranscriptPanel(RichLog):
 
     def add_transcript(
         self, content: str, speaker: str = "", speaker_id: int = 0,
-        confidence: str = "",
+        confidence: str = "", overlap: bool = False,
     ):
         """Add transcribed text with optional speaker attribution.
 
         confidence: "" = default, "high" = auto-recognized,
                     "medium" = suggested, "new" = unknown new speaker
+        overlap: True if overlapping speech detected in this segment
         """
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._entries.append((timestamp, "transcript", content, speaker, speaker_id, confidence))
 
         if not self._merged_view:
-            text = self._render_entry(timestamp, content, speaker, speaker_id, confidence)
+            text = self._render_entry(timestamp, content, speaker, speaker_id, confidence, overlap)
             self.write(text)
 
     def _render_entry(
         self, timestamp: str, content: str, speaker: str, speaker_id: int,
-        confidence: str = "",
+        confidence: str = "", overlap: bool = False,
     ) -> Text:
         """Render a single transcript entry as Rich Text."""
         text = Text()
@@ -91,6 +92,11 @@ class TranscriptPanel(RichLog):
                 speaker_id,
                 _SPEAKER_COLORS[(speaker_id - 1) % len(_SPEAKER_COLORS)],
             )
+
+            # Overlap indicator
+            if overlap:
+                text.append("[+] ", Style(color="#ff6600", bold=True))
+
             text.append(f"{speaker}", Style(color=color, bold=True))
 
             # Confidence indicator
