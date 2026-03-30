@@ -204,15 +204,20 @@ class SpeakerSegmentation:
         self,
         activation: np.ndarray,
         audio_samples: int,
+        n_speakers: int | None = None,
     ) -> list[tuple[int, np.ndarray]]:
         """Generate per-speaker sample-level masks for weighted embedding.
 
         For each active local speaker, returns a weight array over audio samples
         that can be used to mask the audio before embedding extraction.
 
+        Args:
+            activation: per-speaker activation matrix
+            audio_samples: total number of audio samples
+            n_speakers: estimated speaker count for adaptive overlap penalty
         Returns list of (speaker_idx, weights_per_sample) tuples.
         """
-        osp_weights = self.overlap_aware_weights(activation)
+        osp_weights = self.overlap_aware_weights(activation, n_speakers=n_speakers)
         active_speakers = self.get_active_speakers(activation)
 
         n_frames = activation.shape[0]
