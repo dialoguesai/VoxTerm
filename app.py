@@ -1872,10 +1872,14 @@ class VoxTerm(App):
     def _wire_session_callbacks(self) -> None:
         mgr = self._session_mgr
 
+        def _mixer_key(node_id: str) -> str:
+            """Truncate node_id to match the 16-byte UDP wire format."""
+            return node_id.encode("utf-8")[:16].rstrip(b"\x00").decode("utf-8", errors="replace")
+
         def on_connected(peer):
             # Register peer in the audio mixer for multi-mic merging
             if self._peer_mixer and peer.audio_merge_capable:
-                self._peer_mixer.register_peer(peer.node_id, peer.clock)
+                self._peer_mixer.register_peer(_mixer_key(peer.node_id), peer.clock)
                 merge_msg = " (audio merge)"
             else:
                 merge_msg = ""
@@ -1888,7 +1892,7 @@ class VoxTerm(App):
         def on_disconnected(node_id, display_name):
             # Remove peer from audio mixer
             if self._peer_mixer:
-                self._peer_mixer.remove_peer(node_id)
+                self._peer_mixer.remove_peer(_mixer_key(node_id))
             self.call_from_thread(
                 self.query_one(TranscriptPanel).system_message,
                 f"{display_name} disconnected"
