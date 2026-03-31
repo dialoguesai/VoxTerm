@@ -70,7 +70,7 @@ VAD_THRESHOLD = 0.5           # Silero VAD speech probability threshold
 
 # Overlapping-chunk agreement pipeline (LocalAgreement algorithm)
 AGREEMENT_TICK_SECONDS = 1.5  # Transcribe every N seconds (overlapping window)
-AGREEMENT_MIN_AUDIO = 0.8     # Min audio seconds before first tick
+AGREEMENT_MIN_AUDIO = 1.5     # Min audio seconds before first tick
 AGREEMENT_FLUSH_SILENCE = 1.0 # Seconds of silence before flushing pending words
 
 # Session persistence & system audio capture paths

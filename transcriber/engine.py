@@ -75,6 +75,12 @@ def _is_hallucination(text: str, expected_language: str | None = "en") -> bool:
         r"^let'?s\s+go\.?$",
         r"^one,?\s+two,?\s+three,?\s+four\.?$",
         r"^i'?m\s+going\s+to\s+go\s+ahead",
+        # Chat-model meta-commentary (Qwen2.5-Omni hallucinates these on short/silent audio)
+        r"(i'?m sorry|i cannot|i can'?t).*(transcri|audio|provide)",
+        r"(the )?audio is (silent|not provided|empty|unclear)",
+        r"(no (audio|speech|sound)|there is no (audio|speech|sound))",
+        r"^(silence|silent|inaudible)\.?$",
+        r"(not provided|not available|cannot be transcribed)",
     ]
     text_lower = text.lower().strip()
     for pattern in hallucination_patterns:
@@ -361,6 +367,9 @@ class LlamaServerTranscriber(_DeduplicatorMixin):
         self._loaded = True
 
     def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
+        from config import SAMPLE_RATE
+        if len(audio) < SAMPLE_RATE * 1.0:
+            return {"text": "", "speaker": "", "speaker_id": 0}
         rms = float(np.sqrt(np.mean(audio ** 2)))
         if rms < 0.005:
             return {"text": "", "speaker": "", "speaker_id": 0}
