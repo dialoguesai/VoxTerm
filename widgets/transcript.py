@@ -65,19 +65,24 @@ class TranscriptPanel(RichLog):
     def add_transcript(
         self, content: str, speaker: str = "", speaker_id: int = 0,
         confidence: str = "", overlap: bool = False,
-    ):
+    ) -> int:
         """Add transcribed text with optional speaker attribution.
 
         confidence: "" = default, "high" = auto-recognized,
                     "medium" = suggested, "new" = unknown new speaker
         overlap: True if overlapping speech detected in this segment
+
+        Returns the entry index (for retroactive updates via update_entry_speaker).
         """
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._entries.append((timestamp, "transcript", content, speaker, speaker_id, confidence))
+        entry_idx = len(self._entries) - 1
 
         if not self._merged_view:
             text = self._render_entry(timestamp, content, speaker, speaker_id, confidence, overlap)
             self.write(text)
+
+        return entry_idx
 
     def _render_entry(
         self, timestamp: str, content: str, speaker: str, speaker_id: int,
@@ -226,6 +231,25 @@ class TranscriptPanel(RichLog):
             text.append(" …", Style(color="#404040"))
 
         return text
+
+    # ── per-entry retroactive updates ────────────────────────
+
+    def update_entry_speaker(
+        self, entry_idx: int, speaker: str, speaker_id: int,
+        confidence: str = "",
+    ) -> None:
+        """Update a specific entry's speaker info (for async diarization).
+
+        Silently ignores invalid indices (e.g. after clear()).
+        """
+        if entry_idx < 0 or entry_idx >= len(self._entries):
+            return
+        old = self._entries[entry_idx]
+        if old[1] != "transcript":
+            return
+        self._entries[entry_idx] = (old[0], old[1], old[2], speaker, speaker_id, confidence)
+        if not self._merged_view:
+            self._rerender()
 
     # ── existing methods ─────────────────────────────────────
 

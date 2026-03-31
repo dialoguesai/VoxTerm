@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import gc
+import itertools
 import logging
 import queue
 import sys
@@ -440,6 +441,10 @@ class VoxTerm(App):
         # Overlapping-chunk agreement pipeline
         self._agreement = AgreementState()
         self._last_tick_time: float = 0.0
+        # Async diarization: decouple speaker ID from transcription RTF
+        self._diarize_queue: queue.Queue = queue.Queue(maxsize=50)
+        self._diarize_thread: threading.Thread | None = None
+        self._entry_idx_queue: queue.Queue = queue.Queue()  # main thread → diarize thread
         # P2P networking state
         self._session_mgr: SessionManager | None = None
         self._discovery: PeerDiscovery | None = None
@@ -891,24 +896,24 @@ class VoxTerm(App):
                     self.audio_buffer.trim_front(trim_secs)
                     self._agreement.committed_time += trim_secs
 
-            # Diarize on the committed text (use full audio for speaker ID)
-            speaker_label, speaker_id, confidence = "", 0, ""
-            if newly_committed and self._diarizer_loaded:
-                try:
-                    speaker_label, speaker_id = self.diarizer.identify(
-                        audio.copy()
-                    )
-                    speaker_label, confidence = self._run_cross_session_matching(
-                        speaker_id, speaker_label, audio
-                    )
-                except Exception:
-                    pass
-
             if newly_committed.strip():
+                enqueue_diarize = self._diarizer_loaded
+                # Emit text immediately without speaker (async diarization updates later)
                 self.call_from_thread(
                     self._on_transcription, newly_committed.strip(),
-                    speaker_label, speaker_id, confidence,
+                    "", 0, "", False,
+                    enqueue_diarize,  # _enqueue_idx: pass entry index to diarize thread
                 )
+                # Enqueue async diarization job
+                if enqueue_diarize:
+                    try:
+                        self._diarize_queue.put_nowait(("tick", audio.copy()))
+                    except queue.Full:
+                        # Drain the entry_idx that was enqueued
+                        try:
+                            self._entry_idx_queue.get_nowait()
+                        except queue.Empty:
+                            pass
 
         except Exception as e:
             self._write_crash_dump("_transcribe_audio_tick", e)
@@ -940,72 +945,22 @@ class VoxTerm(App):
 
             text = result.get("text", "")
 
-            # 2. Speaker ID — use SCD for longer buffers, single identify for short
-            speaker_label, speaker_id = "", 0
-            confidence = ""
-            is_overlap = False
-            if text and self._diarizer_loaded:
-                try:
-                    # Use speaker-change detection for buffers >= 3s
-                    if len(audio) >= 48000:
-                        segments = self.diarizer.identify_segments(
-                            audio.copy()
-                        )
-                    else:
-                        lbl, sid = self.diarizer.identify(audio.copy())
-                        segments = [(lbl, sid, 0, len(audio))]
-
-                    # Check overlap metadata from last identify() call
-                    meta = self.diarizer.get_last_identify_meta()
-                    is_overlap = meta.get("is_overlap", False)
-
-                    # Use last segment as the "current" speaker for cross-session matching
-                    speaker_label, speaker_id = segments[-1][0], segments[-1][1]
-
-                    if self._debug:
-                        dbg = getattr(self.diarizer, '_last_debug', {})
-                        n_spk = dbg.get('debug_speakers', '?')
-                        rms = dbg.get('debug_rms', '?')
-                        seg_info = f"segs={len(segments)}" if len(segments) > 1 else ""
-                        overlap_info = " [OVERLAP]" if is_overlap else ""
-                        self.call_from_thread(
-                            self.query_one(TranscriptPanel).system_message,
-                            f"[dbg] → {speaker_label} (id={speaker_id}) "
-                            f"speakers={n_spk} rms={rms} {seg_info}{overlap_info}",
-                        )
-
-                    # 3. Cross-session matching for each unique speaker in segments
-                    seen_sids = set()
-                    for seg_label, seg_sid, _, _ in segments:
-                        if seg_sid in seen_sids or seg_sid <= 0:
-                            continue
-                        seen_sids.add(seg_sid)
-                        self._try_cross_session_match(seg_sid)
-
-                except Exception:
-                    segments = [("", 0, 0, len(audio))]
-
-            else:
-                segments = [("", 0, 0, len(audio))]
-
+            # Emit text immediately without speaker (async diarization updates later)
             if text:
-                if len(segments) > 1:
-                    # Split text across segments proportionally by duration
-                    seg_texts = self._split_text_by_segments(text, segments)
-                    for seg_text, seg_label, seg_sid in seg_texts:
-                        if seg_text.strip():
-                            seg_overlap = is_overlap and seg_sid == speaker_id
-                            self.call_from_thread(
-                                self._on_transcription, seg_text, seg_label,
-                                seg_sid, confidence,
-                                seg_overlap,
-                            )
-                else:
-                    self.call_from_thread(
-                        self._on_transcription, text, speaker_label,
-                        speaker_id, confidence,
-                        is_overlap,
-                    )
+                enqueue_diarize = self._diarizer_loaded
+                self.call_from_thread(
+                    self._on_transcription, text, "", 0, "", False,
+                    enqueue_diarize,  # _enqueue_idx
+                )
+                # Enqueue async diarization job
+                if enqueue_diarize:
+                    try:
+                        self._diarize_queue.put_nowait(("full", audio.copy()))
+                    except queue.Full:
+                        try:
+                            self._entry_idx_queue.get_nowait()
+                        except queue.Empty:
+                            pass
         except Exception as e:
             self._write_crash_dump("_transcribe_audio", e)
             self.call_from_thread(
@@ -1115,6 +1070,90 @@ class VoxTerm(App):
                 "medium", match.score,
             )
 
+    # ── async diarization worker ────────────────────────────────
+
+    def _start_diarize_worker(self):
+        """Start the background diarization thread."""
+        if self._diarize_thread is not None:
+            return
+        self._diarize_thread = threading.Thread(
+            target=self._diarize_worker, daemon=True, name="diarize-worker"
+        )
+        self._diarize_thread.start()
+
+    def _diarize_worker(self):
+        """Background thread: process diarization jobs from queue."""
+        while True:
+            try:
+                job = self._diarize_queue.get()
+            except Exception:
+                break
+            if job is None:  # shutdown sentinel
+                break
+
+            pipeline, audio = job
+
+            # Get the entry index that was enqueued by _on_transcription
+            try:
+                entry_idx = self._entry_idx_queue.get(timeout=2.0)
+            except queue.Empty:
+                continue
+
+            try:
+                if pipeline == "tick":
+                    speaker_label, speaker_id = self.diarizer.identify(audio)
+                    speaker_label, confidence = self._run_cross_session_matching(
+                        speaker_id, speaker_label, audio
+                    )
+                else:  # "full"
+                    if len(audio) >= 48000:
+                        segments = self.diarizer.identify_segments(audio)
+                    else:
+                        lbl, sid = self.diarizer.identify(audio)
+                        segments = [(lbl, sid, 0, len(audio))]
+
+                    speaker_label, speaker_id = segments[-1][0], segments[-1][1]
+                    confidence = ""
+
+                    if self._debug:
+                        meta = self.diarizer.get_last_identify_meta()
+                        is_overlap = meta.get("is_overlap", False)
+                        dbg = getattr(self.diarizer, '_last_debug', {})
+                        n_spk = dbg.get('debug_speakers', '?')
+                        rms = dbg.get('debug_rms', '?')
+                        seg_info = f"segs={len(segments)}" if len(segments) > 1 else ""
+                        overlap_info = " [OVERLAP]" if is_overlap else ""
+                        self.call_from_thread(
+                            self.query_one(TranscriptPanel).system_message,
+                            f"[dbg] → {speaker_label} (id={speaker_id}) "
+                            f"speakers={n_spk} rms={rms} {seg_info}{overlap_info}",
+                        )
+
+                    # Cross-session matching for each unique speaker
+                    seen_sids = set()
+                    for seg_label, seg_sid, _, _ in segments:
+                        if seg_sid in seen_sids or seg_sid <= 0:
+                            continue
+                        seen_sids.add(seg_sid)
+                        self._try_cross_session_match(seg_sid)
+
+                # Update the transcript entry with speaker info
+                if speaker_label or speaker_id > 0:
+                    self.call_from_thread(
+                        self._on_diarization_result,
+                        entry_idx, speaker_label, speaker_id, confidence,
+                    )
+            except Exception:
+                pass
+
+    def _on_diarization_result(
+        self, entry_idx: int, speaker: str, speaker_id: int, confidence: str,
+    ):
+        """Update a transcript entry with speaker info (main thread)."""
+        panel = self.query_one(TranscriptPanel)
+        panel.update_entry_speaker(entry_idx, speaker, speaker_id, confidence)
+        self._update_telemetry()
+
     @staticmethod
     def _split_text_by_segments(
         text: str,
@@ -1151,11 +1190,14 @@ class VoxTerm(App):
     def _on_transcription(
         self, text: str, speaker: str = "", speaker_id: int = 0,
         confidence: str = "", overlap: bool = False,
+        _enqueue_idx: bool = False,
     ):
-        self.query_one(TranscriptPanel).add_transcript(
+        entry_idx = self.query_one(TranscriptPanel).add_transcript(
             text, speaker, speaker_id, confidence=confidence,
             overlap=overlap,
         )
+        if _enqueue_idx:
+            self._entry_idx_queue.put(entry_idx)
         self._append_live_transcript(text, speaker, speaker_id)
         self._update_telemetry()
 
@@ -1327,6 +1369,7 @@ class VoxTerm(App):
 
     def _on_diarizer_loaded(self):
         self._diarizer_loaded = True
+        self._start_diarize_worker()
         mode = "subprocess" if self.diarizer._mode == "subprocess" else "in-process"
         self.query_one(TranscriptPanel).system_message(
             f"speaker identification online ({mode})"
@@ -2264,6 +2307,17 @@ class VoxTerm(App):
         if self._assembler:
             self._assembler.clear()
         self._speaker_profile_map.clear()
+        # Drain pending diarization jobs (entry indices are now stale)
+        while not self._diarize_queue.empty():
+            try:
+                self._diarize_queue.get_nowait()
+            except queue.Empty:
+                break
+        while not self._entry_idx_queue.empty():
+            try:
+                self._entry_idx_queue.get_nowait()
+            except queue.Empty:
+                break
 
     def action_quit(self):
         # Cancel any in-progress P2P workers before cleanup
@@ -2277,6 +2331,13 @@ class VoxTerm(App):
                 self._session_mgr.leave_session()
             except Exception:
                 pass
+        # Shut down async diarization worker
+        try:
+            self._diarize_queue.put_nowait(None)  # sentinel
+        except queue.Full:
+            pass
+        if self._diarize_thread and self._diarize_thread.is_alive():
+            self._diarize_thread.join(timeout=2)
         # Live file already on disk — no extra save needed
         self._record_session_stats()
         self.audio_capture.stop()
