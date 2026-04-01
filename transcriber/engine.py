@@ -412,6 +412,13 @@ class LlamaServerTranscriber(_DeduplicatorMixin):
         text = ((result.get("choices") or [{}])[0]
                 .get("message", {}).get("content", "")).strip()
 
+        # Strip chat-model preamble (Qwen2.5-Omni sometimes prefixes real
+        # transcription with meta-commentary like "The transcription text is:")
+        text = re.sub(
+            r'^(the\s+)?transcri(ption|bed)\s+(text\s+)?(is|reads?)\s*[:.]?\s*',
+            '', text, flags=re.IGNORECASE,
+        ).strip()
+
         if _is_hallucination(text, self._language):
             return {"text": "", "speaker": "", "speaker_id": 0}
 
