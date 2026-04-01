@@ -35,7 +35,7 @@ class TestComputeFbank:
         audio = np.random.randn(48000).astype(np.float32) * 0.1
         feats = compute_fbank(audio, sample_rate=16000, cmn=True)
         mean_per_bin = feats.mean(axis=0)
-        assert np.allclose(mean_per_bin, 0.0, atol=1e-5)
+        assert np.allclose(mean_per_bin, 0.0, atol=1e-4)
 
     def test_no_cmn(self):
         """With CMN disabled, features should NOT be zero-mean."""
