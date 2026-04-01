@@ -38,8 +38,10 @@ pytestmark = [
 ]
 
 # Use real model, NOT mock — we're testing actual diarization quality
-# Remove VOXTERM_MOCK_ENGINE if set by conftest
-_ORIG_MOCK = os.environ.pop("VOXTERM_MOCK_ENGINE", None)
+# Only remove VOXTERM_MOCK_ENGINE when tests will actually run (fixtures + model present),
+# otherwise the pop poisons the env for later test modules even though these tests are skipped.
+_CAN_RUN = (FIXTURES / "tst00.wav").exists() and _ONNX_MODEL.exists()
+_ORIG_MOCK = os.environ.pop("VOXTERM_MOCK_ENGINE", None) if _CAN_RUN else None
 
 
 def _restore_mock():
