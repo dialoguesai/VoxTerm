@@ -312,6 +312,8 @@ class TestKeyManagement:
             stored["key"] = key
             return True
 
+        # Force the keychain path even on Linux (where _sec is None)
+        monkeypatch.setattr("speakers.crypto._sec", True)
         monkeypatch.setattr("speakers.crypto._keychain_get", mock_get)
         monkeypatch.setattr("speakers.crypto._keychain_set", mock_set)
 
@@ -333,6 +335,7 @@ class TestKeyManagement:
             set_called = True
             return True
 
+        monkeypatch.setattr("speakers.crypto._sec", True)
         monkeypatch.setattr("speakers.crypto._keychain_get", mock_get)
         monkeypatch.setattr("speakers.crypto._keychain_set", mock_set)
 
@@ -348,6 +351,7 @@ class TestKeyManagement:
         def mock_set(key):
             return False
 
+        monkeypatch.setattr("speakers.crypto._sec", True)
         monkeypatch.setattr("speakers.crypto._keychain_get", mock_get)
         monkeypatch.setattr("speakers.crypto._keychain_set", mock_set)
 
@@ -365,6 +369,7 @@ class TestKeyManagement:
             stored["key"] = key
             return True
 
+        monkeypatch.setattr("speakers.crypto._sec", True)
         monkeypatch.setattr("speakers.crypto._keychain_get", mock_get)
         monkeypatch.setattr("speakers.crypto._keychain_set", mock_set)
 

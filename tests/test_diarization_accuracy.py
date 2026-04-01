@@ -24,11 +24,18 @@ sys.path.insert(0, str(PROJECT_ROOT))
 FIXTURES = PROJECT_ROOT / "tests" / "fixtures" / "speakers"
 SAMPLE_RATE = 16000
 
-# Skip entire module if fixtures aren't downloaded
-pytestmark = pytest.mark.skipif(
-    not (FIXTURES / "tst00.wav").exists(),
-    reason="Speaker fixtures not downloaded (see tests/fixtures/speakers/README)",
-)
+# Skip entire module if fixtures aren't downloaded or ONNX model is missing
+_ONNX_MODEL = Path.home() / ".cache" / "3dspeaker" / "eres2net_large" / "eres2net_large.onnx"
+pytestmark = [
+    pytest.mark.skipif(
+        not (FIXTURES / "tst00.wav").exists(),
+        reason="Speaker fixtures not downloaded (see tests/fixtures/speakers/README)",
+    ),
+    pytest.mark.skipif(
+        not _ONNX_MODEL.exists(),
+        reason="ONNX speaker model not available (run: python -m scripts.export_onnx --model eres2net_large)",
+    ),
+]
 
 # Use real model, NOT mock — we're testing actual diarization quality
 # Remove VOXTERM_MOCK_ENGINE if set by conftest
