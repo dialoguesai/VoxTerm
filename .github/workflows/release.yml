@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+            name: macos-arm64
+          - runner: macos-13
+            arch: x86_64
+            name: macos-x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps
+        run: brew install portaudio ffmpeg
+
+      - name: Build release bundle
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # Create a clean source bundle
+          BUNDLE="voxterm-${VERSION}-${{ matrix.name }}"
+          mkdir -p "dist/${BUNDLE}"
+
+          # Copy source files
+          rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
+            --exclude='.pytest_cache' --exclude='htmlcov' --exclude='.context' \
+            --exclude='dist' --exclude='*.pyc' --exclude='.DS_Store' \
+            ./ "dist/${BUNDLE}/"
+
+          # Create venv with deps pre-installed
+          python3 -m venv "dist/${BUNDLE}/.venv"
+          . "dist/${BUNDLE}/.venv/bin/activate"
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+          # Make launcher executable
+          chmod +x "dist/${BUNDLE}/voxterm"
+
+          # Create tarball
+          cd dist
+          tar czf "${BUNDLE}.tar.gz" "${BUNDLE}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: dist/*.tar.gz
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y portaudio19-dev ffmpeg
+
+      - name: Build release bundle
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUNDLE="voxterm-${VERSION}-linux-x86_64"
+          mkdir -p "dist/${BUNDLE}"
+
+          rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
+            --exclude='.pytest_cache' --exclude='htmlcov' --exclude='.context' \
+            --exclude='dist' --exclude='*.pyc' --exclude='.DS_Store' \
+            ./ "dist/${BUNDLE}/"
+
+          python3 -m venv "dist/${BUNDLE}/.venv"
+          . "dist/${BUNDLE}/.venv/bin/activate"
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+          chmod +x "dist/${BUNDLE}/voxterm"
+
+          cd dist
+          tar czf "${BUNDLE}.tar.gz" "${BUNDLE}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x86_64
+          path: dist/*.tar.gz
+
+  publish:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*.tar.gz
