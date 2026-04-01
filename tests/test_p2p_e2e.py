@@ -336,6 +336,10 @@ import pytest
 
 
 @pytest.mark.e2e
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="P2P E2E tests require real network — skip in CI",
+)
 def test_p2p_e2e():
     """Run the full E2E test suite as a pytest test."""
     assert run_tests(), "E2E test failed — see output above for details"
