@@ -1,6 +1,7 @@
 """Tests for the binary IPC protocol in diarization/ipc.py."""
 
-import io
+import os
+import threading
 
 import numpy as np
 import pytest
@@ -29,33 +30,63 @@ class TestEncodeDecodeArray:
 
 class TestSendRecvMessage:
 
+    def _roundtrip(self, msg):
+        """Send a message through a real OS pipe and receive it back.
+
+        Uses a writer thread to avoid deadlocking on large payloads that
+        exceed the OS pipe buffer size.
+        """
+        r_fd, w_fd = os.pipe()
+        r_pipe = os.fdopen(r_fd, "rb")
+        w_pipe = os.fdopen(w_fd, "wb")
+
+        def _writer():
+            try:
+                send_msg(w_pipe, msg)
+            finally:
+                w_pipe.close()
+
+        t = threading.Thread(target=_writer)
+        t.start()
+        try:
+            result = recv_msg(r_pipe)
+        finally:
+            r_pipe.close()
+            t.join(timeout=5)
+        return result
+
     def test_send_recv_message(self):
-        pipe = io.BytesIO()
         msg = {"type": "identify", "speaker_id": 3, "label": "Alice"}
-        send_msg(pipe, msg)
-        pipe.seek(0)
-        received = recv_msg(pipe)
+        received = self._roundtrip(msg)
         assert received == msg
 
     def test_send_recv_large_message(self):
         """15 seconds of 16kHz audio encoded as a hex payload."""
         audio = np.random.randn(16000 * 15).astype(np.float32)
         msg = {"type": "identify", "audio": encode_array(audio)}
-        pipe = io.BytesIO()
-        send_msg(pipe, msg)
-        pipe.seek(0)
-        received = recv_msg(pipe)
+        received = self._roundtrip(msg)
         assert received is not None
         recovered = decode_array(received["audio"])
         assert np.allclose(audio, recovered)
 
     def test_recv_eof(self):
-        pipe = io.BytesIO(b"")
-        result = recv_msg(pipe)
-        assert result is None
+        r_fd, w_fd = os.pipe()
+        r_pipe = os.fdopen(r_fd, "rb")
+        os.close(w_fd)  # immediate EOF
+        try:
+            result = recv_msg(r_pipe)
+            assert result is None
+        finally:
+            r_pipe.close()
 
     def test_recv_truncated(self):
         """A partial header (fewer than 4 bytes) should return None."""
-        pipe = io.BytesIO(b"\x05\x00")  # only 2 bytes of a 4-byte header
-        result = recv_msg(pipe)
-        assert result is None
+        r_fd, w_fd = os.pipe()
+        r_pipe = os.fdopen(r_fd, "rb")
+        os.write(w_fd, b"\x05\x00")  # only 2 bytes of a 4-byte header
+        os.close(w_fd)
+        try:
+            result = recv_msg(r_pipe)
+            assert result is None
+        finally:
+            r_pipe.close()
