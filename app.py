@@ -2459,16 +2459,11 @@ if __name__ == "__main__":
         _config_mod.LLAMA_SERVER_MODEL = _server_model
         _cfg.update({"llama_server_url": _server_url, "llama_server_model": _server_model})
 
-        # If a server model was found/configured and no explicit -m was given, prefer it
-        if LLAMA_SERVER_MODELS and args.model == _default_model:
-            # Pick the explicitly requested server model, or the first discovered one
-            if _server_model:
-                _preferred = _server_model.replace(":", "-").replace("/", "-")
-            else:
-                _preferred = next(iter(LLAMA_SERVER_MODELS))
-            if _preferred in AVAILABLE_MODELS:
-                args.model = _preferred
-                print(f"  → using llama server model: {args.model}")
+        # Server models are available but don't auto-switch — user must
+        # explicitly select them with -m.  Qwen3-ASR remains the default.
+        if LLAMA_SERVER_MODELS:
+            print(f"  llama server models available: {', '.join(LLAMA_SERVER_MODELS)}")
+            print(f"  (use -m <name> to select; default remains {_default_model})")
 
     # Validate model choice
     if args.model not in AVAILABLE_MODELS:
