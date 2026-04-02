@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import random
 from datetime import datetime
 from textual.widgets import RichLog
 from rich.text import Text
 from rich.style import Style
 
+
+# Placeholder names shown while diarization is pending
+_PLACEHOLDERS = [
+    "Cactus", "Nebula", "Penguin", "Comet", "Mango",
+    "Prism", "Falcon", "Quartz", "Drifter", "Sparrow",
+    "Pixel", "Rumble", "Orbit", "Velvet", "Phantom",
+    "Ember", "Cobalt", "Noodle", "Glacier", "Zephyr",
+    "Rascal", "Bloom", "Flicker", "Sage", "Biscuit",
+    "Nimbus", "Marble", "Cricket", "Tundra", "Mocha",
+]
 
 # Default speaker colour palette (matches DiarizationEngine)
 _SPEAKER_COLORS = [
@@ -47,10 +58,18 @@ class TranscriptPanel(RichLog):
         self._color_overrides: dict[int, str] = {}
         # Per-speaker confidence scores for display
         self._speaker_confidence: dict[int, tuple[str, float]] = {}  # sid → (tier, score)
+        # Stable placeholder names per entry index
+        self._placeholder_map: dict[int, str] = {}
         # Merged view state
         self._merged_view = False
         self._peer_color_map: dict[str, str] = {}  # node_id → color
         self._peer_names: dict[str, str] = {}  # node_id → display_name
+
+    def _get_placeholder(self, entry_idx: int) -> str:
+        """Return a stable random placeholder name for an entry."""
+        if entry_idx not in self._placeholder_map:
+            self._placeholder_map[entry_idx] = random.choice(_PLACEHOLDERS)
+        return self._placeholder_map[entry_idx]
 
     def system_message(self, msg: str):
         """Add a system message."""
@@ -79,7 +98,7 @@ class TranscriptPanel(RichLog):
         entry_idx = len(self._entries) - 1
 
         if not self._merged_view:
-            text = self._render_entry(timestamp, content, speaker, speaker_id, confidence, overlap)
+            text = self._render_entry(timestamp, content, speaker, speaker_id, confidence, overlap, entry_idx)
             self.write(text)
 
         return entry_idx
@@ -87,6 +106,7 @@ class TranscriptPanel(RichLog):
     def _render_entry(
         self, timestamp: str, content: str, speaker: str, speaker_id: int,
         confidence: str = "", overlap: bool = False,
+        entry_idx: int = -1,
     ) -> Text:
         """Render a single transcript entry as Rich Text."""
         text = Text()
@@ -118,7 +138,9 @@ class TranscriptPanel(RichLog):
 
             text.append("  ", Style())
         else:
-            text.append("> ", Style(color="#00e5ff", bold=True))
+            # Placeholder while diarization is pending — stable per entry
+            placeholder = self._get_placeholder(entry_idx)
+            text.append(f"{placeholder}  ", Style(color="#607080", italic=True))
 
         text.append(content, Style(color="#c0c0c0"))
         return text
@@ -284,12 +306,12 @@ class TranscriptPanel(RichLog):
     def _rerender(self) -> None:
         """Clear and re-render all transcript entries."""
         super().clear()
-        for entry in self._entries:
+        for idx, entry in enumerate(self._entries):
             ts, typ, content, speaker = entry[0], entry[1], entry[2], entry[3]
             speaker_id = entry[4] if len(entry) > 4 else 0
             conf = entry[5] if len(entry) > 5 else ""
             if typ == "transcript":
-                text = self._render_entry(ts, content, speaker, speaker_id, conf)
+                text = self._render_entry(ts, content, speaker, speaker_id, conf, entry_idx=idx)
             else:
                 # System message — re-render as-is
                 text = Text()
@@ -303,6 +325,7 @@ class TranscriptPanel(RichLog):
         self._entries.clear()
         self._color_overrides.clear()
         self._speaker_confidence.clear()
+        self._placeholder_map.clear()
         self._peer_color_map.clear()
         self._peer_names.clear()
         self._merged_view = False
