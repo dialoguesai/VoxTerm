@@ -11,7 +11,7 @@ DTYPE = "float32"
 # Transcription — platform-aware model registry
 if sys.platform == "darwin":
     # macOS: Qwen3-ASR (primary, MLX) + mlx-whisper (fallback)
-    DEFAULT_MODEL = "qwen3-0.6b"
+    DEFAULT_MODEL = "qwen3-1.7b"
     AVAILABLE_MODELS = {
         "qwen3-0.6b":  "Qwen/Qwen3-ASR-0.6B",
         "qwen3-1.7b":  "Qwen/Qwen3-ASR-1.7B",
