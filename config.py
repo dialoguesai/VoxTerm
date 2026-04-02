@@ -66,7 +66,7 @@ MAX_BUFFER_SECONDS = 3.0
 MIN_BUFFER_SECONDS = 1.0
 SILENCE_THRESHOLD = 0.012
 SILENCE_TRIGGER_SECONDS = 0.3
-VAD_THRESHOLD = 0.5           # Silero VAD speech probability threshold
+VAD_THRESHOLD = 0.3           # Silero VAD speech probability threshold (lowered: 0.5 missed ~33% of real speech)
 
 # Overlapping-chunk agreement pipeline (LocalAgreement algorithm)
 AGREEMENT_TICK_SECONDS = 1.5  # Transcribe every N seconds (overlapping window)
