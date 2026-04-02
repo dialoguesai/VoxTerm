@@ -115,7 +115,7 @@ RECLUSTER_INTERVAL = 8            # spectral re-clustering every N identify() ca
 RECLUSTER_MIN_SEGMENTS = 4        # min total segments before re-clustering kicks in
 LOOP_PROB = 0.99                  # VBx-style HMM self-transition probability
 WHITEN_MIN_SEGMENTS = 8           # min segments before PLDA-lite whitening kicks in
-SCD_CHANGE_THRESHOLD = 0.35       # cosine distance above this → speaker change detected
+SCD_CHANGE_THRESHOLD = 0.6        # cosine distance above this → speaker change detected
 SCD_WINDOW_SEC = 2.0              # sliding window duration for SCD embedding extraction
 SCD_HOP_SEC = 0.5                 # hop between consecutive SCD windows
 

@@ -380,8 +380,6 @@ class DiarizationEngine:
 
             if should_update:
                 self._prev_centroids[sid] = self._speaker_centroids[sid].copy()
-                # Unweighted online centroid update; periodic _refresh_centroids()
-                # also uses unweighted sums, so this keeps behavior consistent.
                 self._speaker_centroids[sid] = self._speaker_centroids[sid] + embedding
         elif best_score >= adaptive_new_threshold and best_id is not None:
             # Uncertain zone: assign to closest but skip centroid update
