@@ -12,6 +12,7 @@ class CyberHeader(Widget):
     CyberHeader {
         height: 1;
         background: #0a0e14;
+        layer: base;
     }
     """
 

@@ -158,12 +158,21 @@ def recv_encrypted_msg(sock: socket.socket, key: bytes) -> dict | None:
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
-    """Read exactly n bytes from a socket.  Returns None on EOF."""
+    """Read exactly n bytes from a socket.  Returns None on EOF.
+
+    Raises socket.timeout only if no bytes have been read (clean timeout).
+    Retries on timeout mid-message to prevent stream corruption.
+    """
     buf = bytearray(n)
     pos = 0
     view = memoryview(buf)
     while pos < n:
-        nbytes = sock.recv_into(view[pos:])
+        try:
+            nbytes = sock.recv_into(view[pos:])
+        except socket.timeout:
+            if pos == 0:
+                raise  # clean timeout — no bytes consumed, caller can retry
+            continue  # mid-message — must keep reading to avoid stream corruption
         if not nbytes:
             return None
         pos += nbytes

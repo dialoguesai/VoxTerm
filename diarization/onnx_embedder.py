@@ -43,6 +43,11 @@ ONNX_MODELS = {
     ),
 }
 
+# Pre-exported ONNX models hosted on GitHub releases (zero-setup download)
+ONNX_DOWNLOAD_URLS = {
+    "eres2net_large": "https://github.com/dmarzzz/VoxTerm/releases/download/onnx-models/eres2net_large.onnx",
+}
+
 DEFAULT_MODEL = "eres2net_large"
 CACHE_DIR = Path.home() / ".cache" / "3dspeaker"
 
@@ -79,6 +84,8 @@ class OnnxSpeakerEmbedder:
         self._embedding_dim = embed_dim
 
         model_path = self._cache_dir / self.model_name / filename
+        if not model_path.exists():
+            model_path = self._try_download(model_path)
         if not model_path.exists():
             model_path = self._try_export(model_path)
             if not model_path.exists():
@@ -201,6 +208,22 @@ class OnnxSpeakerEmbedder:
             embedding = embedding / norm
 
         return embedding.astype(np.float32)
+
+    def _try_download(self, target_path: Path) -> Path:
+        """Download pre-exported ONNX model from GitHub releases."""
+        url = ONNX_DOWNLOAD_URLS.get(self.model_name)
+        if not url:
+            return target_path
+        try:
+            import urllib.request
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            log.info("Downloading %s ONNX model...", self.model_name)
+            urllib.request.urlretrieve(url, target_path)
+            log.info("Downloaded to %s", target_path)
+            return target_path
+        except Exception as e:
+            log.warning("ONNX model download failed: %s", e)
+            return target_path
 
     def _try_export(self, target_path: Path) -> Path:
         """Attempt to export the model to ONNX on-the-fly.

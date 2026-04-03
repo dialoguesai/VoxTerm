@@ -17,6 +17,7 @@ _DEFAULTS: dict[str, Any] = {
     "export_format": "markdown",
     "summarization_model": "",
     "summarization_strength": "medium",
+    "p2p_display_name": "",
 }
 
 # Expected types per key (for validation)
@@ -27,6 +28,7 @@ _TYPES: dict[str, type] = {
     "export_format": str,
     "summarization_model": str,
     "summarization_strength": str,
+    "p2p_display_name": str,
 }
 
 

@@ -1,11 +1,13 @@
 Screen {
     background: #0a0e14;
     overflow: hidden;
+    layers: base notifications;
 }
 
 #main-container {
     width: 1fr;
     height: 1fr;
+    layer: base;
 }
 
 #footer-bar {
@@ -15,6 +17,8 @@ Screen {
     border-top: heavy #003344;
     color: #607080;
     padding: 0 1;
+    layer: base;
+    transition: border 800ms linear, background 800ms linear;
 }
 
 #telemetry {
@@ -23,4 +27,38 @@ Screen {
     margin: 0 1;
     padding: 0 1;
     color: #607080;
+}
+
+/* ── Party bloom: warm pulse on join ─────────────────── */
+
+TranscriptPanel {
+    transition: border 800ms linear, border-title-color 800ms linear;
+}
+
+WaveformWidget {
+    transition: border 800ms linear, border-title-color 800ms linear;
+}
+
+.--party-bloom TranscriptPanel {
+    border: heavy #00ffcc;
+    border-title-color: #66ffd9;
+}
+
+.--party-bloom WaveformWidget {
+    border: heavy #00cc99;
+    border-title-color: #66ffd9;
+}
+
+.--party-bloom #footer-bar {
+    border-top: heavy #00ffcc;
+}
+
+/* Peer arrival — subtler pulse */
+
+.--peer-bloom TranscriptPanel {
+    border: heavy #33ddbb;
+}
+
+.--peer-bloom #footer-bar {
+    border-top: heavy #33ddbb;
 }
