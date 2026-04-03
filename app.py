@@ -566,9 +566,6 @@ class VoxTerm(App):
         if self._model_loaded:
             transcript = self.query_one(TranscriptPanel)
             transcript.system_message(f"model loaded: {self._model_name}")
-            if self.speaker_store.is_open:
-                enc_status = "active" if self.speaker_store.is_encrypted else "off"
-                transcript.system_message(f"speaker profiles loaded (encryption: {enc_status})")
             self._update_telemetry()
             self._start_audio_timer()
             self._load_diarizer()
@@ -1218,10 +1215,6 @@ class VoxTerm(App):
 
     @work(thread=True, group="diarizer_loading")
     def _load_diarizer(self):
-        self.call_from_thread(
-            self.query_one(TranscriptPanel).system_message,
-            "loading speaker identification..."
-        )
         try:
             # Set up crash/restart callbacks for subprocess mode
             self.diarizer.on_subprocess_crash = self._on_diarizer_crash
