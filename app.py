@@ -1931,6 +1931,9 @@ class VoxTerm(App):
             self.call_from_thread(self._party_ready, is_creator)
 
         except Exception as exc:
+            # If we already left (user pressed N again), don't report as failure
+            if self._party_state == PartyState.SOLO:
+                return
             self._stop_audio_merge()
             try:
                 if self._session_mgr is not None:
@@ -2012,6 +2015,7 @@ class VoxTerm(App):
         self._p2p_send_queue = None
         self._party_state = PartyState.SOLO
         self._restore_borders()
+        self.query_one(TranscriptPanel).system_message("left the party")
         # Restart passive discovery
         self._start_peer_discovery()
         self._update_telemetry()
