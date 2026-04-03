@@ -539,21 +539,12 @@ class VoxTerm(App):
 
         if self._model_loaded:
             transcript = self.query_one(TranscriptPanel)
-            transcript.system_message("VOXTERM engine online")
-            transcript.system_message(f"model loaded: {self._model_name}")
-            if self.speaker_store.is_open:
-                enc_status = "active" if self.speaker_store.is_encrypted else "unavailable"
-                transcript.system_message(f"speaker profiles loaded (encryption: {enc_status})")
+            transcript.system_message(f"ready — {self._model_name}")
             self._update_telemetry()
             self._start_audio_timer()
             self._load_diarizer()
         else:
-            self.query_one(TranscriptPanel).system_message("initializing VOXTERM engine...")
-            if self.speaker_store.is_open:
-                enc_status = "active" if self.speaker_store.is_encrypted else "unavailable"
-                self.query_one(TranscriptPanel).system_message(
-                    f"speaker profiles loaded (encryption: {enc_status})"
-                )
+            self.query_one(TranscriptPanel).system_message("loading model...")
             self._start_audio_timer()
             self._load_model()
 
@@ -1191,20 +1182,12 @@ class VoxTerm(App):
 
     def _on_model_loaded(self):
         self._model_loaded = True
-        transcript = self.query_one(TranscriptPanel)
-        transcript.system_message(f"model loaded: {self._model_name}")
         if not self._diarizer_loaded:
             self._load_diarizer()
-        else:
-            transcript.system_message("press [R] to start recording")
         self._update_telemetry()
 
     @work(thread=True, group="diarizer_loading")
     def _load_diarizer(self):
-        self.call_from_thread(
-            self.query_one(TranscriptPanel).system_message,
-            "loading speaker identification model..."
-        )
         try:
             # Set up crash/restart callbacks for subprocess mode
             self.diarizer.on_subprocess_crash = self._on_diarizer_crash
@@ -1223,11 +1206,6 @@ class VoxTerm(App):
 
     def _on_diarizer_loaded(self):
         self._diarizer_loaded = True
-        mode = "subprocess" if self.diarizer._mode == "subprocess" else "in-process"
-        self.query_one(TranscriptPanel).system_message(
-            f"speaker identification online ({mode})"
-        )
-        self.query_one(TranscriptPanel).system_message("press [R] to start recording")
         self._update_telemetry()
 
     def _on_diarizer_crash(self, crash_count: int):
@@ -1245,7 +1223,7 @@ class VoxTerm(App):
             )
 
     def _on_diarizer_fallback(self):
-        self.query_one(TranscriptPanel).system_message("press [R] to start recording")
+        pass
 
     # ── actions ─────────────────────────────────────────────────
 
@@ -1263,7 +1241,6 @@ class VoxTerm(App):
             self.system_capture.stop()
             waveform.set_recording(False)
             header.set_recording(False)
-            transcript.system_message("recording paused")
         else:
             self._recording = True
             self.vad.reset()
@@ -1271,7 +1248,6 @@ class VoxTerm(App):
                 self.audio_capture.start()
                 waveform.set_recording(True)
                 header.set_recording(True)
-                transcript.system_message("recording started")
             except Exception as e:
                 self._recording = False
                 waveform.set_recording(False)
@@ -1288,12 +1264,7 @@ class VoxTerm(App):
             except Exception:
                 pass
 
-            # Show system audio status once per session
-            if (
-                not self._system_audio_notified
-                and self.system_capture.status_message
-            ):
-                transcript.system_message(self.system_capture.status_message)
+            if self.system_capture.status_message:
                 self._system_audio_notified = True
         self._update_telemetry()
 
@@ -1535,9 +1506,6 @@ class VoxTerm(App):
         self._is_qwen3 = model_key in QWEN3_MODELS
         self._model_loaded = True
         _get_config().update({"last_model": model_key, "last_language": self._language})
-        transcript = self.query_one(TranscriptPanel)
-        transcript.system_message(f"model loaded: {model_key}")
-        transcript.system_message("press [R] to start recording")
         self._update_telemetry()
 
     def _on_swap_error(self, msg: str):
@@ -1708,15 +1676,8 @@ class VoxTerm(App):
             self._discovery.on_peer_lost = on_lost
             self._discovery.start()
 
-            self.call_from_thread(
-                self._p2p_debug_msg,
-                "scanning network for VoxTerm peers..."
-            )
         except Exception as exc:
-            self.call_from_thread(
-                self._p2p_debug_msg,
-                f"peer discovery failed: {exc}"
-            )
+            log.warning("peer discovery failed: %s", exc)
 
     def _stop_discovery(self) -> None:
         """Stop mDNS discovery and clean up."""
@@ -1941,15 +1902,31 @@ class VoxTerm(App):
     def _party_ready(self, is_host: bool) -> None:
         """Called on main thread when party session is ready."""
         self._party_state = PartyState.IN_PARTY
-        if is_host:
-            self.query_one(TranscriptPanel).system_message(
-                "you're the party now — waiting for others"
-            )
-        else:
-            self.query_one(TranscriptPanel).system_message(
-                "joined the party"
-            )
         self._update_telemetry()
+        # Bloom — borders warm up briefly
+        self.query_one("#main-container").add_class("--party-bloom")
+        self.set_timer(1.8, self._clear_party_bloom)
+
+    def _clear_party_bloom(self) -> None:
+        """Remove the bloom class — CSS transition fades it back."""
+        try:
+            self.query_one("#main-container").remove_class("--party-bloom")
+        except Exception:
+            pass
+
+    def _peer_bloom(self) -> None:
+        """Subtle bloom when a peer joins — shorter, gentler."""
+        try:
+            self.query_one("#main-container").add_class("--peer-bloom")
+            self.set_timer(1.0, self._clear_peer_bloom)
+        except Exception:
+            pass
+
+    def _clear_peer_bloom(self) -> None:
+        try:
+            self.query_one("#main-container").remove_class("--peer-bloom")
+        except Exception:
+            pass
 
     def _party_failed(self, error: str) -> None:
         """Called on main thread when party session fails."""
@@ -2037,20 +2014,15 @@ class VoxTerm(App):
                 merge_msg = " (audio merge)"
             else:
                 merge_msg = ""
-            self.call_from_thread(
-                self.query_one(TranscriptPanel).system_message,
-                f"{peer.display_name} connected{merge_msg}"
-            )
             self.call_from_thread(self._update_telemetry)
+            self.call_from_thread(self._peer_bloom)
 
         def on_disconnected(node_id, display_name):
             # Remove peer from audio mixer
             if self._peer_mixer:
                 self._peer_mixer.remove_peer(_mixer_key(node_id))
-            self.call_from_thread(
-                self.query_one(TranscriptPanel).system_message,
-                f"{display_name} disconnected"
-            )
+            # No transcript message — the footer peer list is the signal
+            self.call_from_thread(self._update_telemetry)
             if self._assembler:
                 self._assembler.clear_peer(node_id)
             self.call_from_thread(self._update_telemetry)
