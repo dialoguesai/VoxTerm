@@ -565,15 +565,12 @@ class VoxTerm(App):
 
         if self._model_loaded:
             transcript = self.query_one(TranscriptPanel)
-            transcript.system_message(f"transcription model loaded: {self._model_name}")
-            if self.speaker_store.is_open:
-                n = len(self.speaker_store.get_all_profiles())
-                transcript.system_message(f"{n} saved voice{'s' if n != 1 else ''} loaded")
+            transcript.system_message(f"model loaded: {self._model_name}")
             self._update_telemetry()
             self._start_audio_timer()
             self._load_diarizer()
         else:
-            self.query_one(TranscriptPanel).system_message("loading model...")
+            self.query_one(TranscriptPanel).system_message(f"loading model: {self._model_name}...")
             self._start_audio_timer()
             self._load_model()
 
@@ -1212,15 +1209,19 @@ class VoxTerm(App):
 
     def _on_model_loaded(self):
         self._model_loaded = True
+        self.query_one(TranscriptPanel).system_message(f"model loaded: {self._model_name}")
         if not self._diarizer_loaded:
             self._load_diarizer()
         self._update_telemetry()
 
     @work(thread=True, group="diarizer_loading")
     def _load_diarizer(self):
+        enc = ""
+        if self.speaker_store.is_open and self.speaker_store.is_encrypted:
+            enc = " (encrypted)"
         self.call_from_thread(
             self.query_one(TranscriptPanel).system_message,
-            "loading voice recognition model..."
+            f"loading offline speaker recognition{enc}..."
         )
         try:
             # Set up crash/restart callbacks for subprocess mode
@@ -1941,10 +1942,7 @@ class VoxTerm(App):
         """Called on main thread when party session is ready."""
         self._party_state = PartyState.IN_PARTY
         tp = self.query_one(TranscriptPanel)
-        if is_host:
-            tp.system_message("you're the party now")
-        else:
-            tp.system_message("found the party")
+        tp.system_message("joined the party")
         self._update_telemetry()
         # Set borders to the party color — stays for the duration of the party
         self._apply_party_color()
@@ -2075,9 +2073,10 @@ class VoxTerm(App):
             # Register peer in the audio mixer for multi-mic merging
             if self._peer_mixer and peer.audio_merge_capable:
                 self._peer_mixer.register_peer(_mixer_key(peer.node_id), peer.clock)
-                merge_msg = " (audio merge)"
-            else:
-                merge_msg = ""
+            self.call_from_thread(
+                self.query_one(TranscriptPanel).system_message,
+                f"{peer.display_name} joined the party"
+            )
             self.call_from_thread(self._update_telemetry)
             self.call_from_thread(self._peer_bloom)
 
