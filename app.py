@@ -107,8 +107,7 @@ PARTY_COLORS = [
 
 def _party_color(session_code: str) -> tuple[str, str]:
     """Derive a (primary, light) color pair from the session code."""
-    import hashlib
-    h = int(hashlib.sha256(session_code.encode()).hexdigest(), 16) % len(PARTY_COLORS)
+    h = hash(session_code) % len(PARTY_COLORS)
     return PARTY_COLORS[h]
 
 
@@ -1879,6 +1878,13 @@ class VoxTerm(App):
                     return
                 if not peer_info.in_session:
                     return
+                # Only connect to peers in the SAME party (same session code)
+                if peer_info.session_code != code:
+                    self.call_from_thread(
+                        self._p2p_debug_msg,
+                        f"{peer_info.display_name} is in a different party"
+                    )
+                    return
                 self.call_from_thread(
                     self._p2p_debug_msg,
                     f"found {peer_info.display_name} — "
@@ -1897,9 +1903,10 @@ class VoxTerm(App):
                 self._p2p_display_name, True, session_code=code,
             )
 
-            # Connect to any already-visible peers
+            # Connect to any already-visible peers in the SAME party
             for peer_info in self._discovery.get_visible_peers():
                 if (peer_info.in_session
+                        and peer_info.session_code == code
                         and peer_info.node_id != my_id
                         and my_id < peer_info.node_id):
                     threading.Thread(
@@ -1920,7 +1927,7 @@ class VoxTerm(App):
                     return
                 visible = self._discovery.get_visible_peers() if self._discovery else []
                 for pi in visible:
-                    if pi.in_session and pi.node_id != my_id:
+                    if pi.in_session and pi.session_code == code and pi.node_id != my_id:
                         with mgr._lock:
                             if pi.node_id in mgr._peers:
                                 continue
