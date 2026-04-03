@@ -2199,6 +2199,16 @@ class VoxTerm(App):
         self._speaker_profile_map.clear()
 
     def action_quit(self):
+        if self._recording:
+            self.push_screen(QuitConfirmScreen(), self._on_quit_confirm)
+            return
+        self._do_quit()
+
+    def _on_quit_confirm(self, confirmed: bool) -> None:
+        if confirmed:
+            self._do_quit()
+
+    def _do_quit(self):
         # Cancel any in-progress P2P workers before cleanup
         self.workers.cancel_group(self, "p2p_setup")
         self.workers.cancel_group(self, "p2p_discovery")
