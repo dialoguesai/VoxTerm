@@ -566,7 +566,6 @@ class VoxTerm(App):
         if self._model_loaded:
             transcript = self.query_one(TranscriptPanel)
             transcript.system_message(f"model loaded: {self._model_name}")
-            transcript.system_message("ready — press [R] to record")
             self._update_telemetry()
             self._start_audio_timer()
             self._load_diarizer()
@@ -1210,9 +1209,7 @@ class VoxTerm(App):
 
     def _on_model_loaded(self):
         self._model_loaded = True
-        tp = self.query_one(TranscriptPanel)
-        tp.system_message(f"model loaded: {self._model_name}")
-        tp.system_message("ready — press [R] to record")
+        self.query_one(TranscriptPanel).system_message(f"model loaded: {self._model_name}")
         if not self._diarizer_loaded:
             self._load_diarizer()
         self._update_telemetry()
@@ -1244,7 +1241,9 @@ class VoxTerm(App):
 
     def _on_diarizer_loaded(self):
         self._diarizer_loaded = True
-        self.query_one(TranscriptPanel).system_message("speaker recognition loaded")
+        tp = self.query_one(TranscriptPanel)
+        tp.system_message("speaker recognition ready — voices encrypted locally, no audio stored")
+        tp.system_message("press [R] to record")
         self._update_telemetry()
 
     def _on_diarizer_crash(self, crash_count: int):
@@ -1262,7 +1261,7 @@ class VoxTerm(App):
             )
 
     def _on_diarizer_fallback(self):
-        pass
+        self.query_one(TranscriptPanel).system_message("press [R] to record")
 
     # ── actions ─────────────────────────────────────────────────
 
