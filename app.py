@@ -2222,40 +2222,24 @@ class VoxTerm(App):
             self._do_quit()
 
     def _do_quit(self):
-        # Cancel any in-progress P2P workers before cleanup
-        self.workers.cancel_group(self, "p2p_setup")
-        self.workers.cancel_group(self, "p2p_discovery")
-        # Leave P2P session and stop discovery
-        self._stop_discovery()
-        self._stop_audio_merge()
-        if self._session_mgr and self._session_mgr.is_in_session:
-            try:
-                self._session_mgr.leave_session()
-            except Exception:
-                pass
-        # Live file already on disk — no extra save needed
+        # Record stats while we still can (fast, synchronous)
         self._record_session_stats()
-        self.audio_capture.stop()
-        self.system_capture.stop()
-        try:
-            self.diarizer.shutdown()
-        except Exception:
-            pass
         try:
             self.speaker_store.close()
         except Exception:
             pass
 
-        # Let Textual restore the terminal, then hard-exit before
-        # Python's GC triggers C extension segfaults.
-        # Silence stderr to suppress resource_tracker leaked semaphore warning.
+        # Let Textual restore the terminal, then hard-exit.
+        # All cleanup (P2P disconnect, audio stop, mDNS unregister) is
+        # skipped — os._exit kills all threads and the OS reclaims
+        # sockets, file handles, and shared memory instantly.
         def _silent_exit():
             try:
                 sys.stderr.close()
             except Exception:
                 pass
             os._exit(0)
-        threading.Timer(0.5, _silent_exit).start()
+        threading.Timer(0.3, _silent_exit).start()
         self.exit()
 
 
