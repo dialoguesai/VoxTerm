@@ -1934,27 +1934,26 @@ class VoxTerm(App):
         """Called on main thread when party session is ready."""
         self._party_state = PartyState.IN_PARTY
         self._update_telemetry()
-        # Bloom — borders shift to the party color, then fade back
-        self._apply_bloom(self._party_color_pri, 1.8)
+        # Set borders to the party color — stays for the duration of the party
+        self._apply_party_color()
 
-    def _apply_bloom(self, color: str, duration: float) -> None:
-        """Briefly shift panel borders to a color, then restore."""
+    def _apply_party_color(self) -> None:
+        """Set panel borders to the party color. Stays until you leave."""
         try:
+            color = self._party_color_pri
             tp = self.query_one(TranscriptPanel)
             wf = self.query_one(WaveformWidget)
             fb = self.query_one("#footer-bar")
-            # Apply the party color
             tp.styles.border = ("heavy", color)
             tp.styles.border_title_color = color
             wf.styles.border = ("heavy", color)
             wf.styles.border_title_color = color
             fb.styles.border_top = ("heavy", color)
-            self.set_timer(duration, self._restore_borders)
         except Exception:
             pass
 
     def _restore_borders(self) -> None:
-        """Restore default border colors after bloom."""
+        """Restore default border colors when leaving the party."""
         try:
             tp = self.query_one(TranscriptPanel)
             wf = self.query_one(WaveformWidget)
@@ -1968,8 +1967,18 @@ class VoxTerm(App):
             pass
 
     def _peer_bloom(self) -> None:
-        """Subtle bloom when a peer joins — shorter, gentler."""
-        self._apply_bloom(self._party_color_light, 1.0)
+        """Brief flash to lighter shade when a peer joins, then back to party color."""
+        try:
+            light = self._party_color_light
+            tp = self.query_one(TranscriptPanel)
+            wf = self.query_one(WaveformWidget)
+            fb = self.query_one("#footer-bar")
+            tp.styles.border = ("heavy", light)
+            wf.styles.border = ("heavy", light)
+            fb.styles.border_top = ("heavy", light)
+            self.set_timer(1.0, self._apply_party_color)
+        except Exception:
+            pass
 
     def _party_failed(self, error: str) -> None:
         """Called on main thread when party session fails."""
@@ -1990,7 +1999,7 @@ class VoxTerm(App):
             self._session_mgr = None
         self._p2p_send_queue = None
         self._party_state = PartyState.SOLO
-        self.query_one(TranscriptPanel).system_message("left the party")
+        self._restore_borders()
         # Restart passive discovery
         self._start_peer_discovery()
         self._update_telemetry()
