@@ -1787,21 +1787,21 @@ class VoxTerm(App):
         """Create a new party — you're the host."""
         code = generate_session_code()
         self._party_color_pri, self._party_color_light = _party_color(code)
-        self.workers.cancel_group(self, "p2p_discovery")
-        self._stop_discovery()
         self._start_party_session(code, is_creator=True)
 
     def _join_party(self, session_code: str, group_name: str) -> None:
         """Join an existing party by session code (read from mDNS)."""
         self._party_color_pri, self._party_color_light = _party_color(session_code)
-        self.workers.cancel_group(self, "p2p_discovery")
-        self._stop_discovery()
         self._start_party_session(session_code, is_creator=False)
 
     @work(thread=True, group="p2p_setup")
     def _start_party_session(self, code: str, is_creator: bool) -> None:
         """Start P2P session in a worker thread to avoid blocking the event loop."""
         try:
+            # Stop passive discovery (blocking mDNS ops — safe in worker thread)
+            self.workers.cancel_group(self, "p2p_discovery")
+            self._stop_discovery()
+
             old_mgr = self._session_mgr
             if old_mgr is not None:
                 try:
