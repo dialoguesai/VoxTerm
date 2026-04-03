@@ -87,6 +87,30 @@ class PartyState(Enum):
     IN_PARTY = "in_party"   # connected, transcripts flowing
 
 
+# Artisanally picked party colors — warm, vibrant, visually distinct.
+# Indexed by hash of session code so each party gets its own vibe.
+PARTY_COLORS = [
+    ("#ff6eb4", "#ff9ed2"),  # hot pink
+    ("#ff8c42", "#ffb380"),  # tangerine
+    ("#a78bfa", "#c4b5fd"),  # lavender
+    ("#34d399", "#6ee7b7"),  # mint
+    ("#f472b6", "#f9a8d4"),  # rose
+    ("#fbbf24", "#fcd34d"),  # gold
+    ("#38bdf8", "#7dd3fc"),  # sky
+    ("#fb7185", "#fda4af"),  # coral
+    ("#4ade80", "#86efac"),  # lime
+    ("#c084fc", "#d8b4fe"),  # violet
+    ("#f97316", "#fdba74"),  # amber
+    ("#2dd4bf", "#5eead4"),  # teal
+]
+
+
+def _party_color(session_code: str) -> tuple[str, str]:
+    """Derive a (primary, light) color pair from the session code."""
+    h = hash(session_code) % len(PARTY_COLORS)
+    return PARTY_COLORS[h]
+
+
 # P2P networking — optional, gracefully degrade if dependencies missing
 try:
     from network.session import SessionManager
@@ -496,6 +520,8 @@ class VoxTerm(App):
         self._onboarding_shown = False
         # P2P networking state
         self._party_state = PartyState.SOLO
+        self._party_color_pri = "#00ffcc"   # overridden per-session
+        self._party_color_light = "#66ffd9"
         self._session_mgr: SessionManager | None = None
         self._discovery: PeerDiscovery | None = None
         self._p2p_display_name: str = _get_config().get("p2p_display_name") or os.getlogin()
@@ -539,7 +565,10 @@ class VoxTerm(App):
 
         if self._model_loaded:
             transcript = self.query_one(TranscriptPanel)
-            transcript.system_message(f"ready — {self._model_name}")
+            transcript.system_message(f"model loaded: {self._model_name}")
+            if self.speaker_store.is_open:
+                enc_status = "active" if self.speaker_store.is_encrypted else "off"
+                transcript.system_message(f"speaker profiles loaded (encryption: {enc_status})")
             self._update_telemetry()
             self._start_audio_timer()
             self._load_diarizer()
@@ -592,19 +621,20 @@ class VoxTerm(App):
 
         # Party mode indicator
         p2p_text = ""
+        pc = self._party_color_pri
         if self._party_state == PartyState.SCANNING:
-            p2p_text = "    [#00e5ff]◌ looking for the party...[/]"
+            p2p_text = f"    [{pc}]◌ looking for the party...[/]"
         elif self._party_state == PartyState.JOINING:
-            p2p_text = "    [#00e5ff]joining the party...[/]"
+            p2p_text = f"    [{pc}]joining the party...[/]"
         elif self._party_state == PartyState.IN_PARTY and self._session_mgr:
             peers = self._session_mgr.peers
             if peers:
                 names = "  ".join(
-                    f"[#00ffcc]●[/] {p.display_name}" for p in peers.values()
+                    f"[{pc}]●[/] {p.display_name}" for p in peers.values()
                 )
-                p2p_text = f"    {names}  [#00ffcc]●[/] you"
+                p2p_text = f"    {names}  [{pc}]●[/] you"
             else:
-                p2p_text = f"    [#00ffcc]●[/] you"
+                p2p_text = f"    [{pc}]●[/] you"
             p2p_text += "    [dim]\\[N][/]"
         elif self._discovery:
             visible = len(self._discovery.get_visible_peers())
@@ -615,7 +645,7 @@ class VoxTerm(App):
 
         self.query_one("#telemetry", Static).update(
             f"  {status}"
-            f"    [#00ffcc]{model_text}[/]"
+            f"    [#00ffcc]{model_text}[/] [dim]\\[M][/]"
             f"    [#ffaa66]{lang_text}[/]"
             f"{spk_text}"
             f"{p2p_text}"
@@ -1188,6 +1218,10 @@ class VoxTerm(App):
 
     @work(thread=True, group="diarizer_loading")
     def _load_diarizer(self):
+        self.call_from_thread(
+            self.query_one(TranscriptPanel).system_message,
+            "loading speaker identification..."
+        )
         try:
             # Set up crash/restart callbacks for subprocess mode
             self.diarizer.on_subprocess_crash = self._on_diarizer_crash
@@ -1206,6 +1240,7 @@ class VoxTerm(App):
 
     def _on_diarizer_loaded(self):
         self._diarizer_loaded = True
+        self.query_one(TranscriptPanel).system_message("ready — press [R] to record")
         self._update_telemetry()
 
     def _on_diarizer_crash(self, crash_count: int):
@@ -1506,6 +1541,7 @@ class VoxTerm(App):
         self._is_qwen3 = model_key in QWEN3_MODELS
         self._model_loaded = True
         _get_config().update({"last_model": model_key, "last_language": self._language})
+        self.query_one(TranscriptPanel).system_message(f"model loaded: {model_key}")
         self._update_telemetry()
 
     def _on_swap_error(self, msg: str):
@@ -1747,12 +1783,14 @@ class VoxTerm(App):
     def _host_party(self) -> None:
         """Create a new party — you're the host."""
         code = generate_session_code()
+        self._party_color_pri, self._party_color_light = _party_color(code)
         self.workers.cancel_group(self, "p2p_discovery")
         self._stop_discovery()
         self._start_party_session(code, is_creator=True)
 
     def _join_party(self, session_code: str, group_name: str) -> None:
         """Join an existing party by session code (read from mDNS)."""
+        self._party_color_pri, self._party_color_light = _party_color(session_code)
         self.workers.cancel_group(self, "p2p_discovery")
         self._stop_discovery()
         self._start_party_session(session_code, is_creator=False)
@@ -1903,30 +1941,42 @@ class VoxTerm(App):
         """Called on main thread when party session is ready."""
         self._party_state = PartyState.IN_PARTY
         self._update_telemetry()
-        # Bloom — borders warm up briefly
-        self.query_one("#main-container").add_class("--party-bloom")
-        self.set_timer(1.8, self._clear_party_bloom)
+        # Bloom — borders shift to the party color, then fade back
+        self._apply_bloom(self._party_color_pri, 1.8)
 
-    def _clear_party_bloom(self) -> None:
-        """Remove the bloom class — CSS transition fades it back."""
+    def _apply_bloom(self, color: str, duration: float) -> None:
+        """Briefly shift panel borders to a color, then restore."""
         try:
-            self.query_one("#main-container").remove_class("--party-bloom")
+            tp = self.query_one(TranscriptPanel)
+            wf = self.query_one(WaveformWidget)
+            fb = self.query_one("#footer-bar")
+            # Apply the party color
+            tp.styles.border = ("heavy", color)
+            tp.styles.border_title_color = color
+            wf.styles.border = ("heavy", color)
+            wf.styles.border_title_color = color
+            fb.styles.border_top = ("heavy", color)
+            self.set_timer(duration, self._restore_borders)
+        except Exception:
+            pass
+
+    def _restore_borders(self) -> None:
+        """Restore default border colors after bloom."""
+        try:
+            tp = self.query_one(TranscriptPanel)
+            wf = self.query_one(WaveformWidget)
+            fb = self.query_one("#footer-bar")
+            tp.styles.border = ("heavy", "#00e5ff")
+            tp.styles.border_title_color = "#00ffcc"
+            wf.styles.border = ("heavy", "#6644cc")
+            wf.styles.border_title_color = "#aa66ff"
+            fb.styles.border_top = ("heavy", "#003344")
         except Exception:
             pass
 
     def _peer_bloom(self) -> None:
         """Subtle bloom when a peer joins — shorter, gentler."""
-        try:
-            self.query_one("#main-container").add_class("--peer-bloom")
-            self.set_timer(1.0, self._clear_peer_bloom)
-        except Exception:
-            pass
-
-    def _clear_peer_bloom(self) -> None:
-        try:
-            self.query_one("#main-container").remove_class("--peer-bloom")
-        except Exception:
-            pass
+        self._apply_bloom(self._party_color_light, 1.0)
 
     def _party_failed(self, error: str) -> None:
         """Called on main thread when party session fails."""
