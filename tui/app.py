@@ -457,7 +457,7 @@ class VoxTerm(App):
         self.system_capture = SystemCapture()
         self.audio_buffer = AudioBuffer()
         self.vad = SileroVAD()
-        self.transcriber = transcriber or Qwen3Transcriber()
+        self.transcriber = transcriber
         self.diarizer = DiarizationProxy()
         self.speaker_store = SpeakerStore()
         self._model_name = model_name
@@ -472,7 +472,7 @@ class VoxTerm(App):
         self._debug = False
         self._last_dbg: float = 0.0
         self._transcribe_count = 0
-        self._model_loaded = transcriber is not None and transcriber.is_loaded
+        self._model_loaded = transcriber is not None and getattr(transcriber, 'is_loaded', False)
         self._diarizer_loaded = False
         self._system_audio_notified = False
         self._last_saved_at: float | None = None
@@ -616,6 +616,7 @@ class VoxTerm(App):
             self._load_diarizer()
         else:
             self.query_one(TranscriptPanel).system_message(f"loading model: {self._model_name}...")
+            self.query_one(TranscriptPanel).system_message("first run downloads the model, please wait")
             self._start_audio_timer()
             self._load_model()
 
@@ -1216,11 +1217,14 @@ class VoxTerm(App):
 
     @work(thread=True, group="model_loading")
     def _load_model(self):
-        self.call_from_thread(
-            self.query_one(TranscriptPanel).system_message,
-            "loading whisper model (first run downloads ~461MB)..."
-        )
         try:
+            model_repo = AVAILABLE_MODELS[self._model_name]
+            if self._model_name in QWEN3_MODELS:
+                self.transcriber = Qwen3Transcriber(model=model_repo, language=self._language)
+            elif self._model_name in FASTER_WHISPER_MODELS:
+                self.transcriber = FasterWhisperTranscriber(model=model_repo, language=self._language)
+            else:
+                self.transcriber = WhisperTranscriber(model=model_repo)
             self.transcriber.load()
             self.call_from_thread(self._on_model_loaded)
         except Exception as e:
@@ -1905,17 +1909,6 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    print(f"VOXTERM // loading model ({model_name}) lang={language}...")
-    print("(first run downloads the model, please wait)\n")
-    if model_name in QWEN3_MODELS:
-        transcriber = Qwen3Transcriber(model=model_repo, language=language)
-    elif model_name in FASTER_WHISPER_MODELS:
-        transcriber = FasterWhisperTranscriber(model=model_repo, language=language)
-    else:
-        transcriber = WhisperTranscriber(model=model_repo)
-    transcriber.load()
-    print("Model ready. Launching TUI...\n")
-
     # Prevent segfault: PortAudio/PyTorch/SpeechBrain C threads crash
     # during Python's shutdown when native objects are GC'd in random order.
     # atexit fires before finalizers; the finally block catches SystemExit.
@@ -1925,8 +1918,9 @@ if __name__ == "__main__":
     # Restore terminal on segfault so the shell doesn't get stuck in raw mode
     diagnostics.setup_signal_handlers()
 
+    # Launch TUI immediately — model loads in the background
     app = VoxTerm(
-        transcriber=transcriber, model_name=model_name, language=language,
+        transcriber=None, model_name=model_name, language=language,
         p2p_name=args.name,
         p2p_create=args.session_create,
         p2p_join_code=args.session_join,
