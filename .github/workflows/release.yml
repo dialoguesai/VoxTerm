@@ -1,0 +1,63 @@
+# Create a GitHub Release when a version tag is pushed.
+#
+# To release:
+#   1. Update VERSION in config.py (e.g., "0.1.0")
+#   2. Commit: git commit -am "Release v0.1.0"
+#   3. Tag:    git tag v0.1.0
+#   4. Push:   git push && git push --tags
+#
+# This workflow creates the GitHub Release automatically.
+# The install script fetches the latest release tag.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify config.py VERSION matches tag
+        run: |
+          CONFIG_VERSION=$(python3 -c "
+          with open('config.py') as f:
+              for line in f:
+                  if line.startswith('VERSION'):
+                      print(line.split('=')[1].strip().strip('\"').strip(\"'\"))
+                      break
+          ")
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          TAG_VERSION="${TAG_VERSION#v}"  # strip leading v
+          if [ "$CONFIG_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: config.py VERSION ($CONFIG_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "Version verified: $CONFIG_VERSION"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/dmarzzz/VoxTerm/main/install.sh | bash
+            ```
+
+            Or install this specific version:
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/dmarzzz/VoxTerm/main/install.sh | bash -s -- --version ${{ steps.version.outputs.version }}
+            ```
