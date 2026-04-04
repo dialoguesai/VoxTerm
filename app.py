@@ -637,18 +637,6 @@ class VoxTerm(App):
         else:
             spk_text = ""
 
-        # Auto-save indicator
-        if self._last_saved_at is not None:
-            ago = int(time.time() - self._last_saved_at)
-            if ago < 60:
-                saved_text = f"    [#00ff88]saved {ago}s ago[/]"
-            elif ago < 3600:
-                saved_text = f"    [#ffaa00]saved {ago // 60}m ago[/]"
-            else:
-                saved_text = f"    [#ff6600]saved {ago // 3600}h ago[/]"
-        else:
-            saved_text = ""
-
         # Party mode indicator (delegated to PartyManager)
         p2p_text = self._party.telemetry_text()
 
@@ -658,9 +646,22 @@ class VoxTerm(App):
             f"    [#ffaa66]{lang_text}[/] [dim]\\[L][/]"
             f"{spk_text}"
             f"{p2p_text}"
-            f"{saved_text}"
             f"    [dim]\\[S] Save  \\[Q] Quit[/]"
         )
+
+        # Auto-save indicator in transcript border title
+        tp = self.query_one(TranscriptPanel)
+        base_title = "TRANSCRIPT // MERGED" if getattr(tp, 'merged_view', False) else "TRANSCRIPT // LIVE"
+        if self._last_saved_at is not None:
+            ago = int(time.time() - self._last_saved_at)
+            if ago < 60:
+                tp.border_title = f"{base_title}  ·  saved {ago}s ago"
+            elif ago < 3600:
+                tp.border_title = f"{base_title}  ·  saved {ago // 60}m ago"
+            else:
+                tp.border_title = f"{base_title}"
+        else:
+            tp.border_title = base_title
 
     def _start_audio_timer(self):
         self.set_interval(1.0 / WAVEFORM_FPS, self._process_audio, name="audio_timer")
