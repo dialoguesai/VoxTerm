@@ -1296,6 +1296,7 @@ class VoxTerm(App):
             self.system_capture.stop()
             waveform.set_recording(False)
             header.set_recording(False)
+            transcript.system_message("recording stopped", Log.REC)
         else:
             self._recording = True
             self.vad.reset()
