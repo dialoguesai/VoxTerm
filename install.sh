@@ -80,8 +80,9 @@ echo ""
 # ── Resolve version ───────────────────────────────────────
 if [ -z "$REQUESTED_VERSION" ]; then
     info "checking latest release..."
-    REQUESTED_VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-        | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || echo "")
+    # Only look for v* tags (skip utility releases like onnx-models)
+    REQUESTED_VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases" 2>/dev/null \
+        | grep '"tag_name"' | grep '"v' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || echo "")
 
     if [ -z "$REQUESTED_VERSION" ]; then
         REQUESTED_VERSION="main"
