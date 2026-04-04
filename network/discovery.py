@@ -39,7 +39,6 @@ class PeerInfo:
     in_session: bool
     group_name: str = ""
     session_code: str = ""
-    party_color: str = ""
     proto_v: int = 1
 
 
@@ -70,7 +69,6 @@ class PeerDiscovery:
         self._in_session = False
         self._group_name = ""
         self._session_code = ""
-        self._party_color = ""
 
         self._zeroconf: Zeroconf | None = None
         self._browser: ServiceBrowser | None = None
@@ -108,12 +106,11 @@ class PeerDiscovery:
             self._zeroconf = None
         log.info("mDNS stopped")
 
-    def update_group(self, group_name: str, in_session: bool, session_code: str = "", party_color: str = "") -> None:
+    def update_group(self, group_name: str, in_session: bool, session_code: str = "") -> None:
         """Update mDNS TXT record with group name and session status."""
         self._group_name = group_name
         self._in_session = in_session
         self._session_code = session_code
-        self._party_color = party_color
         if self._zeroconf and self._service_info:
             new_info = self._build_service_info()
             try:
@@ -165,7 +162,6 @@ class PeerDiscovery:
                 "display_name": self._display_name,
                 "group_name": self._group_name,
                 "session_code": self._session_code,
-                "party_color": self._party_color,
                 "in_session": "1" if self._in_session else "0",
                 "proto_v": "1",
                 "tcp_port": str(self._tcp_port),
@@ -245,7 +241,6 @@ class PeerDiscovery:
                 in_session=props.get(b"in_session", b"0") == b"1",
                 group_name=(props.get(b"group_name") or b"").decode("utf-8", errors="replace"),
                 session_code=(props.get(b"session_code") or b"").decode("utf-8", errors="replace"),
-                party_color=(props.get(b"party_color") or b"").decode("utf-8", errors="replace"),
                 proto_v=int(props.get(b"proto_v", b"1").decode()),
             )
         except (KeyError, ValueError, IndexError) as exc:

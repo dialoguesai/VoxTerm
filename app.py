@@ -107,8 +107,7 @@ PARTY_COLORS = [
 
 def _party_color(session_code: str) -> tuple[str, str]:
     """Derive a (primary, light) color pair from the session code."""
-    import hashlib
-    h = int(hashlib.sha256(session_code.encode()).hexdigest(), 16) % len(PARTY_COLORS)
+    h = hash(session_code) % len(PARTY_COLORS)
     return PARTY_COLORS[h]
 
 
@@ -1746,18 +1745,21 @@ class VoxTerm(App):
         # Check peers already discovered by passive mDNS
         groups = self._find_party_groups()
         if len(groups) == 1:
+            # Auto-join the only group
             self._party_state = PartyState.JOINING
             self._update_telemetry()
             group = groups[0]
-            self._join_party(group["session_code"], group["display_name"], group.get("party_color"))
+            self._join_party(group["session_code"], group["display_name"])
         elif len(groups) == 0:
+            # No groups — you're the party now
             self._host_party()
         else:
+            # Multiple groups — auto-join the largest
             groups.sort(key=lambda g: g["peer_count"], reverse=True)
             self._party_state = PartyState.JOINING
             self._update_telemetry()
             group = groups[0]
-            self._join_party(group["session_code"], group["display_name"], group.get("party_color"))
+            self._join_party(group["session_code"], group["display_name"])
 
     def _find_party_groups(self) -> list[dict]:
         """Find active party groups from discovered peers."""
@@ -1773,7 +1775,6 @@ class VoxTerm(App):
                 groups[p.session_code] = {
                     "session_code": p.session_code,
                     "display_name": p.group_name or p.display_name,
-                    "party_color": p.party_color,
                     "peer_count": 1,
                     "ip": p.ip,
                     "tcp_port": p.tcp_port,
@@ -1788,14 +1789,9 @@ class VoxTerm(App):
         self._party_color_pri, self._party_color_light = _party_color(code)
         self._start_party_session(code, is_creator=True)
 
-    def _join_party(self, session_code: str, group_name: str, peer_color: str | None = None) -> None:
+    def _join_party(self, session_code: str, group_name: str) -> None:
         """Join an existing party by session code (read from mDNS)."""
-        if peer_color:
-            # Use the exact color the host is broadcasting — guaranteed match
-            self._party_color_pri = peer_color
-            self._party_color_light = peer_color  # close enough for the light variant
-        else:
-            self._party_color_pri, self._party_color_light = _party_color(session_code)
+        self._party_color_pri, self._party_color_light = _party_color(session_code)
         self._start_party_session(session_code, is_creator=False)
 
     @work(thread=True, group="p2p_setup")
@@ -1902,10 +1898,9 @@ class VoxTerm(App):
                     ).start()
 
             self._start_discovery(port, on_peer_found=on_peer_found)
-            # Advertise our session code + group name + party color via mDNS
+            # Advertise our session code + group name via mDNS
             self._discovery.update_group(
                 self._p2p_display_name, True, session_code=code,
-                party_color=self._party_color_pri,
             )
 
             # Connect to any already-visible peers in the SAME party
@@ -2103,10 +2098,7 @@ class VoxTerm(App):
             # Remove peer from audio mixer
             if self._peer_mixer:
                 self._peer_mixer.remove_peer(_mixer_key(node_id))
-            self.call_from_thread(
-                self.query_one(TranscriptPanel).system_message,
-                f"{display_name} left the party"
-            )
+            # No transcript message — the footer peer list is the signal
             self.call_from_thread(self._update_telemetry)
             if self._assembler:
                 self._assembler.clear_peer(node_id)
