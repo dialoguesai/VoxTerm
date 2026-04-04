@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ── VoxTerm Installer ──────────────────────────────────────
 #
-# Install:    curl -fsSL https://voxterm.xyz/install.sh | bash
+# Install:    curl -fsSL https://raw.githubusercontent.com/dmarzzz/VoxTerm/main/install.sh | bash
 # Specific:   curl ... | bash -s -- --version v0.1.0
 # Uninstall:  curl ... | bash -s -- --uninstall
 
@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
         --help|-h)
             echo "VoxTerm installer"
             echo ""
-            echo "Usage: curl -fsSL https://voxterm.xyz/install.sh | bash [-s -- OPTIONS]"
+            echo "Usage: curl -fsSL .../install.sh | bash [-s -- OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --version VERSION   Install a specific version (e.g. v0.1.0)"
@@ -60,13 +60,8 @@ if $UNINSTALL; then
     done_ "removed $INSTALL_DIR"
     done_ "removed $BIN_DIR/voxterm"
     echo ""
-    echo -e "${DIM}voice data was NOT removed${RESET}"
-    echo -e "${DIM}to remove voice data too:${RESET}"
-    if [ "$(uname)" = "Darwin" ]; then
-        echo -e "${DIM}  rm -rf ~/Library/Application\\ Support/voxterm${RESET}"
-    else
-        echo -e "${DIM}  rm -rf ~/.local/share/voxterm${RESET}"
-    fi
+    echo -e "${DIM}voice data at ~/Library/Application Support/voxterm/ was NOT removed${RESET}"
+    echo -e "${DIM}to remove voice data too: rm -rf ~/Library/Application\\ Support/voxterm${RESET}"
     echo ""
     exit 0
 fi
@@ -139,16 +134,18 @@ else
     ARCHIVE_URL="$REPO_URL/archive/refs/tags/$REQUESTED_VERSION.tar.gz"
 fi
 
+# Download and extract to a temp dir, then swap
 TMPDIR_DL=$(mktemp -d)
 trap "rm -rf $TMPDIR_DL" EXIT
 
 curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$TMPDIR_DL" --strip-components=1
 
-# Preserve venv if it exists
+# Preserve venv if it exists (avoid re-downloading all deps)
 if [ -d "$VENV_DIR" ]; then
     mv "$VENV_DIR" "$TMPDIR_DL/.venv"
 fi
 
+# Preserve voice data symlinks or local state
 rm -rf "$INSTALL_DIR"
 mv "$TMPDIR_DL" "$INSTALL_DIR"
 
@@ -177,6 +174,7 @@ mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/voxterm" << 'LAUNCHER'
 #!/bin/bash
 INSTALL_DIR="$HOME/.local/share/voxterm"
+cd "$INSTALL_DIR"
 exec "$INSTALL_DIR/.venv/bin/python" -m tui.app "$@"
 LAUNCHER
 chmod +x "$BIN_DIR/voxterm"
@@ -201,6 +199,7 @@ echo ""
 echo -e "${GREEN}${BOLD}voxterm $REQUESTED_VERSION installed!${RESET}"
 echo ""
 echo "  run it:      voxterm"
-echo "  update:      curl -fsSL https://voxterm.xyz/install.sh | bash"
-echo "  uninstall:   curl -fsSL https://voxterm.xyz/install.sh | bash -s -- --uninstall"
+echo "  update:      curl -fsSL $REPO_URL/raw/main/install.sh | bash"
+echo "  uninstall:   curl -fsSL $REPO_URL/raw/main/install.sh | bash -s -- --uninstall"
+echo "  pin version: curl -fsSL $REPO_URL/raw/main/install.sh | bash -s -- --version v0.1.0"
 echo ""
