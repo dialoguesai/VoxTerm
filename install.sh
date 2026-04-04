@@ -174,6 +174,7 @@ mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/voxterm" << 'LAUNCHER'
 #!/bin/bash
 INSTALL_DIR="$HOME/.local/share/voxterm"
+cd "$INSTALL_DIR"
 exec "$INSTALL_DIR/.venv/bin/python" -m tui.app "$@"
 LAUNCHER
 chmod +x "$BIN_DIR/voxterm"
