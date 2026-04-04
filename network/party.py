@@ -234,7 +234,10 @@ class PartyManager:
         Must be called from a worker thread (blocking mDNS operations).
         Uses app.call_from_thread for UI callbacks.
         """
+        if self._state != PartyState.SOLO:
+            return
         try:
+            self._stop_discovery()
             self._ensure_identity()
             self._discovery = PeerDiscovery(
                 self._node_id,
@@ -319,13 +322,29 @@ class PartyManager:
             group = groups[0]
             self._join_party(group["session_code"], group["display_name"], group.get("party_color"))
         elif len(groups) == 0:
-            self._host_party()
+            # No groups found yet — schedule a rescan before hosting
+            self._app.set_timer(0.8, self._rescan_or_host)
         else:
             groups.sort(key=lambda g: g["peer_count"], reverse=True)
-            self._state = PartyState.JOINING
-            self._fire_state_changed()
-            group = groups[0]
-            self._join_party(group["session_code"], group["display_name"], group.get("party_color"))
+            self._join_best_group(groups)
+
+    def _rescan_or_host(self) -> None:
+        """Rescan for party groups after a short delay; host if still none found."""
+        if self._state != PartyState.SCANNING:
+            return
+        groups = self._find_party_groups()
+        if groups:
+            groups.sort(key=lambda g: g["peer_count"], reverse=True)
+            self._join_best_group(groups)
+        else:
+            self._host_party()
+
+    def _join_best_group(self, groups: list[dict]) -> None:
+        """Join the best (largest) group from a list of discovered groups."""
+        self._state = PartyState.JOINING
+        self._fire_state_changed()
+        group = groups[0]
+        self._join_party(group["session_code"], group["display_name"], group.get("party_color"))
 
     def _find_party_groups(self) -> list[dict]:
         """Find active party groups from discovered peers."""
@@ -381,9 +400,8 @@ class PartyManager:
         This runs in a background thread and uses call_from_thread for UI updates.
         """
         try:
-            # Stop passive discovery (blocking mDNS ops -- safe in worker thread)
+            # Cancel passive discovery worker (but keep the PeerDiscovery instance)
             self._app.workers.cancel_group(self._app, "p2p_discovery")
-            self._stop_discovery()
 
             old_mgr = self._session_mgr
             if old_mgr is not None:
@@ -480,7 +498,12 @@ class PartyManager:
                         daemon=True,
                     ).start()
 
-            self._start_discovery(port, on_peer_found=on_peer_found)
+            # Reuse existing discovery if available, otherwise create fresh
+            if self._discovery:
+                self._discovery.on_peer_found = on_peer_found
+                self._discovery.update_port(port)
+            else:
+                self._start_discovery(port, on_peer_found=on_peer_found)
             # Advertise our session code + group name + party color via mDNS
             self._discovery.update_group(
                 self._display_name, True, session_code=code,
@@ -532,7 +555,9 @@ class PartyManager:
             except Exception:
                 pass
             self._session_mgr = None
-            self._app.call_from_thread(self._handle_party_failed, str(exc))
+            error_msg = str(exc) or f"{type(exc).__name__}: {repr(exc)}"
+            log.warning("party session failed: %s", error_msg, exc_info=True)
+            self._app.call_from_thread(self._handle_party_failed, error_msg)
 
     def _party_ready(self, is_host: bool) -> None:
         """Called on main thread when party session is ready."""
@@ -557,27 +582,42 @@ class PartyManager:
         self._state = PartyState.SOLO
         if self.on_party_failed:
             self.on_party_failed(error)
-        # Restart passive discovery
-        self._app._party_start_passive_discovery_worker()
+        # Mark ourselves as not in session but keep discovery cache
+        if self._discovery:
+            self._discovery.update_session_status(False)
+        else:
+            self._app._party_start_passive_discovery_worker()
 
     # ── leave ─────────────────────────────────────────────────────
 
     def _leave_party_mode(self) -> None:
         """Leave the party and return to solo mode."""
         self._stop_audio_merge()
-        if self._session_mgr:
-            try:
-                self._session_mgr.leave_session()
-            except Exception:
-                pass
-            self._session_mgr = None
+        old_mgr = self._session_mgr
+        self._session_mgr = None
         self._send_queue = None
         self._state = PartyState.SOLO
         if self.on_party_colors_restored:
             self.on_party_colors_restored()
         self._fire_state_changed()
-        # Restart passive discovery
-        self._app._party_start_passive_discovery_worker()
+        # Mark not-in-session but keep discovery cache for fast rejoin
+        if self._discovery:
+            self._discovery.update_session_status(False)
+        # Tear down the session in a background thread (no UI lag)
+        if old_mgr:
+            threading.Thread(
+                target=PartyManager._teardown_session,
+                args=(old_mgr,),
+                daemon=True,
+            ).start()
+
+    @staticmethod
+    def _teardown_session(mgr: "SessionManager") -> None:
+        """Tear down a session manager in the background."""
+        try:
+            mgr.leave_session()
+        except Exception:
+            pass
 
     # ── peer connection ──────────────────────────────────────────
 
@@ -773,6 +813,12 @@ class PartyManager:
 
     # ── telemetry text generation ────────────────────────────────
 
+    _PEER_DOT_COLORS = [
+        "#00ffcc", "#ff44aa", "#44ff88", "#ffaa44",
+        "#bb88ff", "#ff8844", "#44ddff", "#ccff44",
+        "#ff6eb4", "#38bdf8", "#4ade80", "#fbbf24",
+    ]
+
     def telemetry_text(self) -> str:
         """Generate the P2P portion of the telemetry bar text."""
         pc = self._color_pri
@@ -783,9 +829,11 @@ class PartyManager:
         elif self._state == PartyState.IN_PARTY and self._session_mgr:
             peers = self._session_mgr.peers
             if peers:
-                names = "  ".join(
-                    f"[{pc}]●[/] {p.display_name}" for p in peers.values()
-                )
+                parts = []
+                for idx, p in enumerate(peers.values()):
+                    dot_color = self._PEER_DOT_COLORS[idx % len(self._PEER_DOT_COLORS)]
+                    parts.append(f"[{dot_color}]●[/] {p.display_name}")
+                names = "  ".join(parts)
                 text = f"    {names}  [{pc}]●[/] you"
             else:
                 text = f"    [{pc}]●[/] you"

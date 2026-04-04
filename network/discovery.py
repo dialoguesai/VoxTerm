@@ -137,6 +137,12 @@ class PeerDiscovery:
             except Exception:
                 log.debug("Failed to update mDNS service (already unregistered?)")
 
+    def update_port(self, tcp_port: int, udp_port: int = 0) -> None:
+        """Update the advertised TCP/UDP ports."""
+        self._tcp_port = tcp_port
+        if udp_port:
+            self._udp_port = udp_port
+
     def get_visible_peers(self) -> list[PeerInfo]:
         """Return a snapshot of currently visible peers."""
         with self._lock:

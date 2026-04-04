@@ -18,6 +18,26 @@ _PEER_COLORS = [
     "#bb88ff", "#ff8844", "#44ddff", "#ccff44",
 ]
 
+# ── Log categories ──────────────────────────────────────────
+class Log:
+    SYS = "sys"
+    P2P = "p2p"
+    REC = "rec"
+    MDL = "mdl"
+    SPK = "spk"
+    IO  = "io"
+
+_LOG_CATEGORIES = {
+    "sys": {"tag": "SYS", "tag_color": "#607080", "msg_color": "#708090"},
+    "p2p": {"tag": "P2P", "tag_color": "#00ffcc", "msg_color": "#80ccbb"},
+    "rec": {"tag": "REC", "tag_color": "#ff4466", "msg_color": "#cc8899"},
+    "mdl": {"tag": "MDL", "tag_color": "#aa88ff", "msg_color": "#9988cc"},
+    "spk": {"tag": "SPK", "tag_color": "#ffaa00", "msg_color": "#ccaa66"},
+    "io":  {"tag": "I/O", "tag_color": "#44ddff", "msg_color": "#80aabb"},
+}
+
+_TIMESTAMP_COLOR = "#306070"
+
 
 class TranscriptPanel(RichLog):
     """Cyberpunk-styled live transcription panel with speaker attribution."""
@@ -52,14 +72,16 @@ class TranscriptPanel(RichLog):
         self._peer_color_map: dict[str, str] = {}  # node_id → color
         self._peer_names: dict[str, str] = {}  # node_id → display_name
 
-    def system_message(self, msg: str):
-        """Add a system message."""
+    def system_message(self, msg: str, category: str = "sys"):
+        """Add a system message with optional log category."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self._entries.append((timestamp, "system", msg, "", 0, ""))
+        self._entries.append((timestamp, "system", msg, category, 0, ""))
         if not self._merged_view:
+            cat = _LOG_CATEGORIES.get(category, _LOG_CATEGORIES["sys"])
             text = Text()
-            text.append("SYSTEM [SYS]  ", Style(color="#ff6600", bold=True))
-            text.append(msg, Style(color="#607080"))
+            text.append(f"[{timestamp}]  ", Style(color=_TIMESTAMP_COLOR))
+            text.append(f"{cat['tag']}  ", Style(color=cat["tag_color"], bold=True))
+            text.append(msg, Style(color=cat["msg_color"]))
             self.write(text)
 
     def add_transcript(
@@ -85,7 +107,7 @@ class TranscriptPanel(RichLog):
     ) -> Text:
         """Render a single transcript entry as Rich Text."""
         text = Text()
-        text.append(f"[{timestamp}]  ", Style(color="#004455"))
+        text.append(f"[{timestamp}]  ", Style(color=_TIMESTAMP_COLOR))
 
         if speaker:
             color = self._color_overrides.get(
@@ -267,10 +289,13 @@ class TranscriptPanel(RichLog):
             if typ == "transcript":
                 text = self._render_entry(ts, content, speaker, speaker_id, conf)
             else:
-                # System message — re-render as-is
+                # System message — re-render with category
+                category = speaker if speaker in _LOG_CATEGORIES else "sys"
+                cat = _LOG_CATEGORIES.get(category, _LOG_CATEGORIES["sys"])
                 text = Text()
-                text.append("SYSTEM [SYS]  ", Style(color="#ff6600", bold=True))
-                text.append(content, Style(color="#607080"))
+                text.append(f"[{ts}]  ", Style(color=_TIMESTAMP_COLOR))
+                text.append(f"{cat['tag']}  ", Style(color=cat["tag_color"], bold=True))
+                text.append(content, Style(color=cat["msg_color"]))
             self.write(text)
 
     def clear(self):
