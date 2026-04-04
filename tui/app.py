@@ -434,6 +434,7 @@ class VoxTerm(App):
         Binding("v", "toggle_merged_view", "View"),
         Binding("?", "show_help", "Help", key_display="?"),
         Binding("q", "quit", "Quit"),
+        Binding("escape", "quit", show=False),
     ]
 
     def __init__(self, transcriber=None, model_name="qwen3-0.6b", language="en",
