@@ -250,7 +250,8 @@ class PartyManager:
                     return
                 self._app.call_from_thread(
                     self._fire_debug,
-                    f"peer online: {peer_info.display_name} ({peer_info.ip})"
+                    f"peer online: {peer_info.display_name} · {peer_info.ip}"
+                    + (f" · v{peer_info.app_version}" if peer_info.app_version else "")
                 )
                 self._app.call_from_thread(self._fire_state_changed)
 
