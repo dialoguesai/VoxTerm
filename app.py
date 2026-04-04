@@ -659,6 +659,7 @@ class VoxTerm(App):
             f"{spk_text}"
             f"{p2p_text}"
             f"{saved_text}"
+            f"    [dim]\\[S] Save  \\[Q] Quit[/]"
         )
 
     def _start_audio_timer(self):
