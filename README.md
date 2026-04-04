@@ -5,6 +5,31 @@ Local real-time voice transcription TUI with speaker diarization and P2P collabo
 ![platform](https://img.shields.io/badge/platform-macOS_(Apple_Silicon)-black)
 ![version](https://img.shields.io/badge/version-0.0.0-blue)
 
+## Privacy & Voice Data
+
+VoxTerm is local and private first. All processing happens on your machine — nothing ever leaves.
+
+Voice tagging stores 3D-Speaker ERes2Net embeddings locally at `~/Library/Application Support/voxterm/.speakers.db`. These embeddings are biometric data — they can identify a person across recordings but cannot be used to reconstruct audio. **No audio is ever stored.**
+
+**What we do:**
+- All processing is local and offline — no data ever leaves your machine
+- Embedding BLOBs are **encrypted at rest** with AES-256-CBC + HMAC-SHA256
+- Encryption key is auto-generated and stored in your **macOS Keychain** — zero config, no passwords
+- Existing unencrypted databases are automatically migrated on first open
+- Database file permissions are set to owner-only (`0600`)
+- Daily backups with 7-day retention
+- `Ctrl+X` in the profiles screen (`P`) permanently deletes all voice data with a `VACUUM` to scrub bytes from disk
+- `.gitignore` excludes all speaker databases and transcripts from version control
+- Transcripts auto-saved to `~/Documents/voxterm/` as markdown
+
+**Known limitations:**
+- **Metadata is not encrypted.** Speaker names, timestamps, and session history are stored in plaintext SQL columns. Only the biometric embedding BLOBs are encrypted. Someone with file access can see *who* spoke and *when*, but not derive a voiceprint.
+- **Keychain access.** The encryption key lives in your macOS login Keychain. Any process running as your user *could* request it. FileVault provides the strongest defense for the at-rest case.
+
+**What we explicitly avoid:**
+- No subprocess calls for key management — the Security framework is called directly via `ctypes`, so the key never appears in `argv` or the process list
+- No additional dependencies — CommonCrypto and Security.framework are built into macOS
+
 ## Setup
 
 ```bash
@@ -93,12 +118,3 @@ config.py           Constants, paths, settings
 - macOS with Apple Silicon (M1+)
 - Python 3.9+
 - Microphone access
-
-## Privacy
-
-- **All processing is local and offline** — no data ever leaves your machine
-- **No audio is stored** — only text transcripts and voice embeddings
-- **Voice embeddings encrypted at rest** with AES-256-CBC + HMAC-SHA256, key in macOS Keychain
-- **Transcripts auto-saved** to `~/Documents/voxterm/` as markdown
-- **Speaker profiles** at `~/Library/Application Support/voxterm/.speakers.db` (owner-only permissions, daily backups)
-- Press `P` → delete to permanently wipe all voice data
