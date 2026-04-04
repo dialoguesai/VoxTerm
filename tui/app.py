@@ -33,6 +33,17 @@ diagnostics.rotate_crash_logs()
 import warnings
 warnings.filterwarnings("ignore", message="resource_tracker", category=UserWarning)
 
+# Disable the multiprocessing resource tracker subprocess entirely.
+# It prints leaked-semaphore warnings to its own stderr on shutdown,
+# which we can't suppress from the main process. Since we use os._exit(),
+# the OS reclaims all shared resources — the tracker is unnecessary.
+import multiprocessing.resource_tracker as _rt
+_rt._resource_tracker._stop = lambda: None  # prevent tracker from printing warnings
+try:
+    _rt.getfd = lambda: None  # prevent tracker from spawning
+except Exception:
+    pass
+
 from enum import Enum
 import numpy as np
 from textual.app import App, ComposeResult
