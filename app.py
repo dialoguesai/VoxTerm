@@ -512,7 +512,7 @@ class VoxTerm(App):
             prev = _prev_state[0]
             _prev_state[0] = state
             if state == PartyState.IN_PARTY and prev != PartyState.IN_PARTY:
-                if self._party_mgr and self._party_mgr.is_host:
+                if self._party and self._party.is_host:
                     self.query_one(TranscriptPanel).system_message(
                         "no party found, you are the party now"
                     )
