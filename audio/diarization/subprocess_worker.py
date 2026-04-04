@@ -17,8 +17,9 @@ import os
 import signal
 import sys
 
-# Ensure project root is on path (3 levels up: audio/diarization/subprocess_worker.py → root)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# Only needed when running as a script, not when installed as a package
+if __package__ is None:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Prevent PyTorch from spawning threads that could conflict
 os.environ["OMP_NUM_THREADS"] = "1"

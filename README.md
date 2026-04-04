@@ -5,32 +5,34 @@ Local real-time voice transcription TUI with speaker diarization and P2P collabo
 ![platform](https://img.shields.io/badge/platform-macOS_(Apple_Silicon)-black)
 ![version](https://img.shields.io/badge/version-0.0.0-blue)
 
-## Privacy & Voice Data
+## Privacy & Storage Policy
 
-VoxTerm is local and private first. All processing happens on your machine — nothing ever leaves.
+VoxTerm is **local first and private by default**. Everything runs on your machine. Nothing is ever sent to a server.
 
-Voice tagging stores 3D-Speaker ERes2Net embeddings locally at `~/Library/Application Support/voxterm/.speakers.db`. These embeddings are biometric data — they can identify a person across recordings but cannot be used to reconstruct audio. **No audio is ever stored.**
+- **No audio is stored.** Microphone input is processed in real-time and discarded. Only text transcripts are saved.
+- **Voice profiles are encrypted at rest.** Speaker embeddings (biometric data used to recognize voices across sessions) are encrypted with AES-256-CBC. The key lives in your macOS Keychain — zero config.
+- **Transcripts are yours.** Auto-saved as markdown to `~/Documents/voxterm/`. Never uploaded anywhere.
+- **P2P stays on your LAN.** Party mode shares transcripts over your local network only. No relay servers.
+- **Delete everything anytime.** Press `P` → delete to permanently wipe all voice data from disk.
 
-**What we do:**
-- All processing is local and offline — no data ever leaves your machine
-- Embedding BLOBs are **encrypted at rest** with AES-256-CBC + HMAC-SHA256
-- Encryption key is auto-generated and stored in your **macOS Keychain** — zero config, no passwords
-- Existing unencrypted databases are automatically migrated on first open
-- Database file permissions are set to owner-only (`0600`)
-- Daily backups with 7-day retention
-- `Ctrl+X` in the profiles screen (`P`) permanently deletes all voice data with a `VACUUM` to scrub bytes from disk
-- `.gitignore` excludes all speaker databases and transcripts from version control
-- Transcripts auto-saved to `~/Documents/voxterm/` as markdown
+## Install
 
-**Known limitations:**
-- **Metadata is not encrypted.** Speaker names, timestamps, and session history are stored in plaintext SQL columns. Only the biometric embedding BLOBs are encrypted. Someone with file access can see *who* spoke and *when*, but not derive a voiceprint.
-- **Keychain access.** The encryption key lives in your macOS login Keychain. Any process running as your user *could* request it. FileVault provides the strongest defense for the at-rest case.
+One command:
 
-**What we explicitly avoid:**
-- No subprocess calls for key management — the Security framework is called directly via `ctypes`, so the key never appears in `argv` or the process list
-- No additional dependencies — CommonCrypto and Security.framework are built into macOS
+```bash
+curl -fsSL https://raw.githubusercontent.com/dmarzzz/VoxTerm/main/install.sh | bash
+```
 
-## Setup
+Then run:
+
+```bash
+voxterm
+```
+
+Requires macOS with Apple Silicon (M1+) and Python 3.9+. Models download automatically on first use.
+
+<details>
+<summary>Manual setup (for developers)</summary>
 
 ```bash
 git clone https://github.com/dmarzzz/VoxTerm.git
@@ -38,20 +40,10 @@ cd voxterm
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-Speaker recognition models download automatically on first run (~633KB).
-
-## Run
-
-```bash
 python3 -m tui.app
 ```
 
-Or use the launcher:
-```bash
-./voxterm
-```
+</details>
 
 ## Controls
 
@@ -112,9 +104,3 @@ tests/              Test suite
 docs/               Design docs and specs
 config.py           Constants, paths, settings
 ```
-
-## Requirements
-
-- macOS with Apple Silicon (M1+)
-- Python 3.9+
-- Microphone access

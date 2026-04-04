@@ -19,11 +19,12 @@ import signal
 import sys
 import threading
 
-# Add parent directory to path so we can import from the main package
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+# Only needed when running as a script, not when installed as a package
+if __package__ is None:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    _ROOT = os.path.dirname(_HERE)
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
 
 from audio.platform import CURRENT_PLATFORM, Platform
 from config import (
