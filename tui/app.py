@@ -1220,13 +1220,16 @@ class VoxTerm(App):
             try:
                 # Python 3.12 subprocess fails with "bad value(s) in fds_to_keep"
                 # when spawned from a thread while Textual holds terminal FDs.
-                # Close all non-standard FDs in this thread before loading.
+                # Monkeypatch _execute_child to catch and retry with close_fds=False.
                 import subprocess
-                _orig_popen = subprocess.Popen
-                def _safe_popen(*args, **kwargs):
-                    kwargs.setdefault('close_fds', False)
-                    return _orig_popen(*args, **kwargs)
-                subprocess.Popen = _safe_popen
+                _orig = subprocess.Popen.__init__
+                def _patched_init(self_p, *args, **kwargs):
+                    try:
+                        _orig(self_p, *args, **kwargs)
+                    except ValueError:
+                        kwargs['close_fds'] = False
+                        _orig(self_p, *args, **kwargs)
+                subprocess.Popen.__init__ = _patched_init
 
                 model_repo = AVAILABLE_MODELS[self._model_name]
                 if self._model_name in QWEN3_MODELS:
