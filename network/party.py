@@ -837,14 +837,14 @@ class PartyManager:
                 text = f"    {names}  [{pc}]●[/] you"
             else:
                 text = f"    [{pc}]●[/] you"
-            text += "    [dim]Leave Party \\[N][/]"
+            text += "    [dim]Leave Party \\[P][/]"
             return text
         elif self._discovery:
             visible = len(self._discovery.get_visible_peers())
             if visible > 0:
-                return f"    [dim]{visible} nearby[/]  [#00e5ff]\\[N] Party[/]"
+                return f"    [dim]{visible} nearby[/]  [#00e5ff]\\[P] Party[/]"
             else:
-                return f"    [#00e5ff]\\[N] Party[/]"
+                return f"    [#00e5ff]\\[P] Party[/]"
         return ""
 
     # ── callback fire helpers ────────────────────────────────────
