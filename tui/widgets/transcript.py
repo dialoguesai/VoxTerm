@@ -25,7 +25,7 @@ class Log:
     REC   = "rec"     # recording start/stop, mic events, export/save
 
 _LOG_CATEGORIES = {
-    "sys":   {"tag": "SYS",   "tag_color": "#607080", "msg_color": "#708090"},
+    "sys":   {"tag": "SYS",   "tag_color": "#ff6600", "msg_color": "#cc8866"},
     "party": {"tag": "PARTY", "tag_color": "#00ffcc", "msg_color": "#80ccbb"},
     "rec":   {"tag": "REC",   "tag_color": "#ff4466", "msg_color": "#cc8899"},
 }
