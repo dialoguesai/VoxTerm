@@ -1,147 +1,121 @@
-"""Bloom overlay — colour wash on party join."""
+"""Bloom overlay — colour wash on party join.
+
+Expanding neon glow that tints the existing UI rather than covering it.
+Keeps the original characters and blends background/foreground colours
+toward the bloom hue, so text stays readable through the effect.
+
+Self-removes after the animation completes.
+"""
 
 from __future__ import annotations
 
 import math
 import random
 import time
-from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import TYPE_CHECKING
 
 from textual.strip import Strip
 from textual.widget import Widget
-from textual.geometry import Region
 from rich.segment import Segment
 from rich.style import Style
 
-if TYPE_CHECKING:
-    from textual.app import App
 
-# ── constants ──────────────────────────────────────────────────
+# ── colour helpers ───────────────────────────────────────────
 
-_GRADIENT = [
-    (255, 20, 60),
-    (255, 0, 170),
-    (170, 30, 255),
-    (40, 120, 255),
-    (0, 255, 220),
-    (57, 255, 20),
-    (230, 255, 0),
-    (255, 120, 20),
-    (255, 0, 180),
+_GRAD = [
+    (0.000, (255,  20,  60)),
+    (0.125, (255,   0, 170)),
+    (0.250, (170,  30, 255)),
+    (0.375, ( 40, 120, 255)),
+    (0.500, (  0, 255, 220)),
+    (0.625, ( 57, 255,  20)),
+    (0.750, (230, 255,   0)),
+    (0.875, (255, 120,  20)),
+    (1.000, (255,   0, 180)),
 ]
 
-_APP_BG = (10, 14, 20)
-_BG_STYLE = Style(bgcolor="#0a0e14")
-_TIMESTAMP_COLOR = "#306070"
-
-_MAX_TINT = 0.85
-_DESAT = 0.15
-_DURATION = 2.5
-_DISSOLVE_START = 0.55
-_SEED_COUNT = 14
-_SPEED_LO, _SPEED_HI = 15.0, 30.0
-_STAGGER_MAX = 0.4
+# App background RGB for blending
+_BG_R, _BG_G, _BG_B = 10, 14, 20
+_BG_HEX = "#0a0e14"
+_BG_STYLE = Style(bgcolor=_BG_HEX)
 
 
-# ── helpers ────────────────────────────────────────────────────
+def _lerp_color(t: float) -> tuple[int, int, int]:
+    t = t % 1.0
+    for i in range(len(_GRAD) - 1):
+        if t <= _GRAD[i + 1][0]:
+            f = (t - _GRAD[i][0]) / (_GRAD[i + 1][0] - _GRAD[i][0])
+            a, b = _GRAD[i][1], _GRAD[i + 1][1]
+            return (
+                int(a[0] + (b[0] - a[0]) * f),
+                int(a[1] + (b[1] - a[1]) * f),
+                int(a[2] + (b[2] - a[2]) * f),
+            )
+    return _GRAD[-1][1]
 
-def _lerp_color(
-    a: tuple[int, int, int], b: tuple[int, int, int], t: float,
-) -> tuple[int, int, int]:
-    """Linear interpolation between two RGB triples."""
-    t = max(0.0, min(1.0, t))
-    return (
-        int(a[0] + (b[0] - a[0]) * t),
-        int(a[1] + (b[1] - a[1]) * t),
-        int(a[2] + (b[2] - a[2]) * t),
-    )
 
-
-def _extract_rgb(
-    style: Style, attr: str = "bgcolor",
-) -> tuple[int, int, int]:
-    """Extract RGB from a Rich Style attribute, falling back to app bg."""
+def _extract_rgb(style: Style | None, attr: str) -> tuple[int, int, int]:
+    if style is None:
+        return (_BG_R, _BG_G, _BG_B)
+    color_obj = getattr(style, attr, None)
+    if color_obj is None:
+        return (_BG_R, _BG_G, _BG_B)
     try:
-        col = getattr(style, attr, None)
-        if col is not None:
-            tc = col.get_truecolor()
-            return (tc.red, tc.green, tc.blue)
+        triplet = color_obj.get_truecolor()
+        return (triplet.red, triplet.green, triplet.blue)
     except Exception:
-        pass
-    return _APP_BG
+        return (_BG_R, _BG_G, _BG_B)
+
+
+def _blend(base: int, target: int, t: float) -> int:
+    return min(255, max(0, int(base + (target - base) * t)))
 
 
 @lru_cache(maxsize=4096)
-def _tint_style(
-    orig_bg: tuple[int, int, int],
-    orig_fg: tuple[int, int, int],
-    bloom_rgb: tuple[int, int, int],
-    tint: float,
-    char: str,
-) -> tuple[str, Style]:
-    """Return (char, blended style) — cached for repeated cells."""
-    # Blend bg toward bloom colour
-    bg = _lerp_color(orig_bg, bloom_rgb, tint)
-    # Desaturate slightly toward app bg
-    bg = _lerp_color(bg, _APP_BG, _DESAT * tint)
-    # Brighten fg slightly
-    brighten = min(tint * 0.3, 0.25)
-    fg = (
-        min(255, int(orig_fg[0] + (255 - orig_fg[0]) * brighten)),
-        min(255, int(orig_fg[1] + (255 - orig_fg[1]) * brighten)),
-        min(255, int(orig_fg[2] + (255 - orig_fg[2]) * brighten)),
-    )
-    style = Style(
-        color=f"#{fg[0]:02x}{fg[1]:02x}{fg[2]:02x}",
-        bgcolor=f"#{bg[0]:02x}{bg[1]:02x}{bg[2]:02x}",
-    )
-    return char, style
+def _tint_style(fg_r: int, fg_g: int, fg_b: int,
+                bg_r: int, bg_g: int, bg_b: int) -> Style:
+    fg = f"#{fg_r:02x}{fg_g:02x}{fg_b:02x}"
+    bg = f"#{bg_r:02x}{bg_g:02x}{bg_b:02x}"
+    return Style(color=fg, bgcolor=bg)
 
 
-def _blend(
-    a: tuple[int, int, int], b: tuple[int, int, int], t: float,
-) -> tuple[int, int, int]:
-    """Alias for _lerp_color."""
-    return _lerp_color(a, b, t)
+# ── bloom seed ───────────────────────────────────────────────
 
-
-def _noise(x: float, y: float, seed: float) -> float:
-    """Cheap deterministic noise for radius warping."""
-    return (
-        math.sin(x * 0.7 + seed) * math.cos(y * 1.3 + seed * 0.7)
-        + math.sin((x + y) * 0.4 + seed * 1.1) * 0.5
-    )
-
-
-# ── seed data ──────────────────────────────────────────────────
-
-@dataclass
 class _Seed:
-    x: float
-    y: float
-    hue_offset: int       # index into _GRADIENT
-    delay: float          # seconds before this seed starts
-    speed: float          # radius growth per second (cells)
-    noise_seed: float     # for radius warping
+    __slots__ = ("x", "y", "hue_offset", "delay", "speed", "noise_seed")
+
+    def __init__(self, x: float, y: float, hue_offset: float,
+                 delay: float, speed: float) -> None:
+        self.x = x
+        self.y = y
+        self.hue_offset = hue_offset
+        self.delay = delay
+        self.speed = speed
+        self.noise_seed = random.random() * 1000
 
 
-def _strip_to_cells(strip: Strip) -> list[tuple[str, Style]]:
-    """Decompose a Strip into per-cell (char, style) pairs."""
-    cells: list[tuple[str, Style]] = []
-    for segment in strip:
-        text = segment.text
-        style = segment.style or _BG_STYLE
-        for ch in text:
-            cells.append((ch, style))
+# ── helpers ──────────────────────────────────────────────────
+
+def _strip_to_cells(strip: Strip, width: int) -> list[Segment]:
+    fallback = Segment(" ", _BG_STYLE)
+    cells: list[Segment] = [fallback] * width
+    x = 0
+    for seg in strip:
+        style = seg.style
+        for ch in seg.text:
+            if x >= width:
+                break
+            cells[x] = Segment(ch, style)
+            x += 1
+        if x >= width:
+            break
     return cells
 
 
-# ── widget ─────────────────────────────────────────────────────
+# ── overlay widget ───────────────────────────────────────────
 
 class FireworkOverlay(Widget):
-    """Colour-wash bloom overlay that tints the existing UI."""
+    """Expanding colour wash that tints the existing UI."""
 
     DEFAULT_CSS = """
     FireworkOverlay {
@@ -152,225 +126,237 @@ class FireworkOverlay(Widget):
     }
     """
 
-    def __init__(self, burst_count: int = 8, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._burst_count = max(4, min(burst_count, 30))
-        self._t0: float | None = None
+    def __init__(self, burst_count: int = 12, duration: float = 2.5) -> None:
+        super().__init__()
+        self._burst_count = burst_count
+        self._duration = duration
         self._seeds: list[_Seed] = []
-        self._bg_cells: dict[tuple[int, int], tuple[str, Style]] = {}
-        self._width = 0
-        self._height = 0
-        self._dissolve_grid: dict[tuple[int, int], float] = {}
-        self._inited = False
+        self._start = 0.0
+        self._frame: list[Strip] = []
+        self._timer = None
+        self._dissolve: list[list[float]] = []
+        self._dissolve_w = 0
+        self._dissolve_h = 0
+        self._initialized = False
+        self._bg_cells: list[list[Segment]] = []
 
-    # ── lazy init (first render) ───────────────────────────────
+    def on_mount(self) -> None:
+        self._start = time.monotonic()
+        self._timer = self.set_interval(1.0 / 24, self._tick)
 
     def _lazy_init(self) -> None:
-        if self._inited:
+        W = max(1, self.size.width)
+        H = max(1, self.size.height)
+        if W <= 1 or H <= 1:
             return
-        self._inited = True
-        self._t0 = time.monotonic()
-        self._width = self.size.width
-        self._height = self.size.height
-        self._capture_background()
-        self._generate_seeds()
-        self._generate_dissolve_grid()
 
-    def _capture_background(self) -> None:
-        """Walk screen children and capture their rendered content."""
-        self._bg_cells.clear()
+        self._initialized = True
+        self._capture_background(W, H)
+
+        # Many overlapping seeds for a wash
+        n = max(self._burst_count, 14)
+        for _ in range(n):
+            self._seeds.append(_Seed(
+                x=random.uniform(1, W - 1),
+                y=random.uniform(0, H),
+                hue_offset=random.uniform(0, 1),
+                delay=random.uniform(0, 0.4),
+                speed=random.uniform(15, 30),
+            ))
+
+        self._dissolve_w = W
+        self._dissolve_h = H
+        self._dissolve = [
+            [random.random() for _ in range(W)]
+            for _ in range(H)
+        ]
+
+    def _capture_background(self, W: int, H: int) -> None:
+        from textual.geometry import Region
+
+        fallback_row = [Segment(" ", _BG_STYLE)] * W
+        self._bg_cells = [list(fallback_row) for _ in range(H)]
+
         try:
             for widget in self.screen.walk_children():
                 if widget is self:
                     continue
-                region = widget.region
-                crop = Region(0, 0, region.width, region.height)
                 try:
+                    region = widget.region
+                except Exception:
+                    continue
+                if region.width <= 0 or region.height <= 0:
+                    continue
+                try:
+                    crop = Region(0, 0, region.width, region.height)
                     strips = widget.render_lines(crop)
                 except Exception:
                     continue
-                for row_idx, strip in enumerate(strips):
-                    screen_y = region.y + row_idx
-                    if screen_y < 0 or screen_y >= self._height:
+                for local_y, strip in enumerate(strips):
+                    screen_y = region.y + local_y
+                    if screen_y < 0 or screen_y >= H:
                         continue
-                    cells = _strip_to_cells(strip)
-                    for col_idx, (ch, style) in enumerate(cells):
-                        screen_x = region.x + col_idx
-                        if 0 <= screen_x < self._width:
-                            self._bg_cells[(screen_x, screen_y)] = (ch, style)
+                    cells = _strip_to_cells(strip, region.width)
+                    for local_x, cell in enumerate(cells):
+                        screen_x = region.x + local_x
+                        if 0 <= screen_x < W:
+                            self._bg_cells[screen_y][screen_x] = cell
         except Exception:
             pass
 
-    def _generate_seeds(self) -> None:
-        """Create random bloom seed points."""
-        self._seeds.clear()
-        w, h = self._width, self._height
-        if w <= 0 or h <= 0:
+    # ── animation ────────────────────────────────────────────
+
+    @staticmethod
+    def _noise(x: float, y: float, seed: float) -> float:
+        v = math.sin(x * 0.7 + seed) * math.cos(y * 1.3 + seed * 0.7)
+        v += math.sin((x + y) * 0.4 + seed * 1.1) * 0.5
+        return v
+
+    def _tick(self) -> None:
+        if not self._initialized:
+            self._lazy_init()
+
+        elapsed = time.monotonic() - self._start
+        if elapsed > self._duration:
+            if self._timer:
+                self._timer.stop()
+            try:
+                self.remove()
+            except Exception:
+                pass
             return
-        count = self._burst_count or _SEED_COUNT
-        for _ in range(count):
-            self._seeds.append(
-                _Seed(
-                    x=random.uniform(0, w),
-                    y=random.uniform(0, h),
-                    hue_offset=random.randint(0, len(_GRADIENT) - 1),
-                    delay=random.uniform(0, _STAGGER_MAX),
-                    speed=random.uniform(_SPEED_LO, _SPEED_HI),
-                    noise_seed=random.uniform(0, 100),
-                )
-            )
 
-    def _generate_dissolve_grid(self) -> None:
-        """Pre-compute dissolve order: edge cells first, core last."""
-        self._dissolve_grid.clear()
-        w, h = self._width, self._height
-        if w <= 0 or h <= 0:
+        self._build_frame(elapsed)
+        self.refresh()
+
+    def _build_frame(self, elapsed: float) -> None:
+        W = max(1, self.size.width)
+        H = max(1, self.size.height)
+
+        if not self._seeds:
             return
-        cx, cy = w / 2.0, h / 2.0
-        max_dist = math.sqrt(cx * cx + cy * cy) or 1.0
-        for y in range(h):
-            for x in range(w):
-                d = math.sqrt((x - cx) ** 2 + (y - cy) ** 2) / max_dist
-                # Edge cells dissolve first (low threshold), core last (high)
-                self._dissolve_grid[(x, y)] = 1.0 - d
 
-    # ── frame building ─────────────────────────────────────────
+        expand_end = self._duration * 0.35
+        dissolve_start = self._duration * 0.55
+        dissolve_end = self._duration
+        hue_time = elapsed * 0.7
 
-    def _build_frame(self, elapsed: float) -> list[Strip]:
-        """Build one animation frame."""
-        w, h = self._width, self._height
-        if w <= 0 or h <= 0:
-            return [Strip.blank(w) for _ in range(h)]
+        # Max tint strength: ramps up, peaks at 0.85
+        global_phase = elapsed / self._duration
+        max_tint = min(0.85, global_phase * 2.5) if global_phase < 0.45 else 0.85
 
-        # Dissolve phase
-        dissolve_progress = 0.0
-        if elapsed > _DURATION * _DISSOLVE_START:
-            dissolve_progress = (elapsed - _DURATION * _DISSOLVE_START) / (
-                _DURATION * (1.0 - _DISSOLVE_START)
-            )
-            dissolve_progress = max(0.0, min(1.0, dissolve_progress))
+        frame: list[Strip] = []
 
-        strips: list[Strip] = []
-        for y in range(h):
-            segments: list[Segment] = []
-            for x in range(w):
-                # Accumulate intensity from all seeds
-                intensity = 0.0
-                weighted_r, weighted_g, weighted_b = 0.0, 0.0, 0.0
+        for y in range(H):
+            segs: list[Segment] = []
+            bg_row = self._bg_cells[y] if y < len(self._bg_cells) else None
+
+            for x in range(W):
+                # Accumulate blended intensity from all seeds
+                total_intensity = 0.0
+                weighted_hue = 0.0
 
                 for seed in self._seeds:
-                    t_seed = elapsed - seed.delay
-                    if t_seed <= 0:
+                    t = elapsed - seed.delay
+                    if t <= 0:
                         continue
-                    radius = t_seed * seed.speed
 
-                    # Noise-warped distance
-                    dx = x - seed.x
+                    # Aspect-corrected distance (terminal chars ~2:1)
+                    dx = (x - seed.x) / 2.0
                     dy = y - seed.y
                     dist = math.sqrt(dx * dx + dy * dy)
 
-                    # Warp radius by noise (+-30%)
-                    n = _noise(x, y, seed.noise_seed)
-                    warped_radius = radius * (1.0 + 0.3 * n)
+                    # Radius with ease-out expansion, capped after expand_end
+                    if t < expand_end:
+                        expand_t = t / expand_end
+                        radius = seed.speed * expand_end * (1.0 - (1.0 - expand_t) ** 2.0)
+                    else:
+                        radius = seed.speed * expand_end
 
-                    if dist >= warped_radius or warped_radius <= 0:
+                    if radius < 0.5:
                         continue
 
-                    # Cubic falloff
-                    ratio = dist / warped_radius
-                    depth = (1.0 - ratio) ** 3
+                    # Irregular edge: noise warps the effective radius
+                    noise = self._noise(x * 0.3, y * 0.5, seed.noise_seed)
+                    warped_radius = radius * (1.0 + noise * 0.3)
 
-                    # Hue from gradient
-                    grad = _GRADIENT[seed.hue_offset % len(_GRADIENT)]
-                    intensity += depth
-                    weighted_r += depth * grad[0]
-                    weighted_g += depth * grad[1]
-                    weighted_b += depth * grad[2]
+                    if dist > warped_radius:
+                        continue
 
-                # Clamp intensity
-                intensity = min(intensity, 1.0)
+                    # Smooth cubic falloff
+                    depth = max(0.0, 1.0 - (dist / warped_radius))
+                    intensity = depth * depth * depth
 
-                # Dissolve: reduce intensity for cells whose dissolve
-                # threshold has been passed
-                if dissolve_progress > 0 and intensity > 0.02:
-                    threshold = self._dissolve_grid.get((x, y), 0.5)
-                    if dissolve_progress > threshold:
-                        fade = (dissolve_progress - threshold) / max(
-                            1.0 - threshold, 0.01
-                        )
-                        intensity *= max(0.0, 1.0 - fade)
+                    # Continuous hue: seed offset + distance shift + time shift
+                    hue = seed.hue_offset + dist * 0.01 + hue_time
+                    total_intensity += intensity
+                    weighted_hue += hue * intensity
 
-                # Get original cell
-                orig_ch, orig_style = self._bg_cells.get(
-                    (x, y), (" ", _BG_STYLE)
-                )
+                # Get the original background cell
+                if bg_row and x < len(bg_row):
+                    bg_cell = bg_row[x]
+                else:
+                    bg_cell = Segment(" ", _BG_STYLE)
 
-                if intensity < 0.02:
-                    # Pass through original cell
-                    segments.append(Segment(orig_ch, orig_style))
+                if total_intensity < 0.02:
+                    # Not touched — pass through original
+                    segs.append(bg_cell)
                     continue
 
-                # Compute bloom colour
-                if intensity > 0:
-                    bloom_rgb = (
-                        min(255, int(weighted_r / intensity)),
-                        min(255, int(weighted_g / intensity)),
-                        min(255, int(weighted_b / intensity)),
-                    )
-                else:
-                    bloom_rgb = _APP_BG
+                # Dissolve phase
+                if elapsed > dissolve_start:
+                    dissolve_t = (elapsed - dissolve_start) / (dissolve_end - dissolve_start)
+                    threshold = dissolve_t ** 1.2
 
-                # Tint amount
-                tint = min(intensity * 0.9, _MAX_TINT)
+                    if y < self._dissolve_h and x < self._dissolve_w:
+                        cell_rand = self._dissolve[y][x]
+                    else:
+                        cell_rand = random.random()
 
-                # Extract original colours
-                orig_bg = _extract_rgb(orig_style, "bgcolor")
-                orig_fg = _extract_rgb(orig_style, "color")
+                    # Low-intensity cells dissolve first
+                    fade_bias = 1.0 - min(1.0, total_intensity)
+                    adjusted = cell_rand * (0.3 + 0.7 * fade_bias)
+                    if adjusted < threshold:
+                        segs.append(bg_cell)
+                        continue
 
-                char, style = _tint_style(
-                    orig_bg, orig_fg, bloom_rgb, tint, orig_ch,
+                # Bloom colour (lightly desaturated toward app bg)
+                avg_hue = weighted_hue / total_intensity
+                br, bg_, bb = _lerp_color(avg_hue)
+                br = _blend(br, _BG_R, 0.15)
+                bg_ = _blend(bg_, _BG_G, 0.15)
+                bb = _blend(bb, _BG_B, 0.15)
+
+                # Tint strength: intensity * max_tint
+                tint = min(max_tint, total_intensity * 0.9)
+
+                # Read original cell colours
+                orig_bg = _extract_rgb(bg_cell.style, 'bgcolor')
+                orig_fg = _extract_rgb(bg_cell.style, 'color')
+
+                # Blend original bg toward bloom colour
+                new_bg_r = _blend(orig_bg[0], br, tint)
+                new_bg_g = _blend(orig_bg[1], bg_, tint)
+                new_bg_b = _blend(orig_bg[2], bb, tint)
+
+                # Brighten fg slightly so text pops against the tinted bg
+                fg_boost = tint * 0.3
+                new_fg_r = min(255, int(orig_fg[0] + (255 - orig_fg[0]) * fg_boost))
+                new_fg_g = min(255, int(orig_fg[1] + (255 - orig_fg[1]) * fg_boost))
+                new_fg_b = min(255, int(orig_fg[2] + (255 - orig_fg[2]) * fg_boost))
+
+                style = _tint_style(
+                    new_fg_r, new_fg_g, new_fg_b,
+                    new_bg_r, new_bg_g, new_bg_b,
                 )
-                segments.append(Segment(char, style))
+                # Keep the original character
+                segs.append(Segment(bg_cell.text, style))
 
-            strips.append(Strip(segments))
-        return strips
+            frame.append(Strip(segs))
 
-    # ── rendering ──────────────────────────────────────────────
+        self._frame = frame
 
     def render_line(self, y: int) -> Strip:
-        """Called by Textual to render each line."""
-        self._lazy_init()
-        if self._t0 is None:
-            return Strip.blank(self.size.width)
-
-        elapsed = time.monotonic() - self._t0
-
-        if elapsed >= _DURATION:
-            # Animation complete — remove self
-            self.set_timer(0.05, self._remove_self)
-            return Strip.blank(self.size.width)
-
-        # Build full frame on first line, cache for remaining lines
-        if y == 0 or not hasattr(self, "_frame_cache") or self._frame_cache_t != elapsed:
-            self._frame_cache = self._build_frame(elapsed)
-            self._frame_cache_t = elapsed
-            # Schedule next frame
-            self.set_timer(1 / 30, self._request_refresh)
-
-        if 0 <= y < len(self._frame_cache):
-            return self._frame_cache[y]
+        if y < len(self._frame):
+            return self._frame[y]
         return Strip.blank(self.size.width)
-
-    def _request_refresh(self) -> None:
-        """Request a screen refresh for animation."""
-        if self._t0 is not None:
-            elapsed = time.monotonic() - self._t0
-            if elapsed < _DURATION:
-                self.refresh()
-
-    def _remove_self(self) -> None:
-        """Remove overlay from the DOM."""
-        try:
-            self.remove()
-        except Exception:
-            pass
