@@ -465,6 +465,7 @@ class VoxTerm(App):
         self._diarizer_loaded = False
         self._system_audio_notified = False
         self._last_saved_at: float | None = None
+        self._save_confirmed = False  # True after first "autosaved" shown
         self._session_start = datetime.now()
         self._live_file: Path | None = None
         self._live_header_written = False
@@ -650,16 +651,21 @@ class VoxTerm(App):
         )
 
         # Auto-save indicator in transcript border title
+        # Show "✓ autosaved" once after first save, then go quiet.
+        # Only resurface if idle >5 minutes (something might be off).
         tp = self.query_one(TranscriptPanel)
         base_title = "TRANSCRIPT // MERGED" if getattr(tp, 'merged_view', False) else "TRANSCRIPT // LIVE"
         if self._last_saved_at is not None:
-            ago = int(time.time() - self._last_saved_at)
-            if ago < 60:
-                tp.border_title = f"{base_title}  ·  saved {ago}s ago"
-            elif ago < 3600:
-                tp.border_title = f"{base_title}  ·  saved {ago // 60}m ago"
+            ago = time.time() - self._last_saved_at
+            if not self._save_confirmed and ago < 8:
+                tp.border_title = f"{base_title}  ·  ✓ autosaved"
+            elif not self._save_confirmed and ago >= 8:
+                self._save_confirmed = True
+                tp.border_title = base_title
+            elif ago > 300:  # 5 minutes idle
+                tp.border_title = f"{base_title}  ·  last saved {int(ago // 60)}m ago"
             else:
-                tp.border_title = f"{base_title}"
+                tp.border_title = base_title
         else:
             tp.border_title = base_title
 
