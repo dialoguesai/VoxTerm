@@ -610,12 +610,12 @@ class VoxTerm(App):
 
         if self._model_loaded:
             transcript = self.query_one(TranscriptPanel)
-            transcript.system_message(f"model loaded: {self._model_name}", Log.SYS)
+            transcript.system_message(f"model loaded: {self._model_name}", Log.SYS, {self._model_name: "rainbow"})
             self._update_telemetry()
             self._start_audio_timer()
             self._load_diarizer()
         else:
-            self.query_one(TranscriptPanel).system_message(f"loading model: {self._model_name}...", Log.SYS)
+            self.query_one(TranscriptPanel).system_message(f"loading model: {self._model_name}...", Log.SYS, {self._model_name: "rainbow"})
             self._start_audio_timer()
             self._load_model()
 
@@ -1267,7 +1267,7 @@ class VoxTerm(App):
 
     def _on_model_loaded(self):
         self._model_loaded = True
-        self.query_one(TranscriptPanel).system_message(f"model loaded: {self._model_name}", Log.SYS)
+        self.query_one(TranscriptPanel).system_message(f"model loaded: {self._model_name}", Log.SYS, {self._model_name: "rainbow"})
         if not self._diarizer_loaded:
             self._load_diarizer()
         self._update_telemetry()
@@ -1339,7 +1339,7 @@ class VoxTerm(App):
             self.system_capture.stop()
             waveform.set_recording(False)
             header.set_recording(False)
-            transcript.system_message("recording stopped", Log.REC)
+            transcript.system_message("recording stopped", Log.REC, {"stopped": "#ff4466"})
         else:
             self._recording = True
             self.vad.reset()
@@ -1347,7 +1347,7 @@ class VoxTerm(App):
                 self.audio_capture.start()
                 waveform.set_recording(True)
                 header.set_recording(True)
-                transcript.system_message("recording started", Log.REC)
+                transcript.system_message("recording started", Log.REC, {"started": "#00ff88"})
             except Exception as e:
                 self._recording = False
                 waveform.set_recording(False)
@@ -1580,7 +1580,7 @@ class VoxTerm(App):
         # Free old model memory before loading the new one
         self.transcriber._model = None
         self.query_one(TranscriptPanel).system_message(
-            f"switching to {model_key} (may take a minute)...", Log.SYS
+            f"switching to {model_key} (may take a minute)...", Log.SYS, {model_key: "rainbow"}
         )
         self._do_swap(model_key)
 
@@ -1607,7 +1607,7 @@ class VoxTerm(App):
         self._is_qwen3 = model_key in QWEN3_MODELS
         self._model_loaded = True
         _get_config().update({"last_model": model_key, "last_language": self._language})
-        self.query_one(TranscriptPanel).system_message(f"model loaded: {model_key}", Log.SYS)
+        self.query_one(TranscriptPanel).system_message(f"model loaded: {model_key}", Log.SYS, {model_key: "rainbow"})
         self._update_telemetry()
 
     def _on_swap_error(self, msg: str):
