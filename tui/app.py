@@ -515,22 +515,22 @@ class VoxTerm(App):
             if state == PartyState.IN_PARTY and prev != PartyState.IN_PARTY:
                 if self._party and self._party.is_host:
                     self.query_one(TranscriptPanel).system_message(
-                        "no party found, you are the party now", Log.P2P
+                        "no party found, you are the party now", Log.PARTY
                     )
                 else:
-                    self.query_one(TranscriptPanel).system_message("joined the party", Log.P2P)
+                    self.query_one(TranscriptPanel).system_message("joined the party", Log.PARTY)
                 self._trigger_fireworks(burst_count=10)
             self._update_telemetry()
 
         def _on_peer_joined(display_name):
             self.query_one(TranscriptPanel).system_message(
-                f"{display_name} joined the party", Log.P2P
+                f"{display_name} joined the party", Log.PARTY
             )
             self._update_telemetry()
 
         def _on_peer_left(node_id, display_name):
             self.query_one(TranscriptPanel).system_message(
-                f"{display_name} left the party", Log.P2P
+                f"{display_name} left the party", Log.PARTY
             )
             self._update_telemetry()
 
@@ -551,20 +551,20 @@ class VoxTerm(App):
             self._refresh_merged_if_active()
 
         def _on_debug(msg):
-            self.query_one(TranscriptPanel).system_message(msg, Log.P2P)
+            self.query_one(TranscriptPanel).system_message(msg, Log.PARTY)
 
         def _on_party_color_changed(primary, light):
             self._apply_party_color(primary)
 
         def _on_party_colors_restored():
             self._restore_borders()
-            self.query_one(TranscriptPanel).system_message("left the party", Log.P2P)
+            self.query_one(TranscriptPanel).system_message("left the party", Log.PARTY)
 
         def _on_peer_bloom():
             self._peer_bloom()
 
         def _on_party_failed(error):
-            self.query_one(TranscriptPanel).system_message(f"party failed: {error}", Log.P2P)
+            self.query_one(TranscriptPanel).system_message(f"party failed: {error}", Log.PARTY)
             self._update_telemetry()
 
         p.on_state_changed = _on_state_changed
@@ -600,12 +600,12 @@ class VoxTerm(App):
 
         if self._model_loaded:
             transcript = self.query_one(TranscriptPanel)
-            transcript.system_message(f"model loaded: {self._model_name}", Log.MDL)
+            transcript.system_message(f"model loaded: {self._model_name}", Log.SYS)
             self._update_telemetry()
             self._start_audio_timer()
             self._load_diarizer()
         else:
-            self.query_one(TranscriptPanel).system_message(f"loading model: {self._model_name}...", Log.MDL)
+            self.query_one(TranscriptPanel).system_message(f"loading model: {self._model_name}...", Log.SYS)
             self._start_audio_timer()
             self._load_model()
 
@@ -1127,7 +1127,7 @@ class VoxTerm(App):
         ):
             self._onboarding_shown = True
             self.query_one(TranscriptPanel).system_message(
-                "tip: press [T] to name speakers — VoxTerm will remember them", Log.SPK
+                "tip: press [T] to name speakers — VoxTerm will remember them", Log.SYS
             )
 
     def _on_auto_recognition(
@@ -1172,7 +1172,7 @@ class VoxTerm(App):
         transcript.system_message(
             f"is this {name}? (~{pct}%) "
             f"press [T] to confirm or rename",
-            Log.SPK,
+            Log.SYS,
         )
         self._prompt_times.append(time.time())
         self._last_prompt_time = time.time()
@@ -1209,7 +1209,7 @@ class VoxTerm(App):
     def _load_model(self):
         self.call_from_thread(
             lambda: self.query_one(TranscriptPanel).system_message(
-                "loading whisper model (first run downloads ~461MB)...", Log.MDL
+                "loading whisper model (first run downloads ~461MB)...", Log.SYS
             ),
         )
         try:
@@ -1223,7 +1223,7 @@ class VoxTerm(App):
 
     def _on_model_loaded(self):
         self._model_loaded = True
-        self.query_one(TranscriptPanel).system_message(f"model loaded: {self._model_name}", Log.MDL)
+        self.query_one(TranscriptPanel).system_message(f"model loaded: {self._model_name}", Log.SYS)
         if not self._diarizer_loaded:
             self._load_diarizer()
         self._update_telemetry()
@@ -1235,7 +1235,7 @@ class VoxTerm(App):
             enc = " (encrypted)"
         self.call_from_thread(
             lambda: self.query_one(TranscriptPanel).system_message(
-                f"loading offline speaker recognition{enc}...", Log.MDL
+                f"loading offline speaker recognition{enc}...", Log.SYS
             ),
         )
         try:
@@ -1243,7 +1243,7 @@ class VoxTerm(App):
             self.diarizer.on_subprocess_crash = self._on_diarizer_crash
             self.diarizer.on_subprocess_ready = lambda: self.call_from_thread(
                 lambda: self.query_one(TranscriptPanel).system_message(
-                    "speaker identification restarted", Log.SPK
+                    "speaker identification restarted", Log.SYS
                 ),
             )
             self.diarizer.load()
@@ -1258,7 +1258,7 @@ class VoxTerm(App):
     def _on_diarizer_loaded(self):
         self._diarizer_loaded = True
         tp = self.query_one(TranscriptPanel)
-        tp.system_message("speaker recognition ready — voices encrypted locally, no audio stored", Log.SPK)
+        tp.system_message("speaker recognition ready — voices encrypted locally, no audio stored", Log.SYS)
         tp.system_message("press [R] to record", Log.SYS)
         self._update_telemetry()
 
@@ -1283,7 +1283,7 @@ class VoxTerm(App):
 
     def action_toggle_recording(self):
         if not self._model_loaded:
-            self.query_one(TranscriptPanel).system_message("model still loading, please wait...", Log.MDL)
+            self.query_one(TranscriptPanel).system_message("model still loading, please wait...", Log.SYS)
             return
 
         waveform = self.query_one(WaveformWidget)
@@ -1352,7 +1352,7 @@ class VoxTerm(App):
             if self._is_qwen3 and hasattr(self.transcriber, '_language'):
                 self.transcriber._language = lang_code
             _get_config().update({"last_model": self._model_name, "last_language": lang_code})
-            self.query_one(TranscriptPanel).system_message(f"language set to {lang_name}", Log.MDL)
+            self.query_one(TranscriptPanel).system_message(f"language set to {lang_name}", Log.SYS)
             self._update_telemetry()
 
         self.push_screen(LanguageSelectScreen(self._language), on_lang_selected)
@@ -1361,13 +1361,13 @@ class VoxTerm(App):
         """Open speaker tagging modal."""
         if not self._diarizer_loaded:
             self.query_one(TranscriptPanel).system_message(
-                "speaker identification not loaded yet", Log.SPK
+                "speaker identification not loaded yet", Log.SYS
             )
             return
 
         session_speakers = self.diarizer.get_all_session_speakers()
         if not session_speakers:
-            self.query_one(TranscriptPanel).system_message("no speakers detected yet", Log.SPK)
+            self.query_one(TranscriptPanel).system_message("no speakers detected yet", Log.SYS)
             return
 
         # Build speaker list for the modal
@@ -1455,7 +1455,7 @@ class VoxTerm(App):
         self.query_one(TranscriptPanel).rename_speaker(speaker_id, name, color)
 
         # 5. Feedback
-        self.query_one(TranscriptPanel).system_message(f"tagged as {name}", Log.SPK)
+        self.query_one(TranscriptPanel).system_message(f"tagged as {name}", Log.SYS)
         self._update_telemetry()
 
     def _apply_speaker_merge(self, source_id: int, target_id: int):
@@ -1478,7 +1478,7 @@ class VoxTerm(App):
             self._speaker_profile_map.pop(source_id, None)
 
         transcript.system_message(
-            f"merged Speaker {source_id} into {target_name}", Log.SPK
+            f"merged Speaker {source_id} into {target_name}", Log.SYS
         )
         self._update_telemetry()
 
@@ -1495,7 +1495,7 @@ class VoxTerm(App):
                 new_name = result["name"]
                 self.speaker_store.rename_profile(pid, new_name)
                 self.query_one(TranscriptPanel).system_message(
-                    f"profile renamed to {new_name}", Log.SPK
+                    f"profile renamed to {new_name}", Log.SYS
                 )
                 # Update in-session labels if this profile is active
                 for sid, mapped_pid in self._speaker_profile_map.items():
@@ -1517,13 +1517,13 @@ class VoxTerm(App):
                     if p != pid
                 }
                 self.query_one(TranscriptPanel).system_message(
-                    f"deleted profile: {name}", Log.SPK
+                    f"deleted profile: {name}", Log.SYS
                 )
             elif action == "delete_all":
                 self.speaker_store.delete_all_data()
                 self._speaker_profile_map.clear()
                 self.query_one(TranscriptPanel).system_message(
-                    "all voice data deleted", Log.SPK
+                    "all voice data deleted", Log.SYS
                 )
 
         self.push_screen(SpeakerProfileScreen(profiles), on_profile_result)
@@ -1535,7 +1535,7 @@ class VoxTerm(App):
         # Free old model memory before loading the new one
         self.transcriber._model = None
         self.query_one(TranscriptPanel).system_message(
-            f"switching to {model_key} (may take a minute)...", Log.MDL
+            f"switching to {model_key} (may take a minute)...", Log.SYS
         )
         self._do_swap(model_key)
 
@@ -1562,7 +1562,7 @@ class VoxTerm(App):
         self._is_qwen3 = model_key in QWEN3_MODELS
         self._model_loaded = True
         _get_config().update({"last_model": model_key, "last_language": self._language})
-        self.query_one(TranscriptPanel).system_message(f"model loaded: {model_key}", Log.MDL)
+        self.query_one(TranscriptPanel).system_message(f"model loaded: {model_key}", Log.SYS)
         self._update_telemetry()
 
     def _on_swap_error(self, msg: str):
@@ -1574,7 +1574,7 @@ class VoxTerm(App):
         """Open export modal to choose destination."""
         transcript = self.query_one(TranscriptPanel)
         if not transcript.get_entries():
-            transcript.system_message("nothing to export", Log.IO)
+            transcript.system_message("nothing to export", Log.REC)
             return
 
         def on_export_selected(destination):
@@ -1606,14 +1606,14 @@ class VoxTerm(App):
 
         entry_count = len(transcript.get_entries())
         self._start_new_session()
-        transcript.system_message(f"exported {entry_count} entries → {filepath}", Log.IO)
+        transcript.system_message(f"exported {entry_count} entries → {filepath}", Log.REC)
 
     def _export_to_clipboard(self):
         """Copy transcript to clipboard."""
         transcript = self.query_one(TranscriptPanel)
         cmd = _clipboard_cmd()
         if cmd is None:
-            transcript.system_message("no clipboard tool found (install xclip, xsel, or wl-copy)", Log.IO)
+            transcript.system_message("no clipboard tool found (install xclip, xsel, or wl-copy)", Log.REC)
             return
         text = transcript.get_plain_text()
         entry_count = len(transcript.get_entries())
@@ -1621,9 +1621,9 @@ class VoxTerm(App):
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
             proc.communicate(text.encode("utf-8"))
             self._start_new_session()
-            transcript.system_message(f"copied {entry_count} entries to clipboard", Log.IO)
+            transcript.system_message(f"copied {entry_count} entries to clipboard", Log.REC)
         except Exception:
-            transcript.system_message("clipboard copy failed", Log.IO)
+            transcript.system_message("clipboard copy failed", Log.REC)
 
     def _discard_transcript(self):
         """Discard transcript and delete the live file."""
@@ -1633,7 +1633,7 @@ class VoxTerm(App):
             self._live_file.unlink()
         self._start_new_session()
         self.query_one(TranscriptPanel).system_message(
-            f"discarded {entry_count} entries", Log.IO
+            f"discarded {entry_count} entries", Log.REC
         )
 
     def _start_new_session(self):
@@ -1749,7 +1749,7 @@ class VoxTerm(App):
         _pm = self._party
         if not _pm.session_mgr or not _pm.session_mgr.is_in_session:
             self.query_one(TranscriptPanel).system_message(
-                "merged view requires an active P2P session", Log.P2P
+                "merged view requires an active P2P session", Log.PARTY
             )
             return
         tp = self.query_one(TranscriptPanel)
@@ -1761,7 +1761,7 @@ class VoxTerm(App):
             peer_names=_pm.get_peer_names(),
         )
         if new_state:
-            tp.system_message("merged view — all peers, time-ordered [V] to toggle back", Log.P2P)
+            tp.system_message("merged view — all peers, time-ordered [V] to toggle back", Log.PARTY)
         self._update_telemetry()
 
     def _refresh_merged_if_active(self):

@@ -20,20 +20,14 @@ _PEER_COLORS = [
 
 # ── Log categories ──────────────────────────────────────────
 class Log:
-    SYS = "sys"
-    P2P = "p2p"
-    REC = "rec"
-    MDL = "mdl"
-    SPK = "spk"
-    IO  = "io"
+    SYS   = "sys"     # system events, model loading, speaker recognition, errors
+    PARTY = "party"   # P2P party mode, peer join/leave, networking
+    REC   = "rec"     # recording start/stop, mic events, export/save
 
 _LOG_CATEGORIES = {
-    "sys": {"tag": "SYS", "tag_color": "#607080", "msg_color": "#708090"},
-    "p2p": {"tag": "P2P", "tag_color": "#00ffcc", "msg_color": "#80ccbb"},
-    "rec": {"tag": "REC", "tag_color": "#ff4466", "msg_color": "#cc8899"},
-    "mdl": {"tag": "MDL", "tag_color": "#aa88ff", "msg_color": "#9988cc"},
-    "spk": {"tag": "SPK", "tag_color": "#ffaa00", "msg_color": "#ccaa66"},
-    "io":  {"tag": "I/O", "tag_color": "#44ddff", "msg_color": "#80aabb"},
+    "sys":   {"tag": "SYS",   "tag_color": "#607080", "msg_color": "#708090"},
+    "party": {"tag": "PARTY", "tag_color": "#00ffcc", "msg_color": "#80ccbb"},
+    "rec":   {"tag": "REC",   "tag_color": "#ff4466", "msg_color": "#cc8899"},
 }
 
 _TIMESTAMP_COLOR = "#306070"
