@@ -227,7 +227,7 @@ def run_benchmark(
     max_duration: float | None = None,
 ) -> dict:
     """Run full diarization pipeline and compute DER."""
-    from diarization.engine import DiarizationEngine
+    from audio.diarization.engine import DiarizationEngine
     from audio.vad import SileroVAD
 
     engine = DiarizationEngine()

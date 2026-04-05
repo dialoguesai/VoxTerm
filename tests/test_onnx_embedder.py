@@ -8,7 +8,7 @@ PyTorch) are in test_diarization_accuracy.py.
 import numpy as np
 import pytest
 
-from diarization.onnx_embedder import OnnxSpeakerEmbedder, ONNX_MODELS
+from audio.diarization.onnx_embedder import OnnxSpeakerEmbedder, ONNX_MODELS
 
 
 class TestOnnxEmbedderConfig:
@@ -51,7 +51,7 @@ class TestOnnxEmbedderConfig:
         assert embedder.embedding_dim == 192
 
     def test_default_model_is_eres2net(self):
-        from diarization.onnx_embedder import DEFAULT_MODEL
+        from audio.diarization.onnx_embedder import DEFAULT_MODEL
         assert DEFAULT_MODEL == "eres2net_large"
 
 

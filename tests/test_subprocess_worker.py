@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from diarization.subprocess_worker import _dispatch
-from diarization.ipc import (
+from audio.diarization.subprocess_worker import _dispatch
+from audio.diarization.ipc import (
     MSG_ACK,
     MSG_ERROR,
     MSG_GET_EMBEDDINGS,

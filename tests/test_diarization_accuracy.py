@@ -137,7 +137,7 @@ def extract_speaker_segments(
 @pytest.fixture(scope="module")
 def engine():
     """Load real CAM++ engine (module-scoped for speed)."""
-    from diarization.engine import DiarizationEngine
+    from audio.diarization.engine import DiarizationEngine
     e = DiarizationEngine()
     e.load()
     yield e

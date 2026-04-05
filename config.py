@@ -79,12 +79,12 @@ _home = _Path.home()
 
 if sys.platform == "darwin":
     # macOS paths
-    SESSIONS_DIR = _home / "Documents" / "voxterm"
+    SESSIONS_DIR = _home / "Documents" / "voxterm-transcripts"
     DATA_DIR = _home / "Library" / "Application Support" / "voxterm"
     LIVE_DIR = SESSIONS_DIR / ".live"
-    BIN_DIR = SESSIONS_DIR / ".bin"
-    CRASH_DIR = SESSIONS_DIR / ".crashes"
-    STATE_FILE = SESSIONS_DIR / ".state.json"
+    BIN_DIR = DATA_DIR / ".bin"
+    CRASH_DIR = DATA_DIR / ".crashes"
+    STATE_FILE = DATA_DIR / ".state.json"
 elif sys.platform.startswith("linux"):
     # Linux — XDG-compliant paths
     _xdg_data = _Path(_os.environ.get("XDG_DATA_HOME", _home / ".local" / "share"))

@@ -44,7 +44,7 @@ def sample_audio():
 @pytest.fixture
 def mock_engine():
     """DiarizationEngine without model load — state management only."""
-    from diarization.engine import DiarizationEngine
+    from audio.diarization.engine import DiarizationEngine
     engine = DiarizationEngine()
     # Don't call load() — we test state management, not inference
     return engine
@@ -53,7 +53,7 @@ def mock_engine():
 @pytest.fixture
 def loaded_mock_engine():
     """DiarizationEngine with mock model loaded (for identify() tests)."""
-    from diarization.engine import DiarizationEngine
+    from audio.diarization.engine import DiarizationEngine
     engine = DiarizationEngine()
     engine.load()  # Uses _MockEcapaModel via VOXTERM_MOCK_ENGINE env var
     return engine
@@ -62,7 +62,7 @@ def loaded_mock_engine():
 @pytest.fixture
 def in_memory_store(tmp_path):
     """SpeakerStore backed by a temp-file SQLite database."""
-    from speakers.store import SpeakerStore
+    from audio.speakers.store import SpeakerStore
     db_path = tmp_path / "test_speakers.db"
     store = SpeakerStore(db_path=db_path)
     store.open()

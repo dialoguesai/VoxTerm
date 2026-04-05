@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Internal runtime defaults — prevent known framework conflicts
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -33,6 +33,15 @@ diagnostics.rotate_crash_logs()
 import warnings
 warnings.filterwarnings("ignore", message="resource_tracker", category=UserWarning)
 
+# Neuter the multiprocessing resource tracker subprocess.
+# It prints leaked-semaphore warnings to its own stderr on shutdown,
+# which we can't suppress from the main process. Since we use os._exit(),
+# the OS reclaims all shared resources — the tracker is unnecessary.
+# We let it spawn (libraries need register/unregister to function) but
+# prevent it from printing warnings on stop.
+import multiprocessing.resource_tracker as _rt
+_rt._resource_tracker._stop = lambda: None
+
 from enum import Enum
 import numpy as np
 from textual.app import App, ComposeResult
@@ -43,17 +52,18 @@ from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual import work
 
-from widgets.header import CyberHeader
-from widgets.waveform import WaveformWidget, _make_style
-from widgets.transcript import TranscriptPanel
-from widgets.tag_screen import SpeakerTagScreen
-from widgets.profile_screen import SpeakerProfileScreen
+from tui.widgets.header import CyberHeader
+from tui.widgets.waveform import WaveformWidget, _make_style
+from tui.widgets.transcript import TranscriptPanel, Log
+from tui.widgets.tag_screen import SpeakerTagScreen
+from tui.widgets.profile_screen import SpeakerProfileScreen
+from tui.widgets.transcript_explorer import TranscriptExplorerScreen
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
 from audio.system_capture import SystemCapture
-from transcriber.engine import Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber
-from diarization.proxy import DiarizationProxy
-from speakers.store import SpeakerStore
+from audio.transcriber import Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber
+from audio.diarization.proxy import DiarizationProxy
+from audio.speakers.store import SpeakerStore
 from audio.vad import SileroVAD
 from config import (
     SAMPLE_RATE, CHUNK_SIZE, WAVEFORM_FPS,
@@ -79,7 +89,7 @@ def _clipboard_cmd() -> list[str] | None:
     return None
 
 
-from party.manager import PartyManager, PartyState, P2P_AVAILABLE as _P2P_AVAILABLE
+from network.party import PartyManager, PartyState, P2P_AVAILABLE as _P2P_AVAILABLE
 
 from config import ConfigStore
 
@@ -334,12 +344,12 @@ class HelpScreen(ModalScreen):
             yield Static(
                 "[bold #00e5ff]R[/]       [#c0c0c0]Start / stop recording[/]\n"
                 "[bold #00e5ff]T[/]       [#c0c0c0]Tag / name speakers[/]\n"
-                "[bold #00e5ff]P[/]       [#c0c0c0]Speaker profiles[/]\n"
-                "[bold #00e5ff]Ctrl+S[/]  [#c0c0c0]Save / copy transcript[/]\n"
+                "[bold #00e5ff]E[/]       [#c0c0c0]Browse saved transcripts[/]\n"
                 "[bold #00e5ff]S[/]       [#c0c0c0]Save / copy transcript[/]\n"
                 "[bold #00e5ff]M[/]       [#c0c0c0]Switch transcription model[/]\n"
                 "[bold #00e5ff]L[/]       [#c0c0c0]Switch language[/]\n"
-                "[bold #00e5ff]N[/]       [#c0c0c0]Party mode — join / leave[/]\n"
+                "[bold #00e5ff]P[/]       [#c0c0c0]Party mode — join / leave[/]\n"
+                "[bold #00e5ff]O[/]       [#c0c0c0]Speaker profiles[/]\n"
                 "[bold #00e5ff]V[/]       [#c0c0c0]Toggle merged transcript view[/]\n"
                 "[bold #00e5ff]C[/]       [#c0c0c0]Clear transcript[/]\n"
                 "[bold #00e5ff]D[/]       [#c0c0c0]Toggle debug mode[/]\n"
@@ -423,17 +433,19 @@ class VoxTerm(App):
     BINDINGS = [
         Binding("r", "toggle_recording", "Record/Pause"),
         Binding("t", "tag_speakers", "Tag"),
-        Binding("p", "manage_profiles", "Profiles"),
+        Binding("o", "manage_profiles", "Profiles", show=False),
         Binding("m", "switch_model", "Model"),
         Binding("l", "switch_language", "Language"),
         Binding("ctrl+s", "export_transcript", "Save"),
         Binding("s", "export_transcript", "Export"),
         Binding("d", "toggle_debug", "Debug"),
         Binding("c", "clear_transcript", "Clear"),
-        Binding("n", "toggle_party", "Party"),
+        Binding("e", "explore_transcripts", "History"),
+        Binding("p", "toggle_party", "Party"),
         Binding("v", "toggle_merged_view", "View"),
         Binding("?", "show_help", "Help", key_display="?"),
         Binding("q", "quit", "Quit"),
+        Binding("escape", "quit", show=False),
     ]
 
     def __init__(self, transcriber=None, model_name="qwen3-0.6b", language="en",
@@ -446,7 +458,7 @@ class VoxTerm(App):
         self.system_capture = SystemCapture()
         self.audio_buffer = AudioBuffer()
         self.vad = SileroVAD()
-        self.transcriber = transcriber or Qwen3Transcriber()
+        self.transcriber = transcriber
         self.diarizer = DiarizationProxy()
         self.speaker_store = SpeakerStore()
         self._model_name = model_name
@@ -461,7 +473,7 @@ class VoxTerm(App):
         self._debug = False
         self._last_dbg: float = 0.0
         self._transcribe_count = 0
-        self._model_loaded = transcriber is not None and transcriber.is_loaded
+        self._model_loaded = transcriber is not None and getattr(transcriber, 'is_loaded', False)
         self._diarizer_loaded = False
         self._system_audio_notified = False
         self._last_saved_at: float | None = None
@@ -493,8 +505,8 @@ class VoxTerm(App):
         yield Static(
             " [bold #00e5ff]\\[R][/][#607080] Record  [/]"
             "[bold #00e5ff]\\[T][/][#607080] Tag  [/]"
-            "[bold #00e5ff]\\[P][/][#607080] Profiles  [/]"
-            "[bold #00e5ff]\\[N][/][#607080] Session  [/]"
+            "[bold #00e5ff]\\[E][/][#607080] Transcripts  [/]"
+            "[bold #00e5ff]\\[P][/][#607080] Party  [/]"
             "[bold #00e5ff]\\[V][/][#607080] Merged  [/]"
             "[bold #00e5ff]\\[?][/][#607080] Help[/]",
             id="footer-bar",
@@ -515,21 +527,22 @@ class VoxTerm(App):
             if state == PartyState.IN_PARTY and prev != PartyState.IN_PARTY:
                 if self._party and self._party.is_host:
                     self.query_one(TranscriptPanel).system_message(
-                        "no party found, you are the party now"
+                        "no party found, you are the party now", Log.PARTY
                     )
                 else:
-                    self.query_one(TranscriptPanel).system_message("joined the party")
+                    self.query_one(TranscriptPanel).system_message("joined the party", Log.PARTY)
+                self._trigger_fireworks(burst_count=10)
             self._update_telemetry()
 
         def _on_peer_joined(display_name):
             self.query_one(TranscriptPanel).system_message(
-                f"{display_name} joined the party"
+                f"{display_name} joined the party", Log.PARTY
             )
             self._update_telemetry()
 
         def _on_peer_left(node_id, display_name):
             self.query_one(TranscriptPanel).system_message(
-                f"{display_name} left the party"
+                f"{display_name} left the party", Log.PARTY
             )
             self._update_telemetry()
 
@@ -550,20 +563,20 @@ class VoxTerm(App):
             self._refresh_merged_if_active()
 
         def _on_debug(msg):
-            self.query_one(TranscriptPanel).system_message(f"[P2P] {msg}")
+            self.query_one(TranscriptPanel).system_message(msg, Log.PARTY)
 
         def _on_party_color_changed(primary, light):
             self._apply_party_color(primary)
 
         def _on_party_colors_restored():
             self._restore_borders()
-            self.query_one(TranscriptPanel).system_message("left the party")
+            self.query_one(TranscriptPanel).system_message("left the party", Log.PARTY)
 
         def _on_peer_bloom():
             self._peer_bloom()
 
         def _on_party_failed(error):
-            self.query_one(TranscriptPanel).system_message(f"party failed: {error}")
+            self.query_one(TranscriptPanel).system_message(f"party failed: {error}", Log.PARTY)
             self._update_telemetry()
 
         p.on_state_changed = _on_state_changed
@@ -599,12 +612,12 @@ class VoxTerm(App):
 
         if self._model_loaded:
             transcript = self.query_one(TranscriptPanel)
-            transcript.system_message(f"model loaded: {self._model_name}")
+            transcript.system_message(f"model loaded: {self._model_name}", Log.SYS, {self._model_name: "rainbow"})
             self._update_telemetry()
             self._start_audio_timer()
             self._load_diarizer()
         else:
-            self.query_one(TranscriptPanel).system_message(f"loading model: {self._model_name}...")
+            self.query_one(TranscriptPanel).system_message(f"loading model: {self._model_name}...", Log.SYS, {self._model_name: "rainbow"})
             self._start_audio_timer()
             self._load_model()
 
@@ -628,16 +641,6 @@ class VoxTerm(App):
         model_text = self._model_name if self._model_loaded else "loading..."
         lang_text = AVAILABLE_LANGUAGES.get(self._language, self._language) if self._language else "auto"
 
-        spk_count = self.diarizer.num_speakers if self._diarizer_loaded else 0
-        if spk_count > 0:
-            tagged_count = len(self.diarizer.get_speaker_names())
-            if tagged_count > 0:
-                spk_text = f"    [#aa88ff]{tagged_count}/{spk_count} tagged[/]"
-            else:
-                spk_text = f"    [#aa88ff]{spk_count} speakers[/]"
-        else:
-            spk_text = ""
-
         # Party mode indicator (delegated to PartyManager)
         p2p_text = self._party.telemetry_text()
 
@@ -645,9 +648,8 @@ class VoxTerm(App):
             f"  {status}"
             f"    [#00ffcc]{model_text}[/] [dim]\\[M][/]"
             f"    [#ffaa66]{lang_text}[/] [dim]\\[L][/]"
-            f"{spk_text}"
             f"{p2p_text}"
-            f"    [dim]\\[S] Save  \\[Q] Quit[/]"
+            f"    [dim]\\[E] Transcripts  \\[S] Save  \\[Q] Quit[/]"
         )
 
         # Auto-save indicator in transcript border title
@@ -692,11 +694,11 @@ class VoxTerm(App):
         if rss_mb > 6000:
             self._write_crash_dump(f"memory_watchdog: {rss_mb:.0f}MB")
             self.query_one(TranscriptPanel).system_message(
-                f"high memory usage ({rss_mb:.0f}MB) — consider saving and restarting"
+                f"high memory usage ({rss_mb:.0f}MB) — consider saving and restarting", Log.SYS
             )
         elif rss_mb > 4000 and self._debug:
             self.query_one(TranscriptPanel).system_message(
-                f"[dbg] memory: {rss_mb:.0f}MB"
+                f"[dbg] memory: {rss_mb:.0f}MB", Log.SYS
             )
 
     def _write_crash_dump(self, context: str, exc: BaseException | None = None):
@@ -843,17 +845,17 @@ class VoxTerm(App):
                 self._transcribing.clear()
                 self._write_crash_dump(f"transcription_hung_{elapsed:.0f}s")
                 self.query_one(TranscriptPanel).system_message(
-                    f"transcription timed out ({elapsed:.0f}s) — try a smaller model [M]"
+                    f"transcription timed out ({elapsed:.0f}s) — try a smaller model [M]", Log.SYS
                 )
             elif elapsed > 15:
                 # Force-reset and log
                 self._transcribing.clear()
                 self.query_one(TranscriptPanel).system_message(
-                    f"[watchdog] reset after {elapsed:.0f}s"
+                    f"[watchdog] reset after {elapsed:.0f}s", Log.SYS
                 )
             elif elapsed > 8 and self._debug:
                 self.query_one(TranscriptPanel).system_message(
-                    f"[dbg] transcription slow: {elapsed:.0f}s"
+                    f"[dbg] transcription slow: {elapsed:.0f}s", Log.SYS
                 )
             return
 
@@ -885,7 +887,7 @@ class VoxTerm(App):
                                 parts.append(f"{name}={int(w*100)}%")
                             dbg_parts.append(f"  mix=[{' | '.join(parts)}]")
                 self.query_one(TranscriptPanel).system_message(
-                    "".join(dbg_parts)
+                    "".join(dbg_parts), Log.SYS
                 )
 
         effective_silence_trigger = SILENCE_TRIGGER_SECONDS + merge_delay
@@ -1126,7 +1128,7 @@ class VoxTerm(App):
         ):
             self._onboarding_shown = True
             self.query_one(TranscriptPanel).system_message(
-                "tip: press [T] to name speakers — VoxTerm will remember them"
+                "tip: press [T] to name speakers — VoxTerm will remember them", Log.SYS
             )
 
     def _on_auto_recognition(
@@ -1170,7 +1172,8 @@ class VoxTerm(App):
         transcript = self.query_one(TranscriptPanel)
         transcript.system_message(
             f"is this {name}? (~{pct}%) "
-            f"press [T] to confirm or rename"
+            f"press [T] to confirm or rename",
+            Log.SYS,
         )
         self._prompt_times.append(time.time())
         self._last_prompt_time = time.time()
@@ -1182,16 +1185,19 @@ class VoxTerm(App):
         try:
             LIVE_DIR.mkdir(parents=True, exist_ok=True)
             if self._live_file is None:
-                fname = self._session_start.strftime("%Y-%m-%d_%H%M%S") + ".md"
+                fname = self._session_start.strftime("%Y-%m-%d_%H%M%S") + "-transcript.md"
                 self._live_file = LIVE_DIR / fname
                 self._live_header_written = False
 
             with open(self._live_file, "a", encoding="utf-8") as f:
                 if not self._live_header_written:
-                    f.write(f"# VOXTERM Transcript\n\n")
-                    f.write(f"- **Date:** {self._session_start.strftime('%Y-%m-%d')}\n")
-                    f.write(f"- **Time:** {self._session_start.strftime('%H:%M:%S')}\n")
-                    f.write(f"- **Model:** {self._model_name}\n\n---\n\n")
+                    lang = AVAILABLE_LANGUAGES.get(self._language, self._language) if self._language else "auto"
+                    f.write(f"# VoxTerm Transcript\n\n")
+                    f.write(f"- **Date:** {self._session_start.strftime('%A, %B %d, %Y')}\n")
+                    f.write(f"- **Started:** {self._session_start.strftime('%I:%M %p')}\n")
+                    f.write(f"- **Model:** {self._model_name}\n")
+                    f.write(f"- **Language:** {lang}\n")
+                    f.write(f"\n---\n\n")
                     self._live_header_written = True
 
                 ts = datetime.now().strftime("%H:%M:%S")
@@ -1203,24 +1209,59 @@ class VoxTerm(App):
         except Exception:
             pass  # never block transcription on I/O failure
 
-    @work(thread=True, group="model_loading")
     def _load_model(self):
-        self.call_from_thread(
-            self.query_one(TranscriptPanel).system_message,
-            "loading whisper model (first run downloads ~461MB)..."
-        )
-        try:
-            self.transcriber.load()
-            self.call_from_thread(self._on_model_loaded)
-        except Exception as e:
-            self.call_from_thread(
-                self.query_one(TranscriptPanel).system_message,
-                f"model load failed: {e}"
-            )
+        """Start model loading in a plain thread (not @work — avoids fd inheritance bugs)."""
+        def _do_load():
+            try:
+                # Python 3.12 subprocess/multiprocessing fails with
+                # "bad value(s) in fds_to_keep" when spawned from a thread
+                # while Textual holds terminal FDs open.
+                #
+                # The previous patch on subprocess.Popen.__init__ didn't help
+                # because multiprocessing.util.spawnv_passfds calls
+                # _posixsubprocess.fork_exec directly, bypassing Popen.
+                # Patch at the C-level entry point to sanitize fds_to_keep.
+                import _posixsubprocess
+                if not getattr(_posixsubprocess, '_vt_patched', False):
+                    _orig_fe = _posixsubprocess.fork_exec
+                    def _safe_fork_exec(*args):
+                        largs = list(args)
+                        fds = largs[3]  # fds_to_keep (sorted tuple of ints)
+                        if fds:
+                            clean = tuple(
+                                fd for fd in fds
+                                if isinstance(fd, int) and 0 <= fd <= 2**31
+                            )
+                            largs[3] = clean
+                        try:
+                            return _orig_fe(*largs)
+                        except ValueError:
+                            largs[3] = ()
+                            return _orig_fe(*largs)
+                    _posixsubprocess.fork_exec = _safe_fork_exec
+                    _posixsubprocess._vt_patched = True
+
+                model_repo = AVAILABLE_MODELS[self._model_name]
+                if self._model_name in QWEN3_MODELS:
+                    self.transcriber = Qwen3Transcriber(model=model_repo, language=self._language)
+                elif self._model_name in FASTER_WHISPER_MODELS:
+                    self.transcriber = FasterWhisperTranscriber(model=model_repo, language=self._language)
+                else:
+                    self.transcriber = WhisperTranscriber(model=model_repo)
+                self.transcriber.load()
+                self.call_from_thread(self._on_model_loaded)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.call_from_thread(
+                    self.query_one(TranscriptPanel).system_message,
+                    f"model load failed: {e}"
+                )
+        threading.Thread(target=_do_load, daemon=True, name="model-loader").start()
 
     def _on_model_loaded(self):
         self._model_loaded = True
-        self.query_one(TranscriptPanel).system_message(f"model loaded: {self._model_name}")
+        self.query_one(TranscriptPanel).system_message(f"model loaded: {self._model_name}", Log.SYS, {self._model_name: "rainbow"})
         if not self._diarizer_loaded:
             self._load_diarizer()
         self._update_telemetry()
@@ -1231,15 +1272,17 @@ class VoxTerm(App):
         if self.speaker_store.is_open and self.speaker_store.is_encrypted:
             enc = " (encrypted)"
         self.call_from_thread(
-            self.query_one(TranscriptPanel).system_message,
-            f"loading offline speaker recognition{enc}..."
+            lambda: self.query_one(TranscriptPanel).system_message(
+                f"loading offline speaker recognition{enc}...", Log.SYS
+            ),
         )
         try:
             # Set up crash/restart callbacks for subprocess mode
             self.diarizer.on_subprocess_crash = self._on_diarizer_crash
             self.diarizer.on_subprocess_ready = lambda: self.call_from_thread(
-                self.query_one(TranscriptPanel).system_message,
-                "speaker identification restarted"
+                lambda: self.query_one(TranscriptPanel).system_message(
+                    "speaker identification restarted", Log.SYS
+                ),
             )
             self.diarizer.load()
             self.call_from_thread(self._on_diarizer_loaded)
@@ -1253,8 +1296,8 @@ class VoxTerm(App):
     def _on_diarizer_loaded(self):
         self._diarizer_loaded = True
         tp = self.query_one(TranscriptPanel)
-        tp.system_message("speaker recognition ready — voices encrypted locally, no audio stored")
-        tp.system_message("press [R] to record")
+        tp.system_message("speaker recognition ready — voices encrypted locally, no audio stored", Log.SYS)
+        tp.system_message("press [R] to record", Log.SYS)
         self._update_telemetry()
 
     def _on_diarizer_crash(self, crash_count: int):
@@ -1272,13 +1315,13 @@ class VoxTerm(App):
             )
 
     def _on_diarizer_fallback(self):
-        self.query_one(TranscriptPanel).system_message("press [R] to record")
+        self.query_one(TranscriptPanel).system_message("press [R] to record", Log.SYS)
 
     # ── actions ─────────────────────────────────────────────────
 
     def action_toggle_recording(self):
         if not self._model_loaded:
-            self.query_one(TranscriptPanel).system_message("model still loading, please wait...")
+            self.query_one(TranscriptPanel).system_message("model still loading, please wait...", Log.SYS)
             return
 
         waveform = self.query_one(WaveformWidget)
@@ -1290,6 +1333,7 @@ class VoxTerm(App):
             self.system_capture.stop()
             waveform.set_recording(False)
             header.set_recording(False)
+            transcript.system_message("recording stopped", Log.REC, {"stopped": "#ff4466"})
         else:
             self._recording = True
             self.vad.reset()
@@ -1297,12 +1341,14 @@ class VoxTerm(App):
                 self.audio_capture.start()
                 waveform.set_recording(True)
                 header.set_recording(True)
+                transcript.system_message("recording started", Log.REC, {"started": "#00ff88"})
             except Exception as e:
                 self._recording = False
                 waveform.set_recording(False)
                 header.set_recording(False)
                 transcript.system_message(
-                    f"microphone error: {e} — grant Terminal mic access in System Settings > Privacy"
+                    f"microphone error: {e} — grant Terminal mic access in System Settings > Privacy",
+                    Log.REC,
                 )
                 self._update_telemetry()
                 return
@@ -1319,7 +1365,7 @@ class VoxTerm(App):
 
     def action_switch_model(self):
         if self._transcribing.is_set():
-            self.query_one(TranscriptPanel).system_message("wait for transcription to finish...")
+            self.query_one(TranscriptPanel).system_message("wait for transcription to finish...", Log.REC)
             return
         was_recording = self._recording
         if was_recording:
@@ -1345,7 +1391,7 @@ class VoxTerm(App):
             if self._is_qwen3 and hasattr(self.transcriber, '_language'):
                 self.transcriber._language = lang_code
             _get_config().update({"last_model": self._model_name, "last_language": lang_code})
-            self.query_one(TranscriptPanel).system_message(f"language set to {lang_name}")
+            self.query_one(TranscriptPanel).system_message(f"language set to {lang_name}", Log.SYS)
             self._update_telemetry()
 
         self.push_screen(LanguageSelectScreen(self._language), on_lang_selected)
@@ -1354,13 +1400,13 @@ class VoxTerm(App):
         """Open speaker tagging modal."""
         if not self._diarizer_loaded:
             self.query_one(TranscriptPanel).system_message(
-                "speaker identification not loaded yet"
+                "speaker identification not loaded yet", Log.SYS
             )
             return
 
         session_speakers = self.diarizer.get_all_session_speakers()
         if not session_speakers:
-            self.query_one(TranscriptPanel).system_message("no speakers detected yet")
+            self.query_one(TranscriptPanel).system_message("no speakers detected yet", Log.SYS)
             return
 
         # Build speaker list for the modal
@@ -1448,7 +1494,7 @@ class VoxTerm(App):
         self.query_one(TranscriptPanel).rename_speaker(speaker_id, name, color)
 
         # 5. Feedback
-        self.query_one(TranscriptPanel).system_message(f"tagged as {name}")
+        self.query_one(TranscriptPanel).system_message(f"tagged as {name}", Log.SYS)
         self._update_telemetry()
 
     def _apply_speaker_merge(self, source_id: int, target_id: int):
@@ -1471,7 +1517,7 @@ class VoxTerm(App):
             self._speaker_profile_map.pop(source_id, None)
 
         transcript.system_message(
-            f"merged Speaker {source_id} into {target_name}"
+            f"merged Speaker {source_id} into {target_name}", Log.SYS
         )
         self._update_telemetry()
 
@@ -1488,7 +1534,7 @@ class VoxTerm(App):
                 new_name = result["name"]
                 self.speaker_store.rename_profile(pid, new_name)
                 self.query_one(TranscriptPanel).system_message(
-                    f"profile renamed to {new_name}"
+                    f"profile renamed to {new_name}", Log.SYS
                 )
                 # Update in-session labels if this profile is active
                 for sid, mapped_pid in self._speaker_profile_map.items():
@@ -1510,16 +1556,31 @@ class VoxTerm(App):
                     if p != pid
                 }
                 self.query_one(TranscriptPanel).system_message(
-                    f"deleted profile: {name}"
+                    f"deleted profile: {name}", Log.SYS
                 )
             elif action == "delete_all":
                 self.speaker_store.delete_all_data()
                 self._speaker_profile_map.clear()
                 self.query_one(TranscriptPanel).system_message(
-                    "all voice data deleted"
+                    "all voice data deleted", Log.SYS
                 )
 
         self.push_screen(SpeakerProfileScreen(profiles), on_profile_result)
+
+    def action_explore_transcripts(self):
+        """Open transcript explorer to browse and copy saved transcripts."""
+        def on_result(result):
+            if result is None:
+                return
+            transcript = self.query_one(TranscriptPanel)
+            if "error" in result:
+                transcript.system_message(result["error"], Log.SYS)
+            elif "copied" in result:
+                transcript.system_message(
+                    f"copied transcript {result['copied']} to clipboard", Log.SYS
+                )
+
+        self.push_screen(TranscriptExplorerScreen(SESSIONS_DIR), on_result)
 
     def _swap_model(self, model_key: str):
         self._model_loaded = False
@@ -1528,7 +1589,7 @@ class VoxTerm(App):
         # Free old model memory before loading the new one
         self.transcriber._model = None
         self.query_one(TranscriptPanel).system_message(
-            f"switching to {model_key} (may take a minute)..."
+            f"switching to {model_key} (may take a minute)...", Log.SYS, {model_key: "rainbow"}
         )
         self._do_swap(model_key)
 
@@ -1555,7 +1616,7 @@ class VoxTerm(App):
         self._is_qwen3 = model_key in QWEN3_MODELS
         self._model_loaded = True
         _get_config().update({"last_model": model_key, "last_language": self._language})
-        self.query_one(TranscriptPanel).system_message(f"model loaded: {model_key}")
+        self.query_one(TranscriptPanel).system_message(f"model loaded: {model_key}", Log.SYS, {model_key: "rainbow"})
         self._update_telemetry()
 
     def _on_swap_error(self, msg: str):
@@ -1567,7 +1628,7 @@ class VoxTerm(App):
         """Open export modal to choose destination."""
         transcript = self.query_one(TranscriptPanel)
         if not transcript.get_entries():
-            transcript.system_message("nothing to export")
+            transcript.system_message("nothing to export", Log.REC)
             return
 
         def on_export_selected(destination):
@@ -1586,7 +1647,7 @@ class VoxTerm(App):
         """Promote live file to final transcript."""
         transcript = self.query_one(TranscriptPanel)
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        filename = self._session_start.strftime("%Y-%m-%d_%H%M%S") + ".md"
+        filename = self._session_start.strftime("%Y-%m-%d_%H%M%S") + "-transcript.md"
         filepath = SESSIONS_DIR / filename
 
         # Write the full markdown (cleaner than the append-mode live file)
@@ -1599,14 +1660,14 @@ class VoxTerm(App):
 
         entry_count = len(transcript.get_entries())
         self._start_new_session()
-        transcript.system_message(f"exported {entry_count} entries → {filepath}")
+        transcript.system_message(f"exported {entry_count} entries → {filepath}", Log.REC)
 
     def _export_to_clipboard(self):
         """Copy transcript to clipboard."""
         transcript = self.query_one(TranscriptPanel)
         cmd = _clipboard_cmd()
         if cmd is None:
-            transcript.system_message("no clipboard tool found (install xclip, xsel, or wl-copy)")
+            transcript.system_message("no clipboard tool found (install xclip, xsel, or wl-copy)", Log.REC)
             return
         text = transcript.get_plain_text()
         entry_count = len(transcript.get_entries())
@@ -1614,9 +1675,9 @@ class VoxTerm(App):
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
             proc.communicate(text.encode("utf-8"))
             self._start_new_session()
-            transcript.system_message(f"copied {entry_count} entries to clipboard")
+            transcript.system_message(f"copied {entry_count} entries to clipboard", Log.REC)
         except Exception:
-            transcript.system_message("clipboard copy failed")
+            transcript.system_message("clipboard copy failed", Log.REC)
 
     def _discard_transcript(self):
         """Discard transcript and delete the live file."""
@@ -1626,7 +1687,7 @@ class VoxTerm(App):
             self._live_file.unlink()
         self._start_new_session()
         self.query_one(TranscriptPanel).system_message(
-            f"discarded {entry_count} entries"
+            f"discarded {entry_count} entries", Log.REC
         )
 
     def _start_new_session(self):
@@ -1701,6 +1762,15 @@ class VoxTerm(App):
         except Exception:
             pass
 
+    def _trigger_fireworks(self, burst_count: int = 8) -> None:
+        """Mount the bloom overlay for a colour-wash effect on party join."""
+        try:
+            from tui.widgets.fireworks import FireworkOverlay
+            overlay = FireworkOverlay(burst_count=burst_count)
+            self.mount(overlay)
+        except Exception:
+            pass
+
     def _peer_bloom(self) -> None:
         """Brief flash to lighter shade when a peer joins, then back to party color."""
         try:
@@ -1722,7 +1792,7 @@ class VoxTerm(App):
         self._debug = not self._debug
         state = "ON" if self._debug else "OFF"
         tp = self.query_one(TranscriptPanel)
-        tp.system_message(f"debug mode {state}")
+        tp.system_message(f"debug mode {state}", Log.SYS)
         if self._debug and self._party.is_in_party:
             debug_text = self._party.format_debug_text(tp.merged_view)
             if debug_text:
@@ -1733,7 +1803,7 @@ class VoxTerm(App):
         _pm = self._party
         if not _pm.session_mgr or not _pm.session_mgr.is_in_session:
             self.query_one(TranscriptPanel).system_message(
-                "merged view requires an active P2P session"
+                "merged view requires an active P2P session", Log.PARTY
             )
             return
         tp = self.query_one(TranscriptPanel)
@@ -1745,7 +1815,7 @@ class VoxTerm(App):
             peer_names=_pm.get_peer_names(),
         )
         if new_state:
-            tp.system_message("merged view — all peers, time-ordered [V] to toggle back")
+            tp.system_message("merged view — all peers, time-ordered [V] to toggle back", Log.PARTY)
         self._update_telemetry()
 
     def _refresh_merged_if_active(self):
@@ -1790,17 +1860,24 @@ class VoxTerm(App):
         except Exception:
             pass
 
-        # Let Textual restore the terminal, then hard-exit.
-        # All cleanup (P2P disconnect, audio stop, mDNS unregister) is
-        # skipped — os._exit kills all threads and the OS reclaims
-        # sockets, file handles, and shared memory instantly.
-        def _silent_exit():
-            try:
-                sys.stderr.close()
-            except Exception:
-                pass
+        # Kill the resource tracker process if it somehow spawned —
+        # prevents leaked-semaphore warning printed to terminal after exit.
+        try:
+            import multiprocessing.resource_tracker as _rt
+            pid = getattr(_rt._resource_tracker, '_pid', None)
+            if pid:
+                import signal
+                os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+        try:
+            sys.stderr.close()
+        except Exception:
+            pass
+        # Hard-exit after Textual restores the terminal.
+        def _hard_exit():
             os._exit(0)
-        threading.Timer(0.3, _silent_exit).start()
+        threading.Timer(0.5, _hard_exit).start()
         self.exit()
 
 
@@ -1895,17 +1972,6 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    print(f"VOXTERM // loading model ({model_name}) lang={language}...")
-    print("(first run downloads the model, please wait)\n")
-    if model_name in QWEN3_MODELS:
-        transcriber = Qwen3Transcriber(model=model_repo, language=language)
-    elif model_name in FASTER_WHISPER_MODELS:
-        transcriber = FasterWhisperTranscriber(model=model_repo, language=language)
-    else:
-        transcriber = WhisperTranscriber(model=model_repo)
-    transcriber.load()
-    print("Model ready. Launching TUI...\n")
-
     # Prevent segfault: PortAudio/PyTorch/SpeechBrain C threads crash
     # during Python's shutdown when native objects are GC'd in random order.
     # atexit fires before finalizers; the finally block catches SystemExit.
@@ -1915,8 +1981,9 @@ if __name__ == "__main__":
     # Restore terminal on segfault so the shell doesn't get stuck in raw mode
     diagnostics.setup_signal_handlers()
 
+    # Launch TUI immediately — model loads in the background
     app = VoxTerm(
-        transcriber=transcriber, model_name=model_name, language=language,
+        transcriber=None, model_name=model_name, language=language,
         p2p_name=args.name,
         p2p_create=args.session_create,
         p2p_join_code=args.session_join,

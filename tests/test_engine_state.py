@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from diarization.engine import DiarizationEngine
+from audio.diarization.engine import DiarizationEngine
 
 from config import SPEAKER_EMBEDDING_DIM as EMBEDDING_DIM
 
@@ -252,7 +252,7 @@ class TestThresholdConstants:
         assert DiarizationEngine.MERGE_THRESHOLD == 0.50
 
     def test_min_speech_samples(self):
-        from diarization.engine import _MIN_SPEECH_SAMPLES
+        from audio.diarization.engine import _MIN_SPEECH_SAMPLES
         assert _MIN_SPEECH_SAMPLES == 24000  # 1.5s at 16kHz
 
 
@@ -442,7 +442,7 @@ class TestSCDConstants:
         assert DiarizationEngine.SCD_HOP_SEC == 0.5
 
     def test_scd_min_samples(self):
-        from diarization.engine import _SCD_MIN_SAMPLES
+        from audio.diarization.engine import _SCD_MIN_SAMPLES
         assert _SCD_MIN_SAMPLES == 48000  # 3.0s at 16kHz
 
 

@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from speakers.crypto import (
+from audio.speakers.crypto import (
     decrypt_blob,
     derive_keys,
     encrypt_blob,
@@ -312,8 +312,8 @@ class TestKeyManagement:
             stored["key"] = key
             return True
 
-        monkeypatch.setattr("speakers.crypto._keychain_get", mock_get)
-        monkeypatch.setattr("speakers.crypto._keychain_set", mock_set)
+        monkeypatch.setattr("audio.speakers.crypto._keychain_get", mock_get)
+        monkeypatch.setattr("audio.speakers.crypto._keychain_set", mock_set)
 
         result = get_or_create_key()
         assert result is not None
@@ -333,8 +333,8 @@ class TestKeyManagement:
             set_called = True
             return True
 
-        monkeypatch.setattr("speakers.crypto._keychain_get", mock_get)
-        monkeypatch.setattr("speakers.crypto._keychain_set", mock_set)
+        monkeypatch.setattr("audio.speakers.crypto._keychain_get", mock_get)
+        monkeypatch.setattr("audio.speakers.crypto._keychain_set", mock_set)
 
         result = get_or_create_key()
         assert result == existing_key
@@ -348,8 +348,8 @@ class TestKeyManagement:
         def mock_set(key):
             return False
 
-        monkeypatch.setattr("speakers.crypto._keychain_get", mock_get)
-        monkeypatch.setattr("speakers.crypto._keychain_set", mock_set)
+        monkeypatch.setattr("audio.speakers.crypto._keychain_get", mock_get)
+        monkeypatch.setattr("audio.speakers.crypto._keychain_set", mock_set)
 
         result = get_or_create_key()
         assert result is None
@@ -365,8 +365,8 @@ class TestKeyManagement:
             stored["key"] = key
             return True
 
-        monkeypatch.setattr("speakers.crypto._keychain_get", mock_get)
-        monkeypatch.setattr("speakers.crypto._keychain_set", mock_set)
+        monkeypatch.setattr("audio.speakers.crypto._keychain_get", mock_get)
+        monkeypatch.setattr("audio.speakers.crypto._keychain_set", mock_set)
 
         result = get_or_create_key()
         assert result is not None

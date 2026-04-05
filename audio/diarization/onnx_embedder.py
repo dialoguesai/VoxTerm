@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from diarization.fbank import compute_fbank
+from .fbank import compute_fbank
 
 log = logging.getLogger(__name__)
 

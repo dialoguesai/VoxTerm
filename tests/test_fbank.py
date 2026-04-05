@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from diarization.fbank import compute_fbank
+from audio.diarization.fbank import compute_fbank
 
 
 class TestComputeFbank:

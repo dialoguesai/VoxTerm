@@ -5,7 +5,7 @@ import pytest
 import numpy as np
 
 from config import DIARIZER_MAX_RESTARTS
-from diarization.proxy import DiarizationProxy
+from audio.diarization.proxy import DiarizationProxy
 
 
 @pytest.fixture
@@ -71,7 +71,7 @@ def test_fallback_after_max_restarts(proxy, sample_audio):
     audio = sample_audio(duration_sec=2.5)
 
     # Shrink the restart window so all crashes count
-    import diarization.proxy as proxy_mod
+    import audio.diarization.proxy as proxy_mod
     orig_window = proxy_mod.DIARIZER_RESTART_WINDOW
     proxy_mod.DIARIZER_RESTART_WINDOW = 600  # large window so crashes don't expire
 

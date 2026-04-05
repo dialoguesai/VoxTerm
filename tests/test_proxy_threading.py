@@ -4,7 +4,7 @@ import threading
 import pytest
 import numpy as np
 
-from diarization.proxy import DiarizationProxy
+from audio.diarization.proxy import DiarizationProxy
 
 
 @pytest.fixture

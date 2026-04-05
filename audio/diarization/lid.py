@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-from diarization.fbank import compute_fbank
+from audio.diarization.fbank import compute_fbank
 
 log = logging.getLogger(__name__)
 
