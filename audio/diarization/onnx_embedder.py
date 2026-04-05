@@ -91,7 +91,7 @@ class OnnxSpeakerEmbedder:
             if not model_path.exists():
                 raise FileNotFoundError(
                     f"ONNX model not found at {model_path}. "
-                    f"Run: python -m scripts.export_onnx --model {self.model_name}"
+                    f"Run: python -m diarization.export_onnx --model {self.model_name}"
                 )
 
         opts = onnxruntime.SessionOptions()
@@ -233,13 +233,13 @@ class OnnxSpeakerEmbedder:
         the caller should raise FileNotFoundError.
         """
         try:
-            from scripts.export_onnx import export_model
+            from diarization.export_onnx import export_model
             export_model(self.model_name, target_path)
             return target_path
         except ImportError:
             log.warning(
                 "Cannot auto-export ONNX model (speakerlab/torch not available). "
-                "Run: python -m scripts.export_onnx --model %s",
+                "Run: python -m diarization.export_onnx --model %s",
                 self.model_name,
             )
             return target_path

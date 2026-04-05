@@ -22,7 +22,7 @@ import uuid
 from enum import Enum
 from typing import Callable, TYPE_CHECKING
 
-from config_store import ConfigStore
+from config import ConfigStore
 
 if TYPE_CHECKING:
     from textual.app import App

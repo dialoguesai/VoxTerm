@@ -70,8 +70,39 @@ SILENCE_THRESHOLD = 0.012
 SILENCE_TRIGGER_SECONDS = 0.3
 VAD_THRESHOLD = 0.5           # Silero VAD speech probability threshold
 
-# Session persistence & system audio capture paths
-from paths import LIVE_DIR, BIN_DIR
+# ── Platform-aware paths ─────────────────────────────────────
+# (merged from paths.py)
+import os as _os
+from pathlib import Path as _Path
+
+_home = _Path.home()
+
+if sys.platform == "darwin":
+    # macOS paths
+    SESSIONS_DIR = _home / "Documents" / "voxterm-transcripts"
+    DATA_DIR = _home / "Library" / "Application Support" / "voxterm"
+    LIVE_DIR = SESSIONS_DIR / ".live"
+    BIN_DIR = DATA_DIR / ".bin"
+    CRASH_DIR = DATA_DIR / ".crashes"
+    STATE_FILE = DATA_DIR / ".state.json"
+elif sys.platform.startswith("linux"):
+    # Linux — XDG-compliant paths
+    _xdg_data = _Path(_os.environ.get("XDG_DATA_HOME", _home / ".local" / "share"))
+    _xdg_config = _Path(_os.environ.get("XDG_CONFIG_HOME", _home / ".config"))
+    DATA_DIR = _xdg_data / "voxterm"
+    CONFIG_DIR = _xdg_config / "voxterm"
+    SESSIONS_DIR = DATA_DIR
+    LIVE_DIR = DATA_DIR / ".live"
+    BIN_DIR = DATA_DIR / ".bin"
+    CRASH_DIR = DATA_DIR / ".crashes"
+    STATE_FILE = CONFIG_DIR / "state.json"
+else:
+    raise RuntimeError(f"Unsupported platform: {sys.platform}")
+
+# Speaker database
+DB_DIR = DATA_DIR
+DB_PATH = DB_DIR / ".speakers.db"
+BACKUP_DIR = DB_DIR / ".backups"
 
 # Diarizer subprocess
 DIARIZER_TIMEOUT = 5.0        # seconds to wait for subprocess response
@@ -140,3 +171,108 @@ P2P_MERGE_DELAY_MS = 60            # jitter buffer delay for audio merging
 P2P_AUDIO_QUALITY_GATE = 0.003     # min RMS to include a source in the mix
 P2P_CLOCK_SYNC_WINDOW = 20         # sliding window of offset samples
 P2P_SERVICE_TYPE = "_voxterm._tcp.local."
+
+
+# ── ConfigStore (merged from config_store.py) ────────────────
+
+import json
+import threading
+from typing import Any, Optional
+
+
+# Schema: key → default value
+_DEFAULTS: dict[str, Any] = {
+    "last_model": "",
+    "last_language": "",
+    "audio_retention": False,
+    "export_format": "markdown",
+    "summarization_model": "",
+    "summarization_strength": "medium",
+    "p2p_display_name": "",
+}
+
+# Expected types per key (for validation)
+_TYPES: dict[str, type] = {
+    "last_model": str,
+    "last_language": str,
+    "audio_retention": bool,
+    "export_format": str,
+    "summarization_model": str,
+    "summarization_strength": str,
+    "p2p_display_name": str,
+}
+
+
+class ConfigStore:
+    """Persistent configuration with typed schema, merge semantics, and atomic writes.
+
+    Reads existing .state.json on init (backward compatible with bare 2-key files).
+    Writes use tmp+rename for atomicity.
+    """
+
+    def __init__(self, path: Optional[_Path] = None) -> None:
+        if path is None:
+            path = _Path.home() / "Documents" / "voxterm" / ".state.json"
+        self._path = path
+        self._lock = threading.Lock()
+        self._data: dict[str, Any] = dict(_DEFAULTS)
+        self._load()
+
+    def _load(self) -> None:
+        """Load from disk, merging with defaults. Unknown keys are preserved."""
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for key, value in raw.items():
+                    # Validate type for known keys; keep unknown keys as-is
+                    expected = _TYPES.get(key)
+                    if expected is None or isinstance(value, expected):
+                        self._data[key] = value
+        except Exception:
+            pass
+
+    def _save(self) -> None:
+        """Atomic write: write to .tmp then os.replace()."""
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+            _os.replace(tmp, self._path)
+        except Exception:
+            pass
+
+    def get(self, key: str) -> Any:
+        """Get a config value. Returns the default if key is in schema, else None."""
+        with self._lock:
+            return self._data.get(key, _DEFAULTS.get(key))
+
+    def set(self, key: str, value: Any) -> None:
+        """Set a config value and persist to disk (merge, not overwrite)."""
+        with self._lock:
+            expected = _TYPES.get(key)
+            if expected is not None and not isinstance(value, expected):
+                raise TypeError(
+                    f"Invalid type for config key '{key}': "
+                    f"expected {expected.__name__}, got {type(value).__name__}"
+                )
+            self._data[key] = value
+            self._save()
+
+    def update(self, values: dict[str, Any]) -> None:
+        """Set multiple config values and persist once (single disk write)."""
+        with self._lock:
+            for key, value in values.items():
+                expected = _TYPES.get(key)
+                if expected is not None and not isinstance(value, expected):
+                    raise TypeError(
+                        f"Invalid type for config key '{key}': "
+                        f"expected {expected.__name__}, got {type(value).__name__}"
+                    )
+                self._data[key] = value
+            self._save()
+
+    @property
+    def data(self) -> dict[str, Any]:
+        """Return a snapshot of all config data."""
+        with self._lock:
+            return dict(self._data)

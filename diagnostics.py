@@ -21,7 +21,7 @@ from config import CRASH_LOG_MAX_COUNT
 
 # ── crash directory ───────────────────────────────────────────
 
-from paths import CRASH_DIR
+from config import CRASH_DIR
 
 
 def _ensure_crash_dir() -> None:

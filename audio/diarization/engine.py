@@ -151,7 +151,7 @@ class DiarizationEngine:
         from config import SPEAKER_MODEL_NAME
         from .onnx_embedder import ONNX_MODELS
 
-        from scripts.export_onnx import _find_checkpoint, _create_model, MODEL_CONFIGS
+        from diarization.export_onnx import _find_checkpoint, _create_model, MODEL_CONFIGS
 
         if SPEAKER_MODEL_NAME not in MODEL_CONFIGS:
             raise ValueError(f"Unknown model: {SPEAKER_MODEL_NAME}")

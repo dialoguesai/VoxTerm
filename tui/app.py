@@ -73,7 +73,7 @@ from config import (
     DEFAULT_LANGUAGE, AVAILABLE_LANGUAGES,
     LIVE_DIR,
 )
-from paths import SESSIONS_DIR, STATE_FILE as _STATE_FILE
+from config import SESSIONS_DIR, STATE_FILE as _STATE_FILE
 
 
 def _clipboard_cmd() -> list[str] | None:
@@ -91,7 +91,7 @@ def _clipboard_cmd() -> list[str] | None:
 
 from network.party import PartyManager, PartyState, P2P_AVAILABLE as _P2P_AVAILABLE
 
-from config_store import ConfigStore
+from config import ConfigStore
 
 log = logging.getLogger(__name__)
 
@@ -427,7 +427,7 @@ class ExportScreen(ModalScreen):
 class VoxTerm(App):
     """Cyberpunk voice transcription TUI."""
 
-    CSS_PATH = "cyberpunk.tcss"
+    CSS_PATH = "widgets/cyberpunk.tcss"
     TITLE = "VOXTERM"
 
     BINDINGS = [
