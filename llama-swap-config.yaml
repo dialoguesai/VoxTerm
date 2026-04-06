@@ -1,0 +1,15 @@
+healthCheckTimeout: 120
+listenAddr: ":8090"
+
+macros:
+  omni_dir: "/Users/wk/.cache/huggingface/hub/models--ggml-org--Qwen2.5-Omni-3B-GGUF/snapshots/75f1b73b657a50f5092502799457ccb4a4a1f9df"
+
+models:
+  qwen2.5-omni-3b:
+    cmd: >-
+      llama-server
+      --port ${PORT}
+      -m ${omni_dir}/Qwen2.5-Omni-3B-Q4_K_M.gguf
+      --mmproj ${omni_dir}/mmproj-Qwen2.5-Omni-3B-Q8_0.gguf
+      -ngl 99
+    ttl: 300
