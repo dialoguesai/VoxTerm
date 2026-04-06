@@ -274,15 +274,28 @@ def _audio_to_wav_base64(audio: np.ndarray, sample_rate: int = 16000) -> str:
 
 
 def discover_llama_audio_models(server_url: str) -> list[str] | None:
-    """Query a llama.cpp or Ollama server for models that support audio input.
+    """Query a llama-swap, llama.cpp, or Ollama server for available models.
+
+    Probes in order: /v1/models (llama-swap/OpenAI), /api/tags (Ollama),
+    /health (plain llama.cpp).
 
     Returns:
-        list[str] — model names with audio capabilities (may be empty)
+        list[str] — model names (may be empty)
         None — if the server is unreachable
     """
     url = server_url.rstrip("/")
 
-    # First check if server has /api/tags (Ollama-compatible listing)
+    # Try /v1/models first (llama-swap / OpenAI-compatible)
+    try:
+        req = urllib.request.Request(f"{url}/v1/models", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        models = data.get("data", [])
+        return [m.get("id") for m in models if m.get("id")]
+    except Exception:
+        pass
+
+    # Try /api/tags (Ollama-compatible listing)
     try:
         req = urllib.request.Request(f"{url}/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -292,18 +305,14 @@ def discover_llama_audio_models(server_url: str) -> list[str] | None:
         try:
             req = urllib.request.Request(f"{url}/health", method="GET")
             with urllib.request.urlopen(req, timeout=5) as resp:
-                # Server is up but has no /api/tags (plain llama.cpp)
+                # Server is up but has no model listing endpoint
                 return []
         except Exception:
             return None
 
-    # If server responded with model capabilities directly (llama.cpp style),
-    # check for "multimodal" capability
     models = data.get("models", []) or data.get("data", [])
     audio_models = []
-    # Cap probing to first 20 models to avoid slow startup
     for m in models[:20]:
-        # llama.cpp /api/tags includes capabilities in the response
         caps = m.get("capabilities", [])
         if "multimodal" in caps:
             name = m.get("id") or m.get("name", "")
@@ -311,7 +320,6 @@ def discover_llama_audio_models(server_url: str) -> list[str] | None:
                 audio_models.append(name)
             continue
 
-        # Ollama style: need to probe /api/show per model
         name = m.get("name", "")
         if not name:
             continue
@@ -336,10 +344,11 @@ def discover_llama_audio_models(server_url: str) -> list[str] | None:
 
 
 class LlamaServerTranscriber(_DeduplicatorMixin):
-    """Transcriber that delegates to a llama.cpp server via /v1/chat/completions.
+    """Transcriber that delegates to a llama-swap/llama.cpp server via /v1/chat/completions.
 
-    Requires a llama.cpp server running with an audio-capable model
-    (e.g. Qwen2.5-Omni). Uses the OpenAI-compatible input_audio content type.
+    Requires a llama-swap (or compatible) server running with an audio-capable
+    model (e.g. Qwen2.5-Omni). Uses the OpenAI-compatible input_audio content type.
+    llama-swap auto-swaps the correct model based on the model field in the request.
     """
 
     def __init__(self, server_url: str = "http://localhost:8080",

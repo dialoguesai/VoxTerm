@@ -105,8 +105,8 @@ DB_PATH = DB_DIR / ".speakers.db"
 BACKUP_DIR = DB_DIR / ".backups"
 
 # Llama server (Ollama-compatible) — overrides local models when configured
-LLAMA_SERVER_URL = ""       # e.g. "http://localhost:11434"
-LLAMA_SERVER_MODEL = ""     # e.g. "qwen3.5:35b"
+LLAMA_SERVER_URL = ""       # e.g. "http://localhost:8080" (llama-swap)
+LLAMA_SERVER_MODEL = ""     # e.g. "qwen2.5-omni-3b"
 LLAMA_SERVER_MODELS: set[str] = set()  # populated at runtime from AVAILABLE_MODELS
 
 # Diarizer subprocess

@@ -1929,7 +1929,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--server-url",
         default=_saved_server_url,
-        help="Ollama-compatible server URL (e.g. http://localhost:11434)",
+        help="llama-swap server URL (e.g. http://localhost:8080)",
     )
     parser.add_argument(
         "--server-model",
