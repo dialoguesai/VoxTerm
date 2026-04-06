@@ -67,8 +67,9 @@ class TestMergeSpeakers:
         # Target should have both embeddings
         assert len(mock_engine._segment_embeddings[1]) == 2
 
-        # Merged centroid is running sum (a + b)
-        expected = emb_a + emb_b
+        # Merged centroid is weighted average (1 seg each), then normalized
+        expected = (1 * emb_a + 1 * emb_b) / 2.0
+        expected = expected / (np.linalg.norm(expected) + 1e-10)
         assert np.allclose(mock_engine._speaker_centroids[1], expected, atol=1e-5)
 
 
@@ -245,15 +246,15 @@ class TestThresholdConstants:
     """Verify Phase 1 threshold values."""
 
     def test_similarity_threshold(self):
-        assert DiarizationEngine.MATCH_THRESHOLD == 0.35
-        assert DiarizationEngine.NEW_SPEAKER_THRESHOLD == 0.30
+        assert DiarizationEngine.MATCH_THRESHOLD == 0.55
+        assert DiarizationEngine.NEW_SPEAKER_THRESHOLD == 0.45
 
     def test_merge_threshold(self):
-        assert DiarizationEngine.MERGE_THRESHOLD == 0.50
+        assert DiarizationEngine.MERGE_THRESHOLD == 0.65
 
     def test_min_speech_samples(self):
         from audio.diarization.engine import _MIN_SPEECH_SAMPLES
-        assert _MIN_SPEECH_SAMPLES == 24000  # 1.5s at 16kHz
+        assert _MIN_SPEECH_SAMPLES == 16000  # 1.0s at 16kHz
 
 
 class TestSpectralRecluster:
@@ -455,8 +456,8 @@ class TestExtractEmbedding:
         assert result is None
 
     def test_returns_none_for_short_audio(self, loaded_mock_engine):
-        # Audio shorter than _MIN_SPEECH_SAMPLES (24000 = 1.5s)
-        audio = np.zeros(16000, dtype=np.float32)
+        # Audio shorter than _MIN_SPEECH_SAMPLES (16000 = 1.0s)
+        audio = np.zeros(8000, dtype=np.float32)
         result = loaded_mock_engine._extract_embedding(audio)
         assert result is None
 
