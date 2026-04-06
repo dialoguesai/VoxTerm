@@ -13,7 +13,7 @@ DTYPE = "float32"
 # Transcription — platform-aware model registry
 if sys.platform == "darwin":
     # macOS: Qwen3-ASR (primary, MLX) + mlx-whisper (fallback)
-    DEFAULT_MODEL = "qwen3-0.6b"
+    DEFAULT_MODEL = "qwen3-1.7b"
     AVAILABLE_MODELS = {
         "qwen3-0.6b":  "Qwen/Qwen3-ASR-0.6B",
         "qwen3-1.7b":  "Qwen/Qwen3-ASR-1.7B",
@@ -104,6 +104,11 @@ DB_DIR = DATA_DIR
 DB_PATH = DB_DIR / ".speakers.db"
 BACKUP_DIR = DB_DIR / ".backups"
 
+# Llama server (Ollama-compatible) — overrides local models when configured
+LLAMA_SERVER_URL = ""       # e.g. "http://localhost:8080" (llama-swap)
+LLAMA_SERVER_MODEL = ""     # e.g. "qwen2.5-omni-3b"
+LLAMA_SERVER_MODELS: set[str] = set()  # populated at runtime from AVAILABLE_MODELS
+
 # Diarizer subprocess
 DIARIZER_TIMEOUT = 5.0        # seconds to wait for subprocess response
 DIARIZER_MAX_RESTARTS = 3     # max restarts before falling back to in-process
@@ -125,6 +130,7 @@ SPEAKER_MODEL_ONNX_CACHE = __import__("pathlib").Path.home() / ".cache" / "3dspe
 CLUSTER_AHC_THRESHOLD = 0.50       # AHC cosine distance stop threshold
 CLUSTER_SPECTRAL_PVAL_BETA = 1.0   # p-value pruning aggressiveness (higher = more pruning)
 CLUSTER_AHC_MAX_SAMPLES = 40       # above this, switch from AHC to spectral
+
 
 # Language identification (3D-Speaker LID)
 LID_ENABLED = True

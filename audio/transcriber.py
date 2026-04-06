@@ -1,8 +1,15 @@
-"""Transcription engine — Qwen3-ASR (all platforms), mlx-whisper (macOS), faster-whisper (Linux fallback)."""
+"""Transcription engine — Qwen3-ASR (all platforms), mlx-whisper (macOS), faster-whisper (Linux fallback), llama server (remote)."""
 
 from __future__ import annotations
 
+import base64
+import io
+import json
 import re
+import struct
+import urllib.request
+import urllib.error
+
 import numpy as np
 
 from audio.platform import CURRENT_PLATFORM, Platform
@@ -235,6 +242,175 @@ class FasterWhisperTranscriber(_DeduplicatorMixin):
             vad_filter=False,  # we already run Silero VAD upstream
         )
         text = " ".join(seg.text.strip() for seg in segments).strip()
+
+        if _is_hallucination(text, self._language):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        if self._is_duplicate(text):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        return {"text": text, "speaker": "", "speaker_id": 0}
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+
+def _audio_to_wav_base64(audio: np.ndarray, sample_rate: int = 16000) -> str:
+    """Encode float32 audio array as base64 WAV string."""
+    audio_int16 = np.clip(audio * 32767, -32768, 32767).astype(np.int16)
+    buf = io.BytesIO()
+    num_samples = len(audio_int16)
+    data_size = num_samples * 2
+    buf.write(b"RIFF")
+    buf.write(struct.pack("<I", 36 + data_size))
+    buf.write(b"WAVE")
+    buf.write(b"fmt ")
+    buf.write(struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16))
+    buf.write(b"data")
+    buf.write(struct.pack("<I", data_size))
+    buf.write(audio_int16.tobytes())
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def discover_llama_audio_models(server_url: str) -> list[str] | None:
+    """Query a llama-swap, llama.cpp, or Ollama server for available models.
+
+    Probes in order: /v1/models (llama-swap/OpenAI), /api/tags (Ollama),
+    /health (plain llama.cpp).
+
+    Returns:
+        list[str] — model names (may be empty)
+        None — if the server is unreachable
+    """
+    url = server_url.rstrip("/")
+
+    # Try /v1/models first (llama-swap / OpenAI-compatible)
+    try:
+        req = urllib.request.Request(f"{url}/v1/models", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        models = data.get("data", [])
+        return [m.get("id") for m in models if m.get("id")]
+    except Exception:
+        pass
+
+    # Try /api/tags (Ollama-compatible listing)
+    try:
+        req = urllib.request.Request(f"{url}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        # Server unreachable — try /health as fallback
+        try:
+            req = urllib.request.Request(f"{url}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                # Server is up but has no model listing endpoint
+                return []
+        except Exception:
+            return None
+
+    models = data.get("models", []) or data.get("data", [])
+    audio_models = []
+    for m in models[:20]:
+        caps = m.get("capabilities", [])
+        if "multimodal" in caps:
+            name = m.get("id") or m.get("name", "")
+            if name:
+                audio_models.append(name)
+            continue
+
+        name = m.get("name", "")
+        if not name:
+            continue
+        try:
+            show_req = urllib.request.Request(
+                f"{url}/api/show",
+                data=json.dumps({"name": name}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(show_req, timeout=5) as resp:
+                details = json.loads(resp.read())
+            model_info = details.get("model_info", {})
+            template = details.get("template", "")
+            info_str = json.dumps(model_info).lower() + template.lower()
+            if "audio" in info_str:
+                audio_models.append(name)
+        except Exception:
+            continue
+
+    return audio_models
+
+
+class LlamaServerTranscriber(_DeduplicatorMixin):
+    """Transcriber that delegates to a llama-swap/llama.cpp server via /v1/chat/completions.
+
+    Requires a llama-swap (or compatible) server running with an audio-capable
+    model (e.g. Qwen2.5-Omni). Uses the OpenAI-compatible input_audio content type.
+    llama-swap auto-swaps the correct model based on the model field in the request.
+    """
+
+    def __init__(self, server_url: str = "http://localhost:8080",
+                 model: str = "", language: str | None = "en"):
+        self.server_url = server_url.rstrip("/")
+        self.model = model
+        self._language = language
+        self._loaded = False
+        self._init_dedup()
+
+    def load(self):
+        """Verify the llama.cpp server is reachable via /health."""
+        try:
+            req = urllib.request.Request(f"{self.server_url}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                pass
+        except Exception as e:
+            raise ConnectionError(f"Cannot reach llama server at {self.server_url}: {e}")
+        self._loaded = True
+
+    def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
+        rms = float(np.sqrt(np.mean(audio ** 2)))
+        if rms < 0.005:
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        wav_b64 = _audio_to_wav_base64(audio)
+
+        lang_hint = ""
+        if self._language:
+            from config import AVAILABLE_LANGUAGES
+            lang_name = AVAILABLE_LANGUAGES.get(self._language, self._language)
+            lang_hint = f" The audio is in {lang_name}."
+
+        prompt_text = f"Transcribe the following audio exactly as spoken. Output ONLY the transcription text, nothing else.{lang_hint}"
+
+        payload = {
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {"type": "input_audio", "input_audio": {"data": wav_b64, "format": "wav"}},
+                ],
+            }],
+        }
+        if self.model:
+            payload["model"] = self.model
+        endpoint = f"{self.server_url}/v1/chat/completions"
+
+        try:
+            req = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read())
+        except urllib.error.URLError as e:
+            raise ConnectionError(f"Llama server request failed: {e}") from e
+
+        text = ((result.get("choices") or [{}])[0]
+                .get("message", {}).get("content", "")).strip()
 
         if _is_hallucination(text, self._language):
             return {"text": "", "speaker": "", "speaker_id": 0}

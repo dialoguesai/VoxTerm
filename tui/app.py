@@ -61,7 +61,10 @@ from tui.widgets.transcript_explorer import TranscriptExplorerScreen
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
 from audio.system_capture import SystemCapture
-from audio.transcriber import Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber
+from audio.transcriber import (
+    Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber,
+    LlamaServerTranscriber, discover_llama_audio_models,
+)
 from audio.diarization.proxy import DiarizationProxy
 from audio.speakers.store import SpeakerStore
 from audio.vad import SileroVAD
@@ -72,6 +75,7 @@ from config import (
     DEFAULT_MODEL, AVAILABLE_MODELS, QWEN3_MODELS, FASTER_WHISPER_MODELS,
     DEFAULT_LANGUAGE, AVAILABLE_LANGUAGES,
     LIVE_DIR,
+    LLAMA_SERVER_URL, LLAMA_SERVER_MODEL, LLAMA_SERVER_MODELS,
 )
 from config import SESSIONS_DIR, STATE_FILE as _STATE_FILE
 
@@ -153,7 +157,8 @@ class ModelSelectScreen(ModalScreen):
             dialog.border_title = "SELECT MODEL"
             options = []
             for name, repo in AVAILABLE_MODELS.items():
-                label = f"  {'▸ ' if name == self._current else '  '}{name:12s}  {repo}"
+                tag = " [llama]" if name in LLAMA_SERVER_MODELS else ""
+                label = f"  {'▸ ' if name == self._current else '  '}{name:12s}  {repo}{tag}"
                 options.append(Option(label, id=name))
             yield OptionList(*options, id="model-list")
             yield Static(
@@ -164,7 +169,8 @@ class ModelSelectScreen(ModalScreen):
 
     def on_mount(self) -> None:
         option_list = self.query_one("#model-list", OptionList)
-        for idx, name in enumerate(AVAILABLE_MODELS):
+        all_names = list(AVAILABLE_MODELS.keys())
+        for idx, name in enumerate(all_names):
             if name == self._current:
                 option_list.highlighted = idx
                 break
@@ -959,12 +965,16 @@ class VoxTerm(App):
                         dbg = getattr(self.diarizer, '_last_debug', {})
                         n_spk = dbg.get('debug_speakers', '?')
                         rms = dbg.get('debug_rms', '?')
+                        best = dbg.get('debug_best_score', '?')
+                        phase = dbg.get('debug_phase', '?')
+                        thresh = dbg.get('debug_threshold', '?')
                         seg_info = f"segs={len(segments)}" if len(segments) > 1 else ""
                         overlap_info = " [OVERLAP]" if is_overlap else ""
                         self.call_from_thread(
                             self.query_one(TranscriptPanel).system_message,
                             f"[dbg] → {speaker_label} (id={speaker_id}) "
-                            f"speakers={n_spk} rms={rms} {seg_info}{overlap_info}",
+                            f"speakers={n_spk} sim={best}/{thresh} rms={rms} "
+                            f"[{phase}]{seg_info}{overlap_info}",
                         )
 
                     # 3. Cross-session matching for each unique speaker in segments
@@ -1242,7 +1252,12 @@ class VoxTerm(App):
                     _posixsubprocess._vt_patched = True
 
                 model_repo = AVAILABLE_MODELS[self._model_name]
-                if self._model_name in QWEN3_MODELS:
+                if self._model_name in LLAMA_SERVER_MODELS:
+                    server_url = LLAMA_SERVER_URL
+                    self.transcriber = LlamaServerTranscriber(
+                        server_url=server_url, model=model_repo, language=self._language,
+                    )
+                elif self._model_name in QWEN3_MODELS:
                     self.transcriber = Qwen3Transcriber(model=model_repo, language=self._language)
                 elif self._model_name in FASTER_WHISPER_MODELS:
                     self.transcriber = FasterWhisperTranscriber(model=model_repo, language=self._language)
@@ -1387,8 +1402,8 @@ class VoxTerm(App):
                 return
             self._language = lang_code
             lang_name = AVAILABLE_LANGUAGES.get(lang_code, lang_code)
-            # Update transcriber language if it's Qwen3
-            if self._is_qwen3 and hasattr(self.transcriber, '_language'):
+            # Update transcriber language if it supports it (Qwen3, llama server)
+            if hasattr(self.transcriber, '_language'):
                 self.transcriber._language = lang_code
             _get_config().update({"last_model": self._model_name, "last_language": lang_code})
             self.query_one(TranscriptPanel).system_message(f"language set to {lang_name}", Log.SYS)
@@ -1597,7 +1612,13 @@ class VoxTerm(App):
     def _do_swap(self, model_key: str):
         repo = AVAILABLE_MODELS[model_key]
         try:
-            if model_key in QWEN3_MODELS:
+            if model_key in LLAMA_SERVER_MODELS:
+                cfg = _get_config()
+                server_url = cfg.get("llama_server_url") or LLAMA_SERVER_URL
+                new_transcriber = LlamaServerTranscriber(
+                    server_url=server_url, model=repo, language=self._language,
+                )
+            elif model_key in QWEN3_MODELS:
                 new_transcriber = Qwen3Transcriber(model=repo, language=self._language)
             elif model_key in FASTER_WHISPER_MODELS:
                 new_transcriber = FasterWhisperTranscriber(model=repo, language=self._language)
@@ -1884,6 +1905,7 @@ class VoxTerm(App):
 
 if __name__ == "__main__":
     import argparse
+    import config as _config_mod
 
     # Resolve defaults: saved preferences > config defaults
     _cfg = _get_config()
@@ -1892,10 +1914,13 @@ if __name__ == "__main__":
     _default_model = _saved_model if _saved_model in AVAILABLE_MODELS else DEFAULT_MODEL
     _default_lang = _saved_lang if _saved_lang in AVAILABLE_LANGUAGES else DEFAULT_LANGUAGE
 
+    # Resolve llama server config: CLI > state file > config.py defaults
+    _saved_server_url = _cfg.get("llama_server_url") or LLAMA_SERVER_URL
+    _saved_server_model = _cfg.get("llama_server_model") or LLAMA_SERVER_MODEL
+
     parser = argparse.ArgumentParser(description="VOXTERM — Local Voice Transcription TUI")
     parser.add_argument(
         "-m", "--model",
-        choices=list(AVAILABLE_MODELS.keys()),
         default=_default_model,
         help=f"Transcription model (default: {_default_model})",
     )
@@ -1904,6 +1929,16 @@ if __name__ == "__main__":
         choices=list(AVAILABLE_LANGUAGES.keys()),
         default=_default_lang,
         help=f"Transcription language (default: {_default_lang})",
+    )
+    parser.add_argument(
+        "--server-url",
+        default=_saved_server_url,
+        help="llama-swap server URL (e.g. http://localhost:8080)",
+    )
+    parser.add_argument(
+        "--server-model",
+        default=_saved_server_model,
+        help="Model name on the llama server (e.g. qwen3.5:35b)",
     )
     parser.add_argument(
         "--list-models",
@@ -1930,11 +1965,56 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # Probe llama server for audio-capable models and register them
+    _server_url = args.server_url
+    _server_model = args.server_model
+    if _server_url:
+        print(f"VOXTERM // probing llama server at {_server_url}...")
+        _audio_models = discover_llama_audio_models(_server_url)
+        if _audio_models is None:
+            print(f"  WARNING: server at {_server_url} is unreachable")
+            if not _server_model:
+                _server_url = ""  # don't use unreachable server
+        elif _audio_models:
+            print(f"  found audio models: {', '.join(_audio_models)}")
+            for am in _audio_models:
+                short = am.replace(":", "-").replace("/", "-")
+                AVAILABLE_MODELS[short] = am
+                LLAMA_SERVER_MODELS.add(short)
+                _config_mod.LLAMA_SERVER_MODELS.add(short)
+        elif _server_model:
+            # User explicitly set a model — trust them and register it
+            print(f"  no auto-detected audio models, using configured: {_server_model}")
+            short = _server_model.replace(":", "-").replace("/", "-")
+            AVAILABLE_MODELS[short] = _server_model
+            LLAMA_SERVER_MODELS.add(short)
+            _config_mod.LLAMA_SERVER_MODELS.add(short)
+        else:
+            print("  no audio-capable models found on server")
+
+        # Persist server config and update runtime config module
+        _config_mod.LLAMA_SERVER_URL = _server_url
+        _config_mod.LLAMA_SERVER_MODEL = _server_model
+        _cfg.update({"llama_server_url": _server_url, "llama_server_model": _server_model})
+
+        # Server models are registered in AVAILABLE_MODELS for manual selection
+        # via the M key, but we never auto-switch away from the local ASR model.
+        if LLAMA_SERVER_MODELS:
+            print(f"  llama server models available (press M to switch): {', '.join(LLAMA_SERVER_MODELS)}")
+
+    # Validate model choice
+    if args.model not in AVAILABLE_MODELS:
+        print(f"Unknown model: {args.model}")
+        print(f"Available: {', '.join(AVAILABLE_MODELS.keys())}")
+        sys.exit(1)
+
     if args.list_models:
         print("Available models:")
         for name, repo in AVAILABLE_MODELS.items():
             tag = " (default)" if name == _default_model else ""
-            if name in QWEN3_MODELS:
+            if name in LLAMA_SERVER_MODELS:
+                backend = f" [llama@{_server_url}]" if _server_url else " [llama]"
+            elif name in QWEN3_MODELS:
                 backend = " [qwen3-asr]"
             elif name in FASTER_WHISPER_MODELS:
                 backend = " [faster-whisper]"
@@ -1971,6 +2051,8 @@ if __name__ == "__main__":
                     print("\nBlackHole install failed — system audio capture will be limited.\n")
         except Exception:
             pass
+
+
 
     # Prevent segfault: PortAudio/PyTorch/SpeechBrain C threads crash
     # during Python's shutdown when native objects are GC'd in random order.
