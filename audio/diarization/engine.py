@@ -338,38 +338,6 @@ class DiarizationEngine:
             sid = best_id
             should_update = is_high_quality and not is_ambiguous
 
-            # Transition detection: check if embedding matches this speaker's
-            # recent history. If not, it might be a new speaker whose audio
-            # got blended into the buffer during a turn transition.
-            if best_id in self._segment_embeddings:
-                recent = self._segment_embeddings[best_id][-3:]
-                if len(recent) >= 2:
-                    recent_sims = [
-                        self._cosine_sim(embedding, r_emb)
-                        for r_emb, _dur in recent
-                    ]
-                    avg_recent_sim = sum(recent_sims) / len(recent_sims)
-
-                    if avg_recent_sim < self.MATCH_THRESHOLD * 0.6:
-                        should_update = False
-                        # Check if another existing speaker is a better match
-                        # for the recent-embedding comparison
-                        for alt_sid, alt_centroid in self._speaker_centroids.items():
-                            if alt_sid == best_id:
-                                continue
-                            alt_score = self._cosine_sim(embedding, alt_centroid)
-                            if alt_score > best_score * 0.9:
-                                # Close enough — check recent history of alt speaker
-                                alt_recent = self._segment_embeddings.get(alt_sid, [])[-3:]
-                                if alt_recent:
-                                    alt_sims = [
-                                        self._cosine_sim(embedding, r_emb)
-                                        for r_emb, _dur in alt_recent
-                                    ]
-                                    if sum(alt_sims)/len(alt_sims) > avg_recent_sim:
-                                        sid = alt_sid
-                                        break
-
             if should_update:
                 self._prev_centroids[sid] = self._speaker_centroids[sid].copy()
                 self._speaker_centroids[sid] = self._speaker_centroids[sid] + embedding
