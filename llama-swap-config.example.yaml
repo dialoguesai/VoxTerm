@@ -1,0 +1,31 @@
+# llama-swap configuration for VoxTerm remote transcription
+#
+# llama-swap is a model orchestrator that auto-loads models on demand.
+# It proxies requests to llama-server, starting/stopping model processes
+# as needed based on the "model" field in API requests.
+#
+# Setup:
+#   1. Install llama-swap: https://github.com/mostlygeek/llama-swap/releases
+#   2. Install llama-server: brew install llama.cpp
+#   3. Download a model: huggingface-cli download ggml-org/Qwen2.5-Omni-3B-GGUF
+#   4. Copy this file: cp llama-swap-config.example.yaml llama-swap-config.yaml
+#   5. Edit the model paths below to match your system
+#   6. Start: llama-swap --config llama-swap-config.yaml --listen :8090
+#   7. Run VoxTerm: python3 tui/app.py --server-url http://localhost:8090
+#
+# Press M in VoxTerm to switch between local ASR and server models.
+# The default model (qwen3-1.7b) always runs locally via MLX.
+#
+# Docs: https://github.com/mostlygeek/llama-swap/blob/main/docs/configuration.md
+
+healthCheckTimeout: 120
+
+models:
+  qwen2.5-omni-3b:
+    cmd: >-
+      llama-server
+      --port ${PORT}
+      -m /path/to/Qwen2.5-Omni-3B-Q4_K_M.gguf
+      --mmproj /path/to/mmproj-Qwen2.5-Omni-3B-Q8_0.gguf
+      -ngl 99
+    ttl: 300
