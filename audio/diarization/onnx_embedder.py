@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from diarization.fbank import compute_fbank
+from .fbank import compute_fbank
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +41,11 @@ ONNX_MODELS = {
         "campplus.onnx",
         512,
     ),
+}
+
+# Pre-exported ONNX models hosted on GitHub releases (zero-setup download)
+ONNX_DOWNLOAD_URLS = {
+    "eres2net_large": "https://github.com/dmarzzz/VoxTerm/releases/download/onnx-models/eres2net_large.onnx",
 }
 
 DEFAULT_MODEL = "eres2net_large"
@@ -80,11 +85,13 @@ class OnnxSpeakerEmbedder:
 
         model_path = self._cache_dir / self.model_name / filename
         if not model_path.exists():
+            model_path = self._try_download(model_path)
+        if not model_path.exists():
             model_path = self._try_export(model_path)
             if not model_path.exists():
                 raise FileNotFoundError(
                     f"ONNX model not found at {model_path}. "
-                    f"Run: python -m scripts.export_onnx --model {self.model_name}"
+                    f"Run: python -m diarization.export_onnx --model {self.model_name}"
                 )
 
         opts = onnxruntime.SessionOptions()
@@ -202,6 +209,22 @@ class OnnxSpeakerEmbedder:
 
         return embedding.astype(np.float32)
 
+    def _try_download(self, target_path: Path) -> Path:
+        """Download pre-exported ONNX model from GitHub releases."""
+        url = ONNX_DOWNLOAD_URLS.get(self.model_name)
+        if not url:
+            return target_path
+        try:
+            import urllib.request
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            log.info("Downloading %s ONNX model...", self.model_name)
+            urllib.request.urlretrieve(url, target_path)
+            log.info("Downloaded to %s", target_path)
+            return target_path
+        except Exception as e:
+            log.warning("ONNX model download failed: %s", e)
+            return target_path
+
     def _try_export(self, target_path: Path) -> Path:
         """Attempt to export the model to ONNX on-the-fly.
 
@@ -210,13 +233,13 @@ class OnnxSpeakerEmbedder:
         the caller should raise FileNotFoundError.
         """
         try:
-            from scripts.export_onnx import export_model
+            from diarization.export_onnx import export_model
             export_model(self.model_name, target_path)
             return target_path
         except ImportError:
             log.warning(
                 "Cannot auto-export ONNX model (speakerlab/torch not available). "
-                "Run: python -m scripts.export_onnx --model %s",
+                "Run: python -m diarization.export_onnx --model %s",
                 self.model_name,
             )
             return target_path

@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from config import DIARIZER_MAX_RESTARTS, DIARIZER_RESTART_WINDOW
-from diarization.ipc import (
+from .ipc import (
     MSG_ERROR, MSG_GET_CENTROID, MSG_GET_COLOR,
     MSG_GET_EMBEDDINGS, MSG_GET_NAME, MSG_GET_NAMES, MSG_GET_STATE,
     MSG_IDENTIFY, MSG_IDENTIFY_MULTI, MSG_IS_MATCHED, MSG_IS_STABLE,
@@ -35,7 +35,7 @@ from diarization.ipc import (
 
 log = logging.getLogger(__name__)
 
-_WORKER_MODULE = "diarization.subprocess_worker"
+_WORKER_MODULE = "audio.diarization.subprocess_worker"
 
 
 
@@ -77,7 +77,7 @@ class DiarizationProxy:
         """Choose the best mode based on available ONNX model."""
         from config import SPEAKER_MODEL_BACKEND, SPEAKER_MODEL_NAME, SPEAKER_MODEL_ONNX_CACHE
         if SPEAKER_MODEL_BACKEND == "onnx":
-            from diarization.onnx_embedder import ONNX_MODELS
+            from .onnx_embedder import ONNX_MODELS
             if SPEAKER_MODEL_NAME in ONNX_MODELS:
                 _, filename, _ = ONNX_MODELS[SPEAKER_MODEL_NAME]
                 onnx_path = SPEAKER_MODEL_ONNX_CACHE / SPEAKER_MODEL_NAME / filename
@@ -109,14 +109,14 @@ class DiarizationProxy:
 
     def _load_direct(self):
         """Load DiarizationEngine in-process with ONNX backend."""
-        from diarization.engine import DiarizationEngine
+        from .engine import DiarizationEngine
         self._engine = DiarizationEngine()
         self._engine.load(backend="onnx")
         log.info("Diarization proxy: direct mode (ONNX, in-process)")
 
     def _spawn(self):
         """Start the subprocess worker."""
-        project_root = str(Path(__file__).parent.parent)
+        project_root = str(Path(__file__).parent.parent.parent)
         self._proc = subprocess.Popen(
             [sys.executable, "-m", _WORKER_MODULE],
             stdin=subprocess.PIPE,
@@ -425,7 +425,7 @@ class DiarizationProxy:
             self._mode = "inprocess"
             self._kill()
 
-        from diarization.engine import DiarizationEngine
+        from .engine import DiarizationEngine
         self._engine = DiarizationEngine()
         try:
             self._engine.load()

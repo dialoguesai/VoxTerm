@@ -7,4 +7,4 @@ if [[ "$1" == "--dictate" || "$1" == "-D" ]]; then
     exec "$DIR/.venv/bin/python3" -m dictation "$@"
 fi
 
-exec "$DIR/.venv/bin/python3" "$DIR/app.py" "$@"
+exec "$DIR/.venv/bin/python3" -m tui.app "$@"

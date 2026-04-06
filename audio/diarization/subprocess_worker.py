@@ -8,7 +8,7 @@ Protocol: reads length-prefixed JSON messages from stdin, writes responses
 to stdout. See ipc.py for details.
 
 Usage:
-    python -m diarization.subprocess_worker
+    python -m audio.diarization.subprocess_worker
 """
 
 from __future__ import annotations
@@ -17,8 +17,9 @@ import os
 import signal
 import sys
 
-# Ensure project root is on path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Only needed when running as a script, not when installed as a package
+if __package__ is None:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Prevent PyTorch from spawning threads that could conflict
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -27,8 +28,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import numpy as np
 
-from diarization.engine import DiarizationEngine
-from diarization.ipc import (
+from audio.diarization.engine import DiarizationEngine
+from audio.diarization.ipc import (
     MSG_ACK, MSG_ERROR, MSG_GET_CENTROID, MSG_GET_COLOR,
     MSG_GET_EMBEDDINGS, MSG_GET_NAME, MSG_GET_NAMES, MSG_GET_STATE,
     MSG_IDENTIFY, MSG_IDENTIFY_MULTI, MSG_IS_MATCHED, MSG_IS_STABLE,

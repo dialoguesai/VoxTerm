@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-from diarization.fbank import compute_fbank
+from audio.diarization.fbank import compute_fbank
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class LanguageIdentifier:
         if not model_path.exists():
             log.warning(
                 "LID ONNX model not found at %s. "
-                "Run: python -m scripts.export_onnx --model %s",
+                "Run: python -m diarization.export_onnx --model %s",
                 model_path, self.model_name,
             )
             return

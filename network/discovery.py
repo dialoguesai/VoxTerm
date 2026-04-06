@@ -37,6 +37,10 @@ class PeerInfo:
     tcp_port: int
     udp_port: int
     in_session: bool
+    group_name: str = ""
+    session_code: str = ""
+    party_color: str = ""
+    app_version: str = ""
     proto_v: int = 1
 
 
@@ -65,6 +69,12 @@ class PeerDiscovery:
         self._tcp_port = tcp_port
         self._udp_port = udp_port
         self._in_session = False
+        self._group_name = ""
+        self._session_code = ""
+        self._party_color = ""
+        # Import version at init time to avoid circular imports in mDNS callbacks
+        from config import VERSION
+        self._app_version = VERSION
 
         self._zeroconf: Zeroconf | None = None
         self._browser: ServiceBrowser | None = None
@@ -102,6 +112,20 @@ class PeerDiscovery:
             self._zeroconf = None
         log.info("mDNS stopped")
 
+    def update_group(self, group_name: str, in_session: bool, session_code: str = "", party_color: str = "") -> None:
+        """Update mDNS TXT record with group name and session status."""
+        self._group_name = group_name
+        self._in_session = in_session
+        self._session_code = session_code
+        self._party_color = party_color
+        if self._zeroconf and self._service_info:
+            new_info = self._build_service_info()
+            try:
+                self._zeroconf.update_service(new_info)
+                self._service_info = new_info
+            except Exception:
+                log.debug("Failed to update mDNS service")
+
     def update_session_status(self, in_session: bool) -> None:
         """Update the mDNS TXT record to reflect session status."""
         self._in_session = in_session
@@ -112,6 +136,12 @@ class PeerDiscovery:
                 self._service_info = new_info
             except Exception:
                 log.debug("Failed to update mDNS service (already unregistered?)")
+
+    def update_port(self, tcp_port: int, udp_port: int = 0) -> None:
+        """Update the advertised TCP/UDP ports."""
+        self._tcp_port = tcp_port
+        if udp_port:
+            self._udp_port = udp_port
 
     def get_visible_peers(self) -> list[PeerInfo]:
         """Return a snapshot of currently visible peers."""
@@ -143,6 +173,10 @@ class PeerDiscovery:
             properties={
                 "node_id": self._node_id,
                 "display_name": self._display_name,
+                "group_name": self._group_name,
+                "session_code": self._session_code,
+                "party_color": self._party_color,
+                "app_version": self._app_version,
                 "in_session": "1" if self._in_session else "0",
                 "proto_v": "1",
                 "tcp_port": str(self._tcp_port),
@@ -220,6 +254,10 @@ class PeerDiscovery:
                 tcp_port=int(props.get(b"tcp_port", str(info.port).encode()).decode()),
                 udp_port=int(props.get(b"udp_port", b"0").decode()),
                 in_session=props.get(b"in_session", b"0") == b"1",
+                group_name=(props.get(b"group_name") or b"").decode("utf-8", errors="replace"),
+                session_code=(props.get(b"session_code") or b"").decode("utf-8", errors="replace"),
+                party_color=(props.get(b"party_color") or b"").decode("utf-8", errors="replace"),
+                app_version=(props.get(b"app_version") or b"").decode("utf-8", errors="replace"),
                 proto_v=int(props.get(b"proto_v", b"1").decode()),
             )
         except (KeyError, ValueError, IndexError) as exc:

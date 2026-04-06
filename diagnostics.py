@@ -21,7 +21,7 @@ from config import CRASH_LOG_MAX_COUNT
 
 # ── crash directory ───────────────────────────────────────────
 
-from paths import CRASH_DIR
+from config import CRASH_DIR
 
 
 def _ensure_crash_dir() -> None:
@@ -211,12 +211,12 @@ def write_crash_dump(
 def _write_app_crash_dump(app, context: str, exc: BaseException | None = None):
     """Gather app state and write crash dump. Called from exception hooks."""
     try:
-        from widgets.waveform import _make_style
+        from tui.widgets.waveform import _make_style
 
         cache = _make_style.cache_info()
 
         try:
-            from widgets.transcript import TranscriptPanel
+            from tui.widgets.transcript import TranscriptPanel
             entry_count = len(app.query_one(TranscriptPanel).get_entries())
         except Exception:
             entry_count = -1

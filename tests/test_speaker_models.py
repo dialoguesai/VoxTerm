@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from speakers.models import SpeakerMeta, SpeakerProfile
+from audio.speakers.models import SpeakerMeta, SpeakerProfile
 
 from config import SPEAKER_EMBEDDING_DIM as EMBEDDING_DIM
 

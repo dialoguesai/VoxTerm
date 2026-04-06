@@ -4,10 +4,10 @@
 Requires: pip install speakerlab torch modelscope
 
 Usage:
-    python -m scripts.export_onnx                        # export default (eres2net_large)
-    python -m scripts.export_onnx --model campplus        # export CAM++
-    python -m scripts.export_onnx --model eres2netv2      # export ERes2NetV2
-    python -m scripts.export_onnx --list                  # list available models
+    python -m diarization.export_onnx                        # export default (eres2net_large)
+    python -m diarization.export_onnx --model campplus        # export CAM++
+    python -m diarization.export_onnx --model eres2netv2      # export ERes2NetV2
+    python -m diarization.export_onnx --list                  # list available models
 """
 
 from __future__ import annotations

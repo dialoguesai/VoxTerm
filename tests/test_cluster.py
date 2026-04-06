@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from diarization.cluster import (
+from audio.diarization.cluster import (
     ahc_cluster,
     auto_cluster,
     cosine_affinity,

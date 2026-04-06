@@ -110,7 +110,7 @@ class DiarizationEngine:
 
         # Load segmentation model for overlap-aware embeddings (optional)
         try:
-            from diarization.segmentation import SpeakerSegmentation
+            from .segmentation import SpeakerSegmentation
             self._segmentation = SpeakerSegmentation()
             if not self._segmentation.is_loaded:
                 self._segmentation = None
@@ -122,7 +122,7 @@ class DiarizationEngine:
     def _load_onnx(self) -> None:
         """Load 3D-Speaker model via ONNX Runtime (no PyTorch)."""
         from config import SPEAKER_MODEL_NAME
-        from diarization.onnx_embedder import OnnxSpeakerEmbedder
+        from .onnx_embedder import OnnxSpeakerEmbedder
 
         self._onnx_embedder = OnnxSpeakerEmbedder(model_name=SPEAKER_MODEL_NAME)
         self._onnx_embedder.load()
@@ -149,9 +149,9 @@ class DiarizationEngine:
         """Load 3D-Speaker model via speakerlab package."""
         import torch
         from config import SPEAKER_MODEL_NAME
-        from diarization.onnx_embedder import ONNX_MODELS
+        from .onnx_embedder import ONNX_MODELS
 
-        from scripts.export_onnx import _find_checkpoint, _create_model, MODEL_CONFIGS
+        from diarization.export_onnx import _find_checkpoint, _create_model, MODEL_CONFIGS
 
         if SPEAKER_MODEL_NAME not in MODEL_CONFIGS:
             raise ValueError(f"Unknown model: {SPEAKER_MODEL_NAME}")
@@ -176,7 +176,7 @@ class DiarizationEngine:
     def _load_pytorch_legacy(self) -> None:
         """Load vendored CAM++ from WeSpeaker (legacy fallback)."""
         import torch
-        from diarization.campplus import CAMPPlus
+        from .campplus import CAMPPlus
 
         model_path = self._ensure_legacy_model()
         self._model = CAMPPlus(feat_dim=80, embed_dim=512, pooling_func="TSTP")
@@ -423,7 +423,7 @@ class DiarizationEngine:
         torchaudio when PyTorch backend is active.
         """
         if self._backend == "onnx":
-            from diarization.fbank import compute_fbank
+            from .fbank import compute_fbank
             feats = compute_fbank(audio, sample_rate=sample_rate)
             return feats if feats.shape[0] > 0 else None
 
@@ -1030,7 +1030,7 @@ class DiarizationEngine:
             CLUSTER_AHC_MAX_SAMPLES, CLUSTER_AHC_THRESHOLD,
             CLUSTER_SPECTRAL_PVAL_BETA,
         )
-        from diarization.cluster import auto_cluster
+        from .cluster import auto_cluster
 
         # Collect all segment embeddings with their speaker assignments
         all_embs: list[np.ndarray] = []

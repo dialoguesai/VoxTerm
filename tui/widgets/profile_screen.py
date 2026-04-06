@@ -9,7 +9,7 @@ from textual.widgets.option_list import Option
 from textual.binding import Binding
 from textual.screen import ModalScreen
 
-from speakers.models import SpeakerMeta
+from audio.speakers.models import SpeakerMeta
 
 
 def _format_duration(seconds: float) -> str:

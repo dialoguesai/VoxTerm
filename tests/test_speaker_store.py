@@ -7,7 +7,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from speakers.store import SpeakerStore
+from audio.speakers.store import SpeakerStore
 
 
 class TestSpeakerStore:
@@ -158,7 +158,7 @@ class TestSpeakerStore:
     def test_backup_permissions(self, in_memory_store: SpeakerStore, tmp_path):
         """Backup files should be 0o600, backup directory should be 0o700."""
         backup_dir = tmp_path / ".backups"
-        with patch("speakers.store.BACKUP_DIR", backup_dir):
+        with patch("audio.speakers.store.BACKUP_DIR", backup_dir):
             in_memory_store.backup()
 
         assert backup_dir.exists()
@@ -180,7 +180,7 @@ class TestSpeakerStore:
         export_path = tmp_path / "exported.db"
 
         with patch.object(Path, "chmod", side_effect=OSError("permission denied")):
-            with caplog.at_level(logging.WARNING, logger="speakers.store"):
+            with caplog.at_level(logging.WARNING, logger="audio.speakers.store"):
                 in_memory_store.export_db(export_path)
 
         assert export_path.exists()
@@ -189,7 +189,7 @@ class TestSpeakerStore:
     def test_backup_retightens_directory_on_early_return(self, in_memory_store: SpeakerStore, tmp_path):
         """Even when today's backup exists, directory permissions are re-tightened."""
         backup_dir = tmp_path / ".backups"
-        with patch("speakers.store.BACKUP_DIR", backup_dir):
+        with patch("audio.speakers.store.BACKUP_DIR", backup_dir):
             # First backup creates the file
             in_memory_store.backup()
             # Loosen directory permissions to simulate external change

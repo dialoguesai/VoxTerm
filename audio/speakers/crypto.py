@@ -175,7 +175,7 @@ def _file_key_path() -> Path:
     key_dir = os.getenv("VOXTERM_KEY_DIR")
     if key_dir:
         return Path(key_dir) / ".keyfile"
-    from paths import DB_DIR
+    from config import DB_DIR
     return DB_DIR / ".keyfile"
 
 
