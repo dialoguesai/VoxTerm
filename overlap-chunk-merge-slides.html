@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Overlapping-Chunk LocalAgreement — VoxTerm PR #34</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --border: #1e1e2e;
+    --text: #c8c8d0;
+    --dim: #666680;
+    --accent: #7b68ee;
+    --green: #50fa7b;
+    --red: #ff5555;
+    --yellow: #f1fa8c;
+    --cyan: #8be9fd;
+    --orange: #ffb86c;
+    --pink: #ff79c6;
+    --mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
+    --sans: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  .slide {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    width: 100vw;
+    padding: 60px 80px;
+    animation: fadeIn 0.3s ease;
+  }
+
+  .slide.active { display: flex; }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  h1 {
+    font-size: 3.2rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    margin-bottom: 16px;
+    background: linear-gradient(135deg, var(--accent), var(--cyan));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  h2 {
+    font-size: 2.2rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 32px;
+    color: var(--accent);
+  }
+
+  .subtitle {
+    font-size: 1.3rem;
+    color: var(--dim);
+    margin-bottom: 40px;
+  }
+
+  p, li {
+    font-size: 1.15rem;
+    line-height: 1.7;
+    max-width: 900px;
+  }
+
+  ul {
+    list-style: none;
+    margin: 0 auto;
+    max-width: 900px;
+  }
+
+  ul li {
+    padding: 8px 0;
+    padding-left: 28px;
+    position: relative;
+  }
+
+  ul li::before {
+    content: '›';
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 1.4rem;
+  }
+
+  .code-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    font-family: var(--mono);
+    font-size: 0.95rem;
+    line-height: 1.8;
+    max-width: 900px;
+    width: 100%;
+    overflow-x: auto;
+    margin: 20px 0;
+    white-space: pre;
+  }
+
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 40px;
+    max-width: 960px;
+    width: 100%;
+    margin: 20px 0;
+  }
+
+  .timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    font-family: var(--mono);
+    font-size: 0.92rem;
+  }
+
+  .timeline-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .timeline-label {
+    width: 90px;
+    text-align: right;
+    color: var(--dim);
+    flex-shrink: 0;
+    font-size: 0.85rem;
+  }
+
+  .timeline-bar {
+    display: flex;
+    height: 40px;
+    border-radius: 6px;
+    overflow: hidden;
+    flex: 1;
+    position: relative;
+  }
+
+  .bar-segment {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 10px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .committed { background: rgba(80, 250, 123, 0.2); color: var(--green); border: 1px solid rgba(80, 250, 123, 0.3); }
+  .pending { background: rgba(241, 250, 140, 0.15); color: var(--yellow); border: 1px solid rgba(241, 250, 140, 0.25); }
+  .new-audio { background: rgba(139, 233, 253, 0.12); color: var(--cyan); border: 1px solid rgba(139, 233, 253, 0.2); }
+  .trimmed { background: rgba(255, 85, 85, 0.1); color: var(--red); border: 1px dashed rgba(255, 85, 85, 0.3); }
+  .agreed { background: rgba(80, 250, 123, 0.35); color: var(--green); border: 1px solid rgba(80, 250, 123, 0.5); font-weight: 600; }
+
+  .legend {
+    display: flex;
+    gap: 24px;
+    margin-top: 20px;
+    font-size: 0.85rem;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+  }
+
+  .vs-box {
+    display: flex;
+    gap: 40px;
+    max-width: 900px;
+    width: 100%;
+    margin: 24px 0;
+  }
+
+  .vs-col {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+  }
+
+  .vs-col h3 {
+    font-size: 1.1rem;
+    margin-bottom: 16px;
+    font-weight: 600;
+  }
+
+  .vs-col.old h3 { color: var(--red); }
+  .vs-col.new h3 { color: var(--green); }
+
+  .vs-col ul li { font-size: 1rem; padding: 5px 0 5px 24px; }
+
+  .highlight { color: var(--accent); font-weight: 600; }
+  .g { color: var(--green); }
+  .r { color: var(--red); }
+  .y { color: var(--yellow); }
+  .c { color: var(--cyan); }
+  .o { color: var(--orange); }
+  .p { color: var(--pink); }
+
+  .nav {
+    position: fixed;
+    bottom: 28px;
+    right: 36px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font-size: 0.85rem;
+    color: var(--dim);
+    z-index: 100;
+  }
+
+  .nav button {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    transition: all 0.15s;
+  }
+
+  .nav button:hover {
+    background: var(--border);
+    border-color: var(--accent);
+  }
+
+  .progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--cyan));
+    transition: width 0.3s ease;
+    z-index: 100;
+  }
+
+  .step-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    max-width: 900px;
+    width: 100%;
+    margin: 16px 0;
+  }
+
+  .step-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 22px;
+  }
+
+  .step-card .step-num {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    text-align: center;
+    line-height: 26px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+
+  .step-card h4 {
+    font-size: 1rem;
+    margin-bottom: 8px;
+    color: var(--text);
+  }
+
+  .step-card p {
+    font-size: 0.9rem;
+    color: var(--dim);
+    line-height: 1.5;
+  }
+
+  .config-table {
+    width: 100%;
+    max-width: 700px;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 1rem;
+  }
+
+  .config-table th {
+    text-align: left;
+    color: var(--accent);
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+  }
+
+  .config-table td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .config-table td:first-child {
+    font-family: var(--mono);
+    color: var(--cyan);
+    font-size: 0.9rem;
+  }
+
+  .config-table td:nth-child(2) {
+    font-family: var(--mono);
+    color: var(--orange);
+  }
+
+  .file-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    max-width: 900px;
+    width: 100%;
+    margin: 16px 0;
+  }
+
+  .file-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+  }
+
+  .file-item .fname { color: var(--cyan); }
+  .file-item .fdesc { color: var(--dim); font-family: var(--sans); font-size: 0.8rem; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<!-- Slide 1: Title -->
+<div class="slide active" id="s1">
+  <h1>Overlapping-Chunk LocalAgreement</h1>
+  <p class="subtitle">A consensus-based transcription pipeline for VoxTerm</p>
+  <p style="color: var(--dim); font-size: 0.95rem; margin-top: 24px;">
+    Adapted from <span class="highlight">vbuterin/stt-daemon</span> &mdash;
+    based on the whisper-streaming algorithm by Maciej Pi&oacute;ro (UFAL)
+  </p>
+  <p style="color: var(--dim); font-size: 0.85rem; margin-top: 40px;">
+    PR #34 &middot; VoxTerm &middot; press <kbd style="background:var(--surface);padding:2px 8px;border-radius:4px;border:1px solid var(--border);">&rarr;</kbd> or click to advance
+  </p>
+</div>
+
+<!-- Slide 2: The Problem -->
+<div class="slide" id="s2">
+  <h2>The Problem</h2>
+  <div class="vs-box">
+    <div class="vs-col old">
+      <h3>Fire-and-Forget (before)</h3>
+      <ul>
+        <li>Buffer audio until silence</li>
+        <li>Transcribe the entire chunk once</li>
+        <li>Clear buffer, display result</li>
+        <li>High latency &mdash; nothing shows until silence</li>
+        <li>Hallucinated tail words persist in output</li>
+      </ul>
+    </div>
+    <div class="vs-col new">
+      <h3>LocalAgreement (after)</h3>
+      <ul>
+        <li>Transcribe every <span class="o">1.5s</span> in overlapping windows</li>
+        <li>Only commit words two ticks agree on</li>
+        <li>Trim buffer to last committed word</li>
+        <li>Words appear incrementally as confirmed</li>
+        <li>Hallucinated tails filtered automatically</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 3: Core Concept -->
+<div class="slide" id="s3">
+  <h2>Core Idea: Two Ticks Must Agree</h2>
+  <p style="margin-bottom: 28px; text-align: center; max-width: 700px;">
+    A word is <span class="g">committed</span> to final output only when the
+    <span class="y">previous tick's hypothesis</span> and the
+    <span class="c">current tick's hypothesis</span> agree on it at the front.
+  </p>
+  <div class="diagram">
+    <div class="timeline">
+      <div class="timeline-row">
+        <span class="timeline-label" style="color:var(--yellow)">Tick 1</span>
+        <div class="timeline-bar">
+          <div class="bar-segment pending" style="flex:3">The quick brown</div>
+          <div class="bar-segment new-audio" style="flex:2; opacity:0.4">fox jum...</div>
+        </div>
+      </div>
+      <div class="timeline-row">
+        <span class="timeline-label" style="color:var(--cyan)">Tick 2</span>
+        <div class="timeline-bar">
+          <div class="bar-segment agreed" style="flex:3">The quick brown</div>
+          <div class="bar-segment pending" style="flex:3">fox jumps over</div>
+        </div>
+      </div>
+      <div class="timeline-row">
+        <span class="timeline-label" style="color:var(--green)">Output</span>
+        <div class="timeline-bar">
+          <div class="bar-segment committed" style="flex:3">The quick brown</div>
+          <div class="bar-segment" style="flex:3; color:var(--dim); font-size:0.8rem; display:flex; align-items:center; padding-left:12px;">[ fox jumps over ]</div>
+        </div>
+      </div>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-swatch" style="background:rgba(80,250,123,0.35)"></div> Agreed &amp; committed</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:rgba(241,250,140,0.15)"></div> Pending hypothesis</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:rgba(139,233,253,0.12)"></div> Unconfirmed tail</div>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 4: The Algorithm Step by Step -->
+<div class="slide" id="s4">
+  <h2>Each Tick: Step by Step</h2>
+  <div class="step-grid">
+    <div class="step-card">
+      <div class="step-num">1</div>
+      <h4>Read audio buffer</h4>
+      <p>Non-destructive read &mdash; the buffer is a sliding window, not cleared. <code style="color:var(--cyan)">get_audio()</code> returns accumulated audio since last trim.</p>
+    </div>
+    <div class="step-card">
+      <div class="step-num">2</div>
+      <h4>Transcribe</h4>
+      <p>MLX Qwen3-ASR transcribes the window. Produces a new word sequence (the hypothesis for this tick).</p>
+    </div>
+    <div class="step-card">
+      <div class="step-num">3</div>
+      <h4>Strip re-transcribed prefix</h4>
+      <p>Since trimming is approximate, the transcriber may re-produce committed words. <code style="color:var(--cyan)">_strip_retranscribed()</code> detects and removes them.</p>
+    </div>
+    <div class="step-card">
+      <div class="step-num">4</div>
+      <h4>Agreement &amp; commit</h4>
+      <p>Compare with previous hypothesis. The <span class="g">longest common prefix</span> is committed. Remaining words become the new hypothesis.</p>
+    </div>
+    <div class="step-card">
+      <div class="step-num">5</div>
+      <h4>Trim audio buffer</h4>
+      <p><code style="color:var(--cyan)">trim_front()</code> slides the window forward past committed audio, keeping a <span class="o">0.5s safety margin</span>.</p>
+    </div>
+    <div class="step-card">
+      <div class="step-num">6</div>
+      <h4>Display</h4>
+      <p>Committed words are final. Pending hypothesis shown as provisional (can change next tick).</p>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 5: Sliding Window Visualization -->
+<div class="slide" id="s5">
+  <h2>Sliding Window &mdash; Buffer Never Fully Clears</h2>
+  <div class="diagram">
+    <div class="timeline" style="gap: 22px;">
+      <div class="timeline-row">
+        <span class="timeline-label">t = 0s</span>
+        <div class="timeline-bar">
+          <div class="bar-segment new-audio" style="flex:3">&lsaquo; recording starts &rsaquo;</div>
+        </div>
+      </div>
+      <div class="timeline-row">
+        <span class="timeline-label">t = 1.5s</span>
+        <div class="timeline-bar">
+          <div class="bar-segment new-audio" style="flex:6">|&mdash;&mdash; tick 1 transcribes all &mdash;&mdash;|</div>
+        </div>
+      </div>
+      <div class="timeline-row">
+        <span class="timeline-label">t = 3.0s</span>
+        <div class="timeline-bar">
+          <div class="bar-segment committed" style="flex:3">committed</div>
+          <div class="bar-segment new-audio" style="flex:5">|&mdash; tick 2 transcribes this &mdash;|</div>
+        </div>
+      </div>
+      <div class="timeline-row">
+        <span class="timeline-label">after trim</span>
+        <div class="timeline-bar">
+          <div class="bar-segment trimmed" style="flex:2.5; opacity:0.5">trimmed</div>
+          <div class="bar-segment new-audio" style="flex:5.5; border-left: 2px solid var(--green);">remaining buffer (overlap + new)</div>
+        </div>
+      </div>
+      <div class="timeline-row">
+        <span class="timeline-label">t = 4.5s</span>
+        <div class="timeline-bar">
+          <div class="bar-segment committed" style="flex:2">overlap</div>
+          <div class="bar-segment new-audio" style="flex:4">|&mdash; tick 3 transcribes this &mdash;|</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p style="color: var(--dim); font-size: 0.95rem; margin-top: 12px; text-align: center;">
+    The 0.5s safety margin ensures the transcriber has context overlap between ticks.
+  </p>
+</div>
+
+<!-- Slide 6: Silence & Flush -->
+<div class="slide" id="s6">
+  <h2>Silence Handling &amp; Flush</h2>
+  <ul>
+    <li><span class="o">Speech detected</span> &rarr; ticks fire every 1.5s, agreement runs</li>
+    <li><span class="y">Extended silence (&gt; 1.0s)</span> with pending hypothesis &rarr; <code style="color:var(--pink)">flush_all()</code> force-commits remaining words</li>
+    <li><span class="y">Extended silence</span> with no pending &rarr; reset state, stop buffering</li>
+    <li><span class="r">Recording stops</span> &rarr; flush any remaining hypothesis before final output</li>
+  </ul>
+  <div class="code-block" style="margin-top: 28px;">
+<span class="c"># Silence flush logic in _process_audio_inner()</span>
+<span class="r">if</span> silence_duration > <span class="o">AGREEMENT_FLUSH_SILENCE</span>:     <span class="dim"># 1.0s</span>
+    <span class="r">if</span> self._agreement.has_hypothesis:
+        self._flush_agreement()            <span class="dim"># commit remaining</span>
+    <span class="r">else</span>:
+        self.audio_buffer.clear()          <span class="dim"># end of utterance</span>
+        self._had_speech = <span class="o">False</span>
+        self._agreement.reset()</div>
+</div>
+
+<!-- Slide 7: Re-transcription Stripping -->
+<div class="slide" id="s7">
+  <h2>Handling Approximate Trims</h2>
+  <p style="margin-bottom: 24px; text-align: center; max-width: 750px;">
+    Audio trimming is sample-based, not word-boundary-aligned. The transcriber may
+    re-produce words that were already committed. <code style="color:var(--cyan)">_strip_retranscribed()</code> handles this.
+  </p>
+  <div class="diagram" style="max-width: 820px;">
+    <div class="timeline" style="gap: 16px;">
+      <div class="timeline-row">
+        <span class="timeline-label" style="width:120px">Committed</span>
+        <div class="timeline-bar">
+          <div class="bar-segment committed" style="flex:1">The quick brown</div>
+        </div>
+      </div>
+      <div class="timeline-row">
+        <span class="timeline-label" style="width:120px; color:var(--red)">Raw tick 3</span>
+        <div class="timeline-bar">
+          <div class="bar-segment trimmed" style="flex:2">quick brown</div>
+          <div class="bar-segment new-audio" style="flex:3">fox jumps over the</div>
+        </div>
+      </div>
+      <div class="timeline-row">
+        <span class="timeline-label" style="width:120px; color:var(--green)">After strip</span>
+        <div class="timeline-bar">
+          <div class="bar-segment" style="flex:2; opacity: 0;"></div>
+          <div class="bar-segment new-audio" style="flex:3">fox jumps over the</div>
+        </div>
+      </div>
+    </div>
+    <p style="color: var(--dim); font-size: 0.85rem; margin-top: 16px;">
+      overlap_ref keeps the last ~20 committed words. Longest matching suffix of the ref is stripped from the new output.
+    </p>
+  </div>
+</div>
+
+<!-- Slide 8: Configuration -->
+<div class="slide" id="s8">
+  <h2>Configuration</h2>
+  <table class="config-table">
+    <tr><th>Parameter</th><th>Value</th><th>Purpose</th></tr>
+    <tr>
+      <td>AGREEMENT_TICK_SECONDS</td>
+      <td>1.5</td>
+      <td>Interval between transcription ticks</td>
+    </tr>
+    <tr>
+      <td>AGREEMENT_MIN_AUDIO</td>
+      <td>0.8</td>
+      <td>Min buffered audio before first tick</td>
+    </tr>
+    <tr>
+      <td>AGREEMENT_FLUSH_SILENCE</td>
+      <td>1.0</td>
+      <td>Silence duration to force-commit pending words</td>
+    </tr>
+    <tr>
+      <td style="color: var(--dim)">Trim safety margin</td>
+      <td>0.5</td>
+      <td>Seconds kept after trim for context overlap</td>
+    </tr>
+    <tr>
+      <td style="color: var(--dim)">Overlap ref window</td>
+      <td>20</td>
+      <td>Max committed words retained for prefix stripping</td>
+    </tr>
+  </table>
+</div>
+
+<!-- Slide 9: Files Changed -->
+<div class="slide" id="s9">
+  <h2>Files Changed</h2>
+  <div class="file-list">
+    <div class="file-item">
+      <div class="fname">transcriber/agreement.py</div>
+      <div class="fdesc">AgreementState: tick(), flush_all(), reset(), trim estimation, prefix stripping</div>
+    </div>
+    <div class="file-item">
+      <div class="fname">audio/buffer.py</div>
+      <div class="fdesc">get_audio() (non-destructive read), trim_front() (slide window forward)</div>
+    </div>
+    <div class="file-item">
+      <div class="fname">config.py</div>
+      <div class="fdesc">AGREEMENT_TICK_SECONDS, AGREEMENT_MIN_AUDIO, AGREEMENT_FLUSH_SILENCE</div>
+    </div>
+    <div class="file-item">
+      <div class="fname">app.py</div>
+      <div class="fdesc">_trigger_agreement_tick, _transcribe_audio_tick, _flush_agreement pipeline</div>
+    </div>
+    <div class="file-item">
+      <div class="fname">tests/test_agreement.py</div>
+      <div class="fdesc">20 tests covering agreement, trim, flush, prefix stripping, edge cases</div>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 10: Summary -->
+<div class="slide" id="s10">
+  <h2>Summary</h2>
+  <ul style="font-size: 1.2rem;">
+    <li><span class="g">Lower latency</span> &mdash; words appear as they're confirmed, not after silence</li>
+    <li><span class="g">Fewer hallucinations</span> &mdash; speculative tail words filtered by consensus</li>
+    <li><span class="g">Sliding window</span> &mdash; buffer never cleared entirely, always has context</li>
+    <li><span class="g">Graceful flush</span> &mdash; silence or stop commits remaining hypothesis</li>
+    <li><span class="g">Robust to imprecise trims</span> &mdash; re-transcribed prefixes detected and stripped</li>
+  </ul>
+  <p style="margin-top: 40px; color: var(--dim); font-size: 0.95rem;">
+    Based on <span class="highlight">LocalAgreement</span> from whisper-streaming (Pi&oacute;ro, UFAL) via vbuterin/stt-daemon
+  </p>
+</div>
+
+<div class="nav">
+  <button onclick="prev()">&larr;</button>
+  <span id="counter">1 / 10</span>
+  <button onclick="next()">&rarr;</button>
+</div>
+
+<script>
+const slides = document.querySelectorAll('.slide');
+const total = slides.length;
+let current = 0;
+
+function show(n) {
+  slides[current].classList.remove('active');
+  current = Math.max(0, Math.min(n, total - 1));
+  slides[current].classList.add('active');
+  document.getElementById('counter').textContent = `${current + 1} / ${total}`;
+  document.getElementById('progress').style.width = `${((current + 1) / total) * 100}%`;
+}
+
+function next() { show(current + 1); }
+function prev() { show(current - 1); }
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+  if (e.key === 'Home') { e.preventDefault(); show(0); }
+  if (e.key === 'End') { e.preventDefault(); show(total - 1); }
+});
+
+show(0);
+</script>
+
+</body>
+</html>
