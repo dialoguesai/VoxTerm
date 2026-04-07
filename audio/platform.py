@@ -40,6 +40,9 @@ def get_output_device_info() -> dict:
     if platform == Platform.LINUX:
         return _get_output_device_info_linux(fallback, _BT_KEYWORDS)
 
+    if platform == Platform.WINDOWS:
+        return _get_output_device_info_windows(fallback, _BT_KEYWORDS)
+
     if platform != Platform.MACOS:
         return fallback
 
@@ -95,6 +98,29 @@ def get_output_device_info() -> dict:
         is_bt = any(kw in name_lower for kw in _BT_KEYWORDS)
 
     return {"name": device_name, "is_bluetooth": is_bt}
+
+
+def _get_output_device_info_windows(fallback: dict, bt_keywords: tuple) -> dict:
+    """Get output device info on Windows via sounddevice / WASAPI.
+
+    The default output device name on Windows already encodes Bluetooth
+    info in many drivers (e.g. "Headphones (AirPods Pro)" or
+    "Speakers (2- Bose QC35)"), so a name-based check is sufficient.
+    """
+    try:
+        import sounddevice as sd
+        dev = sd.query_devices(kind="output")
+    except Exception:
+        return fallback
+
+    name = ""
+    if isinstance(dev, dict):
+        name = dev.get("name", "") or ""
+    if not name:
+        return fallback
+
+    is_bt = any(kw in name.lower() for kw in bt_keywords)
+    return {"name": name, "is_bluetooth": is_bt}
 
 
 def _get_output_device_info_linux(fallback: dict, bt_keywords: tuple) -> dict:

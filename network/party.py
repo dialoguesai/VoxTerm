@@ -76,6 +76,21 @@ def _party_color(session_code: str) -> tuple[str, str]:
     return PARTY_COLORS[h]
 
 
+def _detect_username() -> str:
+    """Best-effort current username. ``os.getlogin`` raises on Windows when
+    there is no controlling terminal (e.g. service / IDE / detached TUI), so
+    fall back to environment variables and finally a generic placeholder."""
+    try:
+        return os.getlogin()
+    except (OSError, AttributeError):
+        pass
+    for env_var in ("USER", "USERNAME", "LOGNAME"):
+        val = os.environ.get(env_var)
+        if val:
+            return val
+    return "voxterm"
+
+
 class PartyManager:
     """Encapsulates all P2P/party-mode state and logic.
 
@@ -108,7 +123,7 @@ class PartyManager:
 
         # Identity
         self._node_id: str = ""
-        self._display_name: str = config.get("p2p_display_name") or os.getlogin()
+        self._display_name: str = config.get("p2p_display_name") or _detect_username()
 
         # State
         self._state = PartyState.SOLO

@@ -43,6 +43,22 @@ elif sys.platform.startswith("linux"):
     QWEN3_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
     WHISPER_MODEL = None
     FASTER_WHISPER_MODELS = {"fw-tiny", "fw-base", "fw-small", "fw-medium", "fw-large-v3", "fw-distil-large-v3"}
+elif sys.platform == "win32":
+    # Windows: faster-whisper only (CTranslate2 ships pure-Python wheels for
+    # Windows CPU). Qwen3-ASR is intentionally skipped to avoid pulling in a
+    # 500MB+ torch wheel + the qwen-asr package for an MVP demo.
+    DEFAULT_MODEL = "fw-small"
+    AVAILABLE_MODELS = {
+        "fw-tiny":           "tiny",
+        "fw-base":           "base",
+        "fw-small":          "small",
+        "fw-medium":         "medium",
+        "fw-large-v3":       "large-v3",
+        "fw-distil-large-v3": "distil-large-v3",
+    }
+    QWEN3_MODELS: set[str] = set()
+    WHISPER_MODEL = None
+    FASTER_WHISPER_MODELS = {"fw-tiny", "fw-base", "fw-small", "fw-medium", "fw-large-v3", "fw-distil-large-v3"}
 else:
     raise RuntimeError(f"Unsupported platform: {sys.platform}")
 
@@ -107,6 +123,7 @@ CRASH_LOG_MAX_COUNT = 50      # max crash logs to keep (rotated on startup)
 # Dictation mode
 DICTATION_HOTKEY_MACOS = ("cmd", "shift", "d")
 DICTATION_HOTKEY_LINUX = ("super", "shift", "d")
+DICTATION_HOTKEY_WINDOWS = ("ctrl", "shift", "d")
 DICTATION_INTER_KEY_DELAY_MS = 1
 
 # Waveform

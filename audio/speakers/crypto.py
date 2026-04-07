@@ -209,7 +209,10 @@ def _file_key_set(key: bytes) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".keyfile_tmp_")
         try:
-            os.fchmod(fd, 0o600)
+            # os.fchmod is Unix-only. On Windows we rely on the parent dir
+            # (%LOCALAPPDATA%\voxterm) being user-private by default ACLs.
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
             os.write(fd, key)
             os.fsync(fd)
         finally:

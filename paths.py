@@ -2,6 +2,7 @@
 
 On macOS (darwin): uses ~/Documents/voxterm and ~/Library/Application Support/voxterm.
 On Linux: uses XDG Base Directory paths ($XDG_DATA_HOME, $XDG_CONFIG_HOME).
+On Windows: uses %LOCALAPPDATA%/voxterm for app data and ~/Documents/voxterm for sessions.
 """
 
 import os
@@ -29,6 +30,16 @@ elif sys.platform.startswith("linux"):
     BIN_DIR = DATA_DIR / ".bin"
     CRASH_DIR = DATA_DIR / ".crashes"
     STATE_FILE = CONFIG_DIR / "state.json"
+elif sys.platform == "win32":
+    # Windows — %LOCALAPPDATA% for app data (private to user by default ACLs),
+    # user Documents for human-visible session files.
+    _localappdata = Path(os.environ.get("LOCALAPPDATA", _home / "AppData" / "Local"))
+    DATA_DIR = _localappdata / "voxterm"
+    SESSIONS_DIR = _home / "Documents" / "voxterm"
+    LIVE_DIR = SESSIONS_DIR / ".live"
+    BIN_DIR = DATA_DIR / "bin"
+    CRASH_DIR = DATA_DIR / "crashes"
+    STATE_FILE = SESSIONS_DIR / ".state.json"
 else:
     raise RuntimeError(f"Unsupported platform: {sys.platform}")
 

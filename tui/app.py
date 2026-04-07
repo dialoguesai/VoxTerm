@@ -79,6 +79,10 @@ def _clipboard_cmd() -> list[str] | None:
     """Return the clipboard copy command for this platform."""
     if sys.platform == "darwin":
         return ["pbcopy"]
+    if sys.platform == "win32":
+        # clip.exe is built into every Windows since XP and handles UTF-8
+        # on Windows 10+. Good enough for the export-transcript flow.
+        return ["clip"]
     if shutil.which("xclip"):
         return ["xclip", "-selection", "clipboard"]
     if shutil.which("xsel"):
@@ -696,10 +700,19 @@ class VoxTerm(App):
         """Prevent memory fragmentation during long sessions + memory watchdog."""
         gc.collect()
 
-        # Memory watchdog: warn at 4GB, crash-dump at 6GB
-        import resource as _resource
-        rss_bytes = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
-        rss_mb = rss_bytes / (1024 * 1024)
+        # Memory watchdog: warn at 4GB, crash-dump at 6GB.
+        # `resource` is Unix-only — use psutil on Windows.
+        try:
+            import resource as _resource
+            rss_bytes = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            # macOS reports bytes, Linux reports kilobytes
+            rss_mb = rss_bytes / (1024 * 1024) if sys.platform == "darwin" else rss_bytes / 1024
+        except ImportError:
+            try:
+                import psutil
+                rss_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+            except Exception:
+                return  # can't measure — skip the watchdog this tick
         if rss_mb > 6000:
             self._write_crash_dump(f"memory_watchdog: {rss_mb:.0f}MB")
             self.query_one(TranscriptPanel).system_message(
@@ -1227,25 +1240,29 @@ class VoxTerm(App):
                 # because multiprocessing.util.spawnv_passfds calls
                 # _posixsubprocess.fork_exec directly, bypassing Popen.
                 # Patch at the C-level entry point to sanitize fds_to_keep.
-                import _posixsubprocess
-                if not getattr(_posixsubprocess, '_vt_patched', False):
-                    _orig_fe = _posixsubprocess.fork_exec
-                    def _safe_fork_exec(*args):
-                        largs = list(args)
-                        fds = largs[3]  # fds_to_keep (sorted tuple of ints)
-                        if fds:
-                            clean = tuple(
-                                fd for fd in fds
-                                if isinstance(fd, int) and 0 <= fd <= 2**31
-                            )
-                            largs[3] = clean
-                        try:
-                            return _orig_fe(*largs)
-                        except ValueError:
-                            largs[3] = ()
-                            return _orig_fe(*largs)
-                    _posixsubprocess.fork_exec = _safe_fork_exec
-                    _posixsubprocess._vt_patched = True
+                #
+                # _posixsubprocess is Unix-only — Windows uses _winapi instead
+                # and doesn't suffer from this fork-fd inheritance issue.
+                if sys.platform != "win32":
+                    import _posixsubprocess
+                    if not getattr(_posixsubprocess, '_vt_patched', False):
+                        _orig_fe = _posixsubprocess.fork_exec
+                        def _safe_fork_exec(*args):
+                            largs = list(args)
+                            fds = largs[3]  # fds_to_keep (sorted tuple of ints)
+                            if fds:
+                                clean = tuple(
+                                    fd for fd in fds
+                                    if isinstance(fd, int) and 0 <= fd <= 2**31
+                                )
+                                largs[3] = clean
+                            try:
+                                return _orig_fe(*largs)
+                            except ValueError:
+                                largs[3] = ()
+                                return _orig_fe(*largs)
+                        _posixsubprocess.fork_exec = _safe_fork_exec
+                        _posixsubprocess._vt_patched = True
 
                 model_repo = AVAILABLE_MODELS[self._model_name]
                 if self._model_name in QWEN3_MODELS:
@@ -1853,14 +1870,17 @@ class VoxTerm(App):
 
         # Kill the resource tracker process if it somehow spawned —
         # prevents leaked-semaphore warning printed to terminal after exit.
-        try:
-            import multiprocessing.resource_tracker as _rt
-            pid = getattr(_rt._resource_tracker, '_pid', None)
-            if pid:
-                import signal
-                os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
+        # multiprocessing.resource_tracker is Unix-only, so this whole block
+        # is a no-op on Windows.
+        if sys.platform != "win32":
+            try:
+                import multiprocessing.resource_tracker as _rt
+                pid = getattr(_rt._resource_tracker, '_pid', None)
+                if pid:
+                    import signal
+                    os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
         try:
             sys.stderr.close()
         except Exception:

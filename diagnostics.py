@@ -10,12 +10,17 @@ import faulthandler
 import gc
 import json
 import os
-import resource
 import signal
 import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+# `resource` is Unix-only; on Windows we fall back to psutil for RSS.
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - Windows
+    _resource = None
 
 from config import CRASH_LOG_MAX_COUNT
 
@@ -26,6 +31,24 @@ from paths import CRASH_DIR
 
 def _ensure_crash_dir() -> None:
     CRASH_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _get_rss_mb() -> float:
+    """Return resident set size in MB. Uses ``resource`` on Unix, psutil on Windows."""
+    if _resource is not None:
+        try:
+            rss_bytes = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            # macOS reports bytes, Linux reports kilobytes — normalize to MB
+            if sys.platform == "darwin":
+                return rss_bytes / (1024 * 1024)
+            return rss_bytes / 1024
+        except Exception:
+            return -1.0
+    try:
+        import psutil
+        return psutil.Process().memory_info().rss / (1024 * 1024)
+    except Exception:
+        return -1.0
 
 
 # ── faulthandler ──────────────────────────────────────────────
@@ -54,7 +77,11 @@ def setup_signal_handlers() -> None:
     """Install a SIGSEGV handler that restores terminal settings before dying.
 
     Must be called after the terminal is configured but before app.run().
+    On Windows this is a no-op: SIGSEGV doesn't exist and termios is Unix-only.
     """
+    if sys.platform == "win32":
+        return
+
     global _saved_termios
 
     try:
@@ -173,8 +200,7 @@ def write_crash_dump(
 
         lines.append("")
         lines.append("-- memory --")
-        rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        rss_mb = rss_bytes / (1024 * 1024)
+        rss_mb = _get_rss_mb()
         lines.append(f"peak_rss_mb:      {rss_mb:.1f}")
         for key in (
             "audio_buf_dur", "style_cache", "transcript_entries",
