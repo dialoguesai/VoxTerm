@@ -15,7 +15,15 @@ $ErrorActionPreference = "Stop"
 
 $Repo       = "dmarzzz/VoxTerm"
 $RepoUrl    = "https://github.com/$Repo"
-$InstallDir = Join-Path $env:LOCALAPPDATA "voxterm"
+
+# Resolve %LOCALAPPDATA% with fallback for environments where the env var
+# is missing or empty (some service accounts / managed Windows installs).
+$LocalAppData = $env:LOCALAPPDATA
+if (-not $LocalAppData) {
+    $LocalAppData = Join-Path $env:USERPROFILE "AppData\Local"
+}
+
+$InstallDir = Join-Path $LocalAppData "voxterm"
 $BinDir     = Join-Path $InstallDir "bin"
 $VenvDir    = Join-Path $InstallDir ".venv"
 $VenvPy     = Join-Path $VenvDir "Scripts\python.exe"
@@ -46,14 +54,18 @@ Options:
 if ($Uninstall) {
     Write-Host ""
     Write-Host "Uninstalling VoxTerm..." -ForegroundColor White
+    $removed = $false
     if (Test-Path $InstallDir) {
         Remove-Item -Recurse -Force $InstallDir
         OK "removed $InstallDir"
+        $removed = $true
     } else {
         Warn "no install directory at $InstallDir"
     }
     Write-Host ""
-    Write-Host "Voice profile data at $InstallDir was removed." -ForegroundColor DarkGray
+    if ($removed) {
+        Write-Host "App data + voice profiles removed from $InstallDir." -ForegroundColor DarkGray
+    }
     Write-Host "Session transcripts in Documents\voxterm were preserved." -ForegroundColor DarkGray
     Write-Host ""
     exit 0
@@ -159,14 +171,16 @@ try {
         Move-Item $VenvDir $preservedVenv
     }
 
-    # Wipe old install dir (but keep parent — %LOCALAPPDATA%\voxterm\ may
-    # contain unrelated subdirs like crashes/, speakers.db, etc.)
-    foreach ($keep in @("crashes", "bin", ".keyfile", ".speakers.db", ".speakers.db-wal", ".speakers.db-shm", "state.json")) {
-        # do nothing — we want to preserve these
-    }
-    # Only remove the source tree files, leave bin/ and data files alone
-    Get-ChildItem $InstallDir -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -notin @("crashes", "bin", ".venv", ".speakers.db", ".speakers.db-wal", ".speakers.db-shm", ".keyfile", "state.json", ".backups")
+    # Wipe old source tree but PRESERVE user data + cached venv. We list
+    # everything we want to keep so a corrupt source tree doesn't take
+    # speakers.db or crash logs down with it.
+    $preserve = @(
+        "crashes", "bin", ".venv", ".backups",
+        ".speakers.db", ".speakers.db-wal", ".speakers.db-shm",
+        ".keyfile", "state.json", ".installed-version"
+    )
+    Get-ChildItem $InstallDir -Force -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -notin $preserve
     } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
     if (-not (Test-Path $InstallDir)) {
@@ -234,10 +248,16 @@ OK "installed launcher to $LauncherBat"
 
 # ── PATH check ────────────────────────────────────────────────
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($null -eq $userPath) { $userPath = "" }
 if ($userPath -notlike "*$BinDir*") {
     Write-Host ""
     Info "adding $BinDir to your User PATH"
-    [Environment]::SetEnvironmentVariable("Path", "$userPath;$BinDir", "User")
+    if ($userPath -eq "") {
+        $newPath = $BinDir
+    } else {
+        $newPath = "$userPath;$BinDir"
+    }
+    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
     OK "PATH updated — open a new terminal to pick up the change"
 }
 

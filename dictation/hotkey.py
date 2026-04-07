@@ -283,21 +283,25 @@ class _X11Hotkey(GlobalHotkey):
 class _SignalHotkey(GlobalHotkey):
     """Hotkey via SIGUSR1 signal — user configures compositor to send signal.
 
-    Writes PID to /tmp/voxterm-dictation.pid so compositor keybinds can
-    target this process:
-        kill -USR1 $(cat /tmp/voxterm-dictation.pid)
+    Writes PID to a temp file (e.g. /tmp/voxterm-dictation.pid on Linux)
+    so compositor keybinds can target this process:
+        kill -USR1 $(cat <tempdir>/voxterm-dictation.pid)
     """
 
-    _PID_FILE = "/tmp/voxterm-dictation.pid"
+    @staticmethod
+    def _get_pid_file() -> str:
+        import tempfile
+        return os.path.join(tempfile.gettempdir(), "voxterm-dictation.pid")
 
     def __init__(self, callback: Callable[[], None]):
         super().__init__(callback)
         self._prev_handler = None
+        self._pid_file = self._get_pid_file()
 
     def start(self) -> None:
         # Write PID file
         try:
-            with open(self._PID_FILE, "w") as f:
+            with open(self._pid_file, "w") as f:
                 f.write(str(os.getpid()))
         except OSError:
             pass
@@ -308,9 +312,9 @@ class _SignalHotkey(GlobalHotkey):
         print(
             f"Wayland: no global hotkey protocol. "
             f"Configure your compositor to send SIGUSR1:\n"
-            f"  kill -USR1 $(cat {self._PID_FILE})\n"
+            f"  kill -USR1 $(cat {self._pid_file})\n"
             f"Example sway config:\n"
-            f"  bindsym $mod+Shift+d exec kill -USR1 $(cat {self._PID_FILE})",
+            f"  bindsym $mod+Shift+d exec kill -USR1 $(cat {self._pid_file})",
             file=sys.stderr,
         )
 
@@ -318,7 +322,7 @@ class _SignalHotkey(GlobalHotkey):
         if self._prev_handler is not None:
             signal.signal(signal.SIGUSR1, self._prev_handler)
         try:
-            os.unlink(self._PID_FILE)
+            os.unlink(self._pid_file)
         except OSError:
             pass
 

@@ -361,15 +361,28 @@ class SystemCapture:
     def _start_windows(self) -> None:
         """Start system audio capture on Windows.
 
-        Strategy:
-          1. Open the default output device with WASAPI loopback flag
-             (clean, no Stereo Mix required, works on Win 10/11).
-          2. If that errors out (older PortAudio / unusual driver),
-             fall back to enumerating input devices for a "Stereo Mix"
-             style loopback device.
-          3. If neither works, surface a helpful status message and
-             let the rest of the app keep running mic-only.
+        Approach: enumerate input devices for one of:
+          - PortAudio's auto-exposed WASAPI loopback inputs (named
+            ``<DeviceName> (loopback)`` — best UX, no user setup)
+          - "Stereo Mix" / "Wave Out Mix" / "What U Hear" (legacy,
+            requires user to enable in Sound settings)
+
+        We open the chosen device at its NATIVE sample rate (Windows mix
+        format, typically 44.1k or 48k) and resample chunks to ``SAMPLE_RATE``
+        in the callback. PortAudio's WASAPI host will *not* auto-resample
+        unless ``WasapiSettings(auto_convert=True)`` is supplied AND the
+        device's host_api is WASAPI, so we hand the resampling to scipy
+        which works regardless of host API.
+
+        Note: ``sd.WasapiSettings(loopback=True)`` is *not* a real API
+        (see spatialaudio/python-sounddevice#281). PortAudio surfaces the
+        loopback functionality through device enumeration instead.
         """
+        # Always start from a clean slate so a previous-failed start() does
+        # not leave a stale error string lingering on a successful retry.
+        self._status_message = ""
+        self._unavailable = False
+
         try:
             import sounddevice as sd
         except Exception as e:
@@ -377,101 +390,125 @@ class SystemCapture:
             self._status_message = f"sounddevice unavailable for system audio: {e}"
             return
 
-        def _callback(indata, frames, time_info, status):  # noqa: ARG001
-            try:
-                # Loopback streams are typically stereo — collapse to mono
-                if indata.ndim > 1 and indata.shape[1] > 1:
-                    chunk = indata.mean(axis=1).astype(np.float32, copy=False)
-                else:
-                    chunk = indata[:, 0] if indata.ndim > 1 else indata
-                    chunk = chunk.astype(np.float32, copy=False)
-                # Push a copy — sounddevice reuses the buffer
-                try:
-                    self.queue.put_nowait(chunk.copy())
-                except queue.Full:
-                    try:
-                        self.queue.get_nowait()
-                    except queue.Empty:
-                        pass
-                    self.queue.put_nowait(chunk.copy())
-            except Exception:
-                pass  # never raise out of the audio callback
-
-        # Approach 1: WASAPI loopback against the default OUTPUT device
-        try:
-            wasapi_loopback = sd.WasapiSettings(loopback=True)
-        except Exception:
-            wasapi_loopback = None
-
-        if wasapi_loopback is not None:
-            try:
-                default_out = sd.default.device[1] if sd.default.device else None
-                self._stream = sd.InputStream(
-                    device=default_out,
-                    samplerate=SAMPLE_RATE,
-                    channels=1,
-                    dtype="float32",
-                    blocksize=_CHUNK_SAMPLES,
-                    callback=_callback,
-                    extra_settings=wasapi_loopback,
-                )
-                self._stream.start()
-                self._active = True
-                self._status_message = ""
-                return
-            except Exception as e:
-                # Clean up before falling through to the Stereo Mix path
-                if self._stream is not None:
-                    try:
-                        self._stream.close()
-                    except Exception:
-                        pass
-                    self._stream = None
-                self._status_message = f"WASAPI loopback unavailable ({e}); trying Stereo Mix"
-
-        # Approach 2: Stereo Mix / What U Hear input device
+        # Find a usable loopback / Stereo Mix input device
         loopback_id = None
         loopback_name = ""
         try:
-            for idx, dev in enumerate(sd.query_devices()):
-                if dev.get("max_input_channels", 0) <= 0:
-                    continue
-                name_lower = (dev.get("name") or "").lower()
-                if any(kw in name_lower for kw in (
-                    "stereo mix", "wave out mix", "what u hear", "loopback",
-                )):
-                    loopback_id = idx
-                    loopback_name = dev.get("name", "")
-                    break
+            devices = sd.query_devices()
         except Exception as e:
             self._unavailable = True
             self._status_message = f"failed to enumerate audio devices: {e}"
             return
 
+        for idx, dev in enumerate(devices):
+            if dev.get("max_input_channels", 0) <= 0:
+                continue
+            name_lower = (dev.get("name") or "").lower()
+            if any(kw in name_lower for kw in (
+                "loopback", "stereo mix", "wave out mix", "what u hear",
+            )):
+                loopback_id = idx
+                loopback_name = dev.get("name", "")
+                break
+
         if loopback_id is None:
             self._unavailable = True
             self._status_message = (
-                "system audio unavailable: WASAPI loopback failed and no "
-                "Stereo Mix-style input device found. Mic capture will continue."
+                "system audio unavailable: no WASAPI loopback or Stereo Mix "
+                "input found. Enable 'Stereo Mix' in Settings -> Sound -> "
+                "More sound settings, or use a recent Windows build with "
+                "PortAudio loopback support. Mic capture continues normally."
             )
             return
+
+        # Resolve native sample rate + channel count for the chosen device.
+        # Falling back to SAMPLE_RATE only if the device claims a bogus value.
+        try:
+            native_rate = int(devices[loopback_id].get("default_samplerate") or SAMPLE_RATE)
+        except Exception:
+            native_rate = SAMPLE_RATE
+        if native_rate <= 0:
+            native_rate = SAMPLE_RATE
+
+        # Most loopback devices are stereo. Open as stereo and downmix in the
+        # callback (avoids PortAudio rejecting a channels=1 request against a
+        # device whose mix format is 2-channel).
+        try:
+            native_channels = int(devices[loopback_id].get("max_input_channels", 2)) or 2
+            native_channels = min(native_channels, 2)
+        except Exception:
+            native_channels = 2
+
+        # scipy.signal.resample_poly is already in the dep tree (scipy>=1.10)
+        # and is plenty fast for the small chunk sizes we deliver.
+        if native_rate != SAMPLE_RATE:
+            try:
+                from math import gcd
+                from scipy.signal import resample_poly
+                _g = gcd(SAMPLE_RATE, native_rate)
+                _up = SAMPLE_RATE // _g
+                _down = native_rate // _g
+                _resample = lambda x: resample_poly(x, _up, _down).astype(np.float32, copy=False)
+            except Exception as e:
+                self._unavailable = True
+                self._status_message = (
+                    f"system audio resampling unavailable ({e}); install scipy"
+                )
+                return
+        else:
+            _resample = lambda x: x
+
+        def _callback(indata, frames, time_info, status):  # noqa: ARG001
+            try:
+                # Downmix to mono if the device gave us multichannel
+                if indata.ndim > 1 and indata.shape[1] > 1:
+                    mono = indata.mean(axis=1).astype(np.float32, copy=False)
+                elif indata.ndim > 1:
+                    mono = indata[:, 0].astype(np.float32, copy=False)
+                else:
+                    mono = indata.astype(np.float32, copy=False)
+                chunk = _resample(mono)
+                try:
+                    self.queue.put_nowait(chunk.copy() if chunk.base is not None else chunk)
+                except queue.Full:
+                    try:
+                        self.queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        self.queue.put_nowait(chunk.copy() if chunk.base is not None else chunk)
+                    except queue.Full:
+                        pass
+            except Exception:
+                pass  # never raise out of the audio callback
+
+        # Block size: keep ~64ms regardless of native rate so the callback
+        # runs at a consistent cadence for the rest of the pipeline.
+        block_size = max(_CHUNK_SAMPLES, int(native_rate * _CHUNK_SAMPLES / SAMPLE_RATE))
 
         try:
             self._stream = sd.InputStream(
                 device=loopback_id,
-                samplerate=SAMPLE_RATE,
-                channels=1,
+                samplerate=native_rate,
+                channels=native_channels,
                 dtype="float32",
-                blocksize=_CHUNK_SAMPLES,
+                blocksize=block_size,
                 callback=_callback,
             )
             self._stream.start()
-            self._active = True
-            self._status_message = f"system audio via {loopback_name}"
         except Exception as e:
             self._unavailable = True
-            self._status_message = f"failed to open Stereo Mix device: {e}"
-            self._stream = None
+            self._status_message = f"failed to open {loopback_name or 'system audio'}: {e}"
+            if self._stream is not None:
+                try:
+                    self._stream.close()
+                except Exception:
+                    pass
+                self._stream = None
+            return
+
+        self._active = True
+        self._status_message = f"system audio via {loopback_name}"
 
     @staticmethod
     def _find_monitor_source() -> str | None:

@@ -33,7 +33,9 @@ elif sys.platform.startswith("linux"):
 elif sys.platform == "win32":
     # Windows — %LOCALAPPDATA% for app data (private to user by default ACLs),
     # user Documents for human-visible session files.
-    _localappdata = Path(os.environ.get("LOCALAPPDATA", _home / "AppData" / "Local"))
+    # Use `or` (not dict default) so an empty LOCALAPPDATA env var also falls
+    # back — empty-string would otherwise produce a relative path.
+    _localappdata = Path(os.environ.get("LOCALAPPDATA") or (_home / "AppData" / "Local"))
     DATA_DIR = _localappdata / "voxterm"
     SESSIONS_DIR = _home / "Documents" / "voxterm"
     LIVE_DIR = SESSIONS_DIR / ".live"

@@ -511,14 +511,19 @@ class SpeakerStore:
         if not self._conn:
             return
         # Restrictive umask so sqlite3.connect() creates the file as 0o600.
-        # os.umask() is process-wide; export_db() is user-initiated, never concurrent.
-        old_umask = os.umask(0o077)
+        # os.umask() is process-wide; export_db() is user-initiated, never
+        # concurrent. Skip on Windows — umask doesn't exist there, and the
+        # parent dir under %LOCALAPPDATA% is already user-private by ACL.
+        old_umask = None
+        if hasattr(os, "umask"):
+            old_umask = os.umask(0o077)
         try:
             dst = sqlite3.connect(str(output_path))
             self._conn.backup(dst)
             dst.close()
         finally:
-            os.umask(old_umask)
+            if old_umask is not None:
+                os.umask(old_umask)
         # Belt-and-suspenders: re-chmod in case the file pre-existed with
         # looser permissions before the export overwrote it.
         try:
@@ -592,15 +597,23 @@ class SpeakerStore:
                 return  # already backed up today
 
             # Restrictive umask so sqlite3.connect() creates the file as 0o600.
-            # os.umask() is process-wide; backup() runs once at startup, never concurrent.
-            old_umask = os.umask(0o077)
+            # os.umask() is process-wide; backup() runs once at startup, never
+            # concurrent. Skip on Windows — umask doesn't exist there, and the
+            # parent dir under %LOCALAPPDATA% is already user-private by ACL.
+            old_umask = None
+            if hasattr(os, "umask"):
+                old_umask = os.umask(0o077)
             try:
                 dst = sqlite3.connect(str(backup_path))
                 self._conn.backup(dst)
                 dst.close()
             finally:
-                os.umask(old_umask)
-            backup_path.chmod(0o600)
+                if old_umask is not None:
+                    os.umask(old_umask)
+            try:
+                backup_path.chmod(0o600)
+            except OSError:
+                pass
 
             # Prune old backups, keep last 7
             backups = sorted(BACKUP_DIR.glob("speakers_*.db"))

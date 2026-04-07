@@ -112,7 +112,8 @@ def _load_transcriber(model_name: str, model_repo: str, language: str):
 
 def _write_pid_file() -> None:
     """Write PID file for signal-based hotkey on Wayland."""
-    pid_file = "/tmp/voxterm-dictation.pid"
+    import tempfile
+    pid_file = os.path.join(tempfile.gettempdir(), "voxterm-dictation.pid")
     try:
         with open(pid_file, "w") as f:
             f.write(str(os.getpid()))
