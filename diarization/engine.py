@@ -11,6 +11,13 @@ from __future__ import annotations
 
 import numpy as np
 
+from config import (
+    MATCH_THRESHOLD, NEW_SPEAKER_THRESHOLD, CONTINUITY_BONUS, CONFLICT_MARGIN,
+    MERGE_THRESHOLD, QUALITY_RMS_THRESHOLD, MERGE_INTERVAL, RECLUSTER_INTERVAL,
+    RECLUSTER_MIN_SEGMENTS, LOOP_PROB, WHITEN_MIN_SEGMENTS,
+    SCD_CHANGE_THRESHOLD, SCD_WINDOW_SEC, SCD_HOP_SEC,
+)
+
 _MIN_SPEECH_SAMPLES = 24000   # 1.5 s at 16 kHz — shorter → unreliable embeddings
 MAX_SPEAKERS = 8              # hard cap on simultaneous speaker clusters
 _SCD_MIN_SAMPLES = 48000     # 3.0 s at 16 kHz — minimum audio length for SCD
@@ -19,20 +26,21 @@ _SCD_MIN_SAMPLES = 48000     # 3.0 s at 16 kHz — minimum audio length for SCD
 class DiarizationEngine:
     """Online speaker identification using ECAPA-TDNN embeddings."""
 
-    MATCH_THRESHOLD = 0.35        # cosine sim above this → assign to existing speaker
-    NEW_SPEAKER_THRESHOLD = 0.30  # must be below this vs ALL centroids to create new speaker
-    CONTINUITY_BONUS = 0.0        # disabled — was causing speaker transitions to stick
-    CONFLICT_MARGIN = 0.05        # if top-2 within this → prefer more established speaker
-    MERGE_THRESHOLD = 0.50        # pairwise cosine sim above this → merge clusters
-    QUALITY_RMS_THRESHOLD = 0.003 # min RMS energy for quality-gated centroid update
-    MERGE_INTERVAL = 3            # check for cluster merges every N identify() calls
-    RECLUSTER_INTERVAL = 8        # spectral re-clustering every N identify() calls
-    RECLUSTER_MIN_SEGMENTS = 4    # min total segments before re-clustering kicks in
-    LOOP_PROB = 0.99              # VBx-style HMM self-transition probability
-    WHITEN_MIN_SEGMENTS = 8       # min segments before PLDA-lite whitening kicks in
-    SCD_CHANGE_THRESHOLD = 0.6    # cosine distance above this → speaker change detected
-    SCD_WINDOW_SEC = 2.0          # sliding window duration for SCD embedding extraction
-    SCD_HOP_SEC = 0.5             # hop between consecutive SCD windows
+    # Expose config thresholds as class attributes for backward compatibility
+    MATCH_THRESHOLD = MATCH_THRESHOLD
+    NEW_SPEAKER_THRESHOLD = NEW_SPEAKER_THRESHOLD
+    CONTINUITY_BONUS = CONTINUITY_BONUS
+    CONFLICT_MARGIN = CONFLICT_MARGIN
+    MERGE_THRESHOLD = MERGE_THRESHOLD
+    QUALITY_RMS_THRESHOLD = QUALITY_RMS_THRESHOLD
+    MERGE_INTERVAL = MERGE_INTERVAL
+    RECLUSTER_INTERVAL = RECLUSTER_INTERVAL
+    RECLUSTER_MIN_SEGMENTS = RECLUSTER_MIN_SEGMENTS
+    LOOP_PROB = LOOP_PROB
+    WHITEN_MIN_SEGMENTS = WHITEN_MIN_SEGMENTS
+    SCD_CHANGE_THRESHOLD = SCD_CHANGE_THRESHOLD
+    SCD_WINDOW_SEC = SCD_WINDOW_SEC
+    SCD_HOP_SEC = SCD_HOP_SEC
 
     def __init__(self):
         self._model = None

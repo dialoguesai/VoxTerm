@@ -23,16 +23,13 @@ from . import crypto
 
 log = logging.getLogger(__name__)
 
+from config import (
+    CROSS_SESSION_HIGH_BASE, CROSS_SESSION_MEDIUM, ADAPTIVE_BOOST,
+    ADAPTIVE_DECAY_RATE, CONFLICT_MARGIN, COLD_START_MIN_CONFIRMED,
+)
+
 EMBEDDING_DIM = 512
 EMBEDDING_BYTES = EMBEDDING_DIM * 4  # float32
-
-# Cross-session confidence thresholds
-CROSS_SESSION_HIGH_BASE = 0.55   # base threshold for auto-assign
-CROSS_SESSION_MEDIUM = 0.35      # below this → unknown
-ADAPTIVE_BOOST = 0.15            # extra strictness for new profiles
-ADAPTIVE_DECAY_RATE = 10         # how fast the boost decays with samples
-CONFLICT_MARGIN = 0.05           # if top-2 are within this, treat as ambiguous
-COLD_START_MIN_CONFIRMED = 10    # min confirmed before auto-updates allowed
 
 
 @dataclass
@@ -574,7 +571,7 @@ class SpeakerStore:
             for old in backups[:-7]:
                 old.unlink()
         except Exception:
-            pass  # backup must never block the app
+            log.warning("speaker backup failed", exc_info=True)
 
     # ── internals ────────────────────────────────────────────
 
