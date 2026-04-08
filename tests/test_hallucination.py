@@ -2,7 +2,7 @@
 
 import pytest
 
-from transcriber.engine import _is_hallucination, _DeduplicatorMixin
+from audio.transcriber import _is_hallucination, _DeduplicatorMixin
 
 
 class TestIsHallucination:
