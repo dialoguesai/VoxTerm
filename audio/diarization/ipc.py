@@ -14,7 +14,6 @@ import json
 import os
 import select
 import struct
-import sys
 import time
 from typing import IO
 
@@ -96,20 +95,29 @@ def recv_msg(pipe: IO[bytes], timeout: float | None = None) -> dict | None:
 def _read_exact(pipe: IO[bytes], n: int, deadline: float | None = None) -> bytes | None:
     """Read exactly n bytes from a pipe. Returns None on EOF or timeout.
 
-    Uses os.read() on the underlying fd to avoid buffered-IO hangs with select,
-    and a deadline (absolute time) so the total wall-clock wait is bounded.
+    When the pipe has a file descriptor (real pipes), uses os.read() with
+    select() for deadline-based timeout.  Falls back to buffered pipe.read()
+    for in-memory streams (e.g. io.BytesIO in tests) that lack fileno().
     """
-    fd = pipe.fileno()
+    try:
+        fd = pipe.fileno()
+    except Exception:
+        fd = None
+
     data = b""
     while len(data) < n:
-        if deadline is not None:
+        if fd is not None and deadline is not None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None  # timeout
             ready, _, _ = select.select([fd], [], [], remaining)
             if not ready:
                 return None  # timeout
-        chunk = os.read(fd, n - len(data))
+            chunk = os.read(fd, n - len(data))
+        elif fd is not None:
+            chunk = os.read(fd, n - len(data))
+        else:
+            chunk = pipe.read(n - len(data))
         if not chunk:
             return None
         data += chunk

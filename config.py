@@ -111,6 +111,7 @@ LLAMA_SERVER_MODELS: set[str] = set()  # populated at runtime from AVAILABLE_MOD
 
 # Diarizer subprocess
 DIARIZER_TIMEOUT = 5.0        # seconds to wait for subprocess response
+DIARIZER_STARTUP_TIMEOUT = 30.0  # seconds to wait for subprocess READY on startup
 DIARIZER_MAX_RESTARTS = 3     # max restarts before falling back to in-process
 DIARIZER_RESTART_WINDOW = 60  # seconds — restart counter resets after this
 
@@ -155,7 +156,7 @@ MATCH_THRESHOLD = 0.55             # cosine sim above this → assign to existin
 MATCH_THRESHOLD_DISCOVERY = 0.70   # stricter threshold during discovery phase
 NEW_SPEAKER_THRESHOLD = 0.45      # must be below this vs ALL centroids to create new speaker
 CONTINUITY_BONUS = 0.05           # small bias toward keeping the same speaker across short turns
-CONFLICT_MARGIN = 0.05            # if top-2 within this → prefer more established speaker
+DIARIZATION_CONFLICT_MARGIN = 0.05  # if top-2 within this → prefer more established speaker
 MERGE_THRESHOLD = 0.65            # pairwise cosine sim above this → merge clusters
 QUALITY_RMS_THRESHOLD = 0.003     # min RMS energy for quality-gated centroid update
 MERGE_INTERVAL = 5                # check for cluster merges every N identify() calls
@@ -177,6 +178,7 @@ CROSS_SESSION_HIGH_BASE = 0.55    # base threshold for auto-assign
 CROSS_SESSION_MEDIUM = 0.35       # below this → unknown
 ADAPTIVE_BOOST = 0.15             # extra strictness for new profiles
 ADAPTIVE_DECAY_RATE = 10          # how fast the boost decays with samples
+CROSS_SESSION_CONFLICT_MARGIN = 0.05  # if top-2 profiles within this → treat as ambiguous
 COLD_START_MIN_CONFIRMED = 10     # min confirmed before auto-updates allowed
 
 # Colors

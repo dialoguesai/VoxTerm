@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 from config import (
     SPEAKER_EMBEDDING_DIM, SPEAKER_MODEL_NAME,
     CROSS_SESSION_HIGH_BASE, CROSS_SESSION_MEDIUM, ADAPTIVE_BOOST,
-    ADAPTIVE_DECAY_RATE, CONFLICT_MARGIN, COLD_START_MIN_CONFIRMED,
+    ADAPTIVE_DECAY_RATE, CROSS_SESSION_CROSS_SESSION_CONFLICT_MARGIN, COLD_START_MIN_CONFIRMED,
 )
 
 EMBEDDING_DIM = SPEAKER_EMBEDDING_DIM
@@ -226,7 +226,7 @@ class SpeakerStore:
         ambiguous = False
         if len(matches) >= 2:
             second_score = matches[1][2]
-            if best_score - second_score < CONFLICT_MARGIN:
+            if best_score - second_score < CROSS_SESSION_CONFLICT_MARGIN:
                 ambiguous = True
 
         # Classify

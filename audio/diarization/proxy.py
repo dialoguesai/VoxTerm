@@ -23,7 +23,10 @@ from pathlib import Path
 
 import numpy as np
 
-from config import DIARIZER_MAX_RESTARTS, DIARIZER_RESTART_WINDOW, DIARIZER_TIMEOUT
+from config import (
+    DIARIZER_MAX_RESTARTS, DIARIZER_RESTART_WINDOW, DIARIZER_TIMEOUT,
+    DIARIZER_STARTUP_TIMEOUT,
+)
 from .ipc import (
     MSG_ERROR, MSG_GET_CENTROID, MSG_GET_COLOR,
     MSG_GET_EMBEDDINGS, MSG_GET_NAME, MSG_GET_NAMES, MSG_GET_STATE,
@@ -131,7 +134,7 @@ class DiarizationProxy:
         )
 
         # Wait for READY message (model loading can take 5-30s)
-        resp = recv_msg(self._proc.stdout, timeout=30.0)
+        resp = recv_msg(self._proc.stdout, timeout=DIARIZER_STARTUP_TIMEOUT)
         if resp is None or resp.get("type") != MSG_READY:
             # Kill first to ensure stderr is closed, then read for diagnostics
             stderr_out = ""
