@@ -43,7 +43,7 @@ class SpeakerSegmentation:
     OSP_BETA = 10    # softmax temperature for sharpening
 
     # Activity thresholds (from diart DIHARD-III tuning)
-    TAU_ACTIVE = 0.55   # min peak activation to consider a speaker "active"
+    TAU_ACTIVE = 0.4    # min peak activation to consider a speaker "active"
     RHO_UPDATE = 0.3    # min mean activation for centroid update eligibility
 
     def __init__(self):
@@ -167,15 +167,27 @@ class SpeakerSegmentation:
         return speakers
 
     def overlap_aware_weights(
-        self, activation: np.ndarray,
+        self, activation: np.ndarray, n_speakers: int | None = None,
     ) -> np.ndarray:
         """Compute diart's Overlapped Speech Penalty (OSP) weights.
 
         Returns (num_frames, 3) weights where overlap frames are penalized.
         Single-speaker frames get high weight; overlap frames get near-zero.
+
+        Args:
+            activation: per-speaker activation matrix
+            n_speakers: estimated speaker count for adaptive penalty.
+                If <=2, use gentler penalty; if >=4, use stronger.
         """
-        gamma = self.OSP_GAMMA
-        beta = self.OSP_BETA
+        if n_speakers is not None and n_speakers <= 2:
+            gamma = 2
+            beta = 8
+        elif n_speakers is not None and n_speakers >= 4:
+            gamma = 4
+            beta = 12
+        else:
+            gamma = self.OSP_GAMMA
+            beta = self.OSP_BETA
 
         # Sharpened softmax across speakers
         scaled = beta * activation
@@ -192,15 +204,20 @@ class SpeakerSegmentation:
         self,
         activation: np.ndarray,
         audio_samples: int,
+        n_speakers: int | None = None,
     ) -> list[tuple[int, np.ndarray]]:
         """Generate per-speaker sample-level masks for weighted embedding.
 
         For each active local speaker, returns a weight array over audio samples
         that can be used to mask the audio before embedding extraction.
 
+        Args:
+            activation: per-speaker activation matrix
+            audio_samples: total number of audio samples
+            n_speakers: estimated speaker count for adaptive overlap penalty
         Returns list of (speaker_idx, weights_per_sample) tuples.
         """
-        osp_weights = self.overlap_aware_weights(activation)
+        osp_weights = self.overlap_aware_weights(activation, n_speakers=n_speakers)
         active_speakers = self.get_active_speakers(activation)
 
         n_frames = activation.shape[0]

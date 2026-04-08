@@ -433,7 +433,7 @@ class TestSCDConstants:
     """Verify speaker change detection threshold constants."""
 
     def test_scd_change_threshold(self):
-        assert DiarizationEngine.SCD_CHANGE_THRESHOLD == 0.6
+        assert DiarizationEngine.SCD_CHANGE_THRESHOLD == 0.35
 
     def test_scd_window_sec(self):
         assert DiarizationEngine.SCD_WINDOW_SEC == 2.0
