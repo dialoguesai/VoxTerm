@@ -937,6 +937,220 @@ class DiarizationEngine:
         self._prev_centroids.pop(source_id, None)
         self._matched_speakers.discard(source_id)
 
+    # ── offline diarization ───────────────────────────────
+
+    def diarize_offline(
+        self, audio: np.ndarray, sample_rate: int = 16000, chunk_seconds: float = 10.0,
+    ) -> list[tuple[str, int, int, int]]:
+        """Offline diarization using segmentation model + embedding clustering.
+
+        Processes audio in overlapping windows using pyannote segmentation to detect
+        per-frame speaker activity, extracts speaker embeddings per local speaker
+        per chunk, then clusters embeddings to produce global speaker labels.
+
+        Returns list of (label, speaker_id, start_sample, end_sample) with
+        overlapping segments for simultaneous speakers.
+        """
+        if not self._loaded or self._segmentation is None:
+            # Fall back to online chunked approach
+            return self._diarize_online_fallback(audio, sample_rate, chunk_seconds)
+
+        if sample_rate != 16000:
+            raise ValueError(
+                f"SpeakerSegmentation expects 16 kHz audio, but got {sample_rate} Hz. "
+                "Please resample your audio to 16 kHz before calling diarize_offline."
+            )
+
+        if audio.ndim > 1:
+            audio = audio[:, 0]
+
+        from audio.diarization.segmentation import _FRAME_STEP_SAMPLES
+
+        chunk_samples = int(chunk_seconds * sample_rate)
+        hop_samples = max(chunk_samples // 5, 1)  # 80% overlap between chunks
+        frame_samples = _FRAME_STEP_SAMPLES
+
+        # Phase 1: Extract local speaker activations and embeddings per chunk
+        chunk_data = []
+        for start in range(0, len(audio), hop_samples):
+            end = min(start + chunk_samples, len(audio))
+            chunk = audio[start:end]
+            if len(chunk) < sample_rate:  # skip < 1s
+                continue
+
+            activation = self._segmentation.segment(chunk)
+            active_speakers = self._segmentation.get_active_speakers(activation)
+            if not active_speakers:
+                continue
+
+            for spk_info in active_speakers:
+                spk_idx = spk_info["speaker_idx"]
+                # Extract weighted embedding for this local speaker
+                emb = self._extract_weighted_embedding(
+                    chunk, activation[:, spk_idx], sample_rate
+                )
+                if emb is None:
+                    emb = self._extract_embedding_raw(chunk, sample_rate)
+                if emb is None:
+                    continue
+
+                # Find active frames for this speaker (vectorized)
+                active_frames = np.flatnonzero(activation[:, spk_idx] >= 0.42).tolist()
+
+                if not active_frames:
+                    continue
+
+                chunk_data.append({
+                    "chunk_start": start,
+                    "embedding": emb,
+                    "active_frames": active_frames,
+                })
+
+
+        if not chunk_data:
+            label, sid = self.identify(audio, sample_rate)
+            return [(label, sid, 0, len(audio))]
+
+        # Phase 2: Cluster embeddings to assign global speaker IDs
+        embeddings = np.stack([d["embedding"] for d in chunk_data])
+        from audio.diarization.cluster import ahc_cluster
+        labels = ahc_cluster(embeddings, threshold=0.48)
+
+        # Phase 3: Build hypothesis segments from activations + global labels
+        results = []
+        for i, d in enumerate(chunk_data):
+            global_sid = labels[i] + 1  # 1-based speaker IDs
+            chunk_start = d["chunk_start"]
+            active_frames = d["active_frames"]
+
+            chunk_len = min(chunk_samples, len(audio) - chunk_start)
+            segments = self._frames_to_segments(active_frames, frame_samples, chunk_len)
+            for seg_start, seg_end in segments:
+                abs_start = chunk_start + seg_start
+                abs_end = chunk_start + seg_end
+                label = f"Speaker {global_sid}"
+                results.append((label, global_sid, abs_start, abs_end))
+
+        results = self._merge_overlapping(results)
+
+        # Trim segment edges to reduce false alarms from segmentation overshoot
+        trimmed = []
+        trim = int(0.05 * sample_rate)
+        for label, sid, start, end in results:
+            duration = end - start
+            if duration > trim * 3:
+                trimmed.append((label, sid, start + trim, end - trim))
+            else:
+                trimmed.append((label, sid, start, end))
+
+        # Dense overlap infill: find time regions where 3+ speakers are active
+        # and add the remaining speakers to reduce miss at high-overlap frames
+        all_sids = sorted(set(sid for _, sid, _, _ in trimmed))
+        if len(all_sids) >= 4:
+            step_samples = frame_samples * 20  # ~68ms resolution
+
+            # Build per-speaker, time-sorted segment lists for efficient scanning
+            sid_to_segs: dict[int, list[tuple[int, int]]] = {sid: [] for sid in all_sids}
+            for _, sid, s, e in trimmed:
+                sid_to_segs[sid].append((s, e))
+            for sid in all_sids:
+                sid_to_segs[sid].sort(key=lambda se: se[0])
+
+            sid_indices: dict[int, int] = {sid: 0 for sid in all_sids}
+
+            for t in range(0, len(audio), step_samples):
+                t_end = min(t + step_samples, len(audio))
+                if t_end <= t:
+                    continue
+                active_at_t: set[int] = set()
+
+                for sid in all_sids:
+                    segs = sid_to_segs[sid]
+                    idx = sid_indices[sid]
+                    while idx < len(segs) and segs[idx][1] <= t:
+                        idx += 1
+                    sid_indices[sid] = idx
+                    if idx < len(segs):
+                        s, e = segs[idx]
+                        if s < t_end and e > t:
+                            active_at_t.add(sid)
+
+                if len(active_at_t) >= 3:
+                    missing = set(all_sids) - active_at_t
+                    for sid in missing:
+                        trimmed.append((f"Speaker {sid}", sid, t, t_end))
+                        sid_to_segs[sid].append((t, t_end))
+
+            trimmed = self._merge_overlapping(trimmed)
+
+        return trimmed
+
+    @staticmethod
+    def _frames_to_segments(
+        active_frames: list[int], frame_samples: int, max_samples: int,
+    ) -> list[tuple[int, int]]:
+        """Convert list of active frame indices to contiguous sample ranges."""
+        if not active_frames:
+            return []
+        segments = []
+        seg_start = active_frames[0] * frame_samples
+        prev_end = seg_start + frame_samples
+        for f in active_frames[1:]:
+            f_start = f * frame_samples
+            if f_start <= prev_end + frame_samples:  # allow 1 frame gap
+                prev_end = f_start + frame_samples
+            else:
+                segments.append((seg_start, min(prev_end, max_samples)))
+                seg_start = f_start
+                prev_end = f_start + frame_samples
+        segments.append((seg_start, min(prev_end, max_samples)))
+        return segments
+
+    @staticmethod
+    def _merge_overlapping(
+        results: list[tuple[str, int, int, int]],
+    ) -> list[tuple[str, int, int, int]]:
+        """Merge overlapping segments for the same speaker."""
+        if not results:
+            return results
+        # Group by speaker ID
+        by_speaker: dict[int, list[tuple[int, int]]] = {}
+        labels: dict[int, str] = {}
+        for label, sid, start, end in results:
+            by_speaker.setdefault(sid, []).append((start, end))
+            labels[sid] = label
+
+        merged = []
+        for sid, segs in by_speaker.items():
+            segs.sort()
+            cur_start, cur_end = segs[0]
+            for s, e in segs[1:]:
+                if s <= cur_end:
+                    cur_end = max(cur_end, e)
+                else:
+                    merged.append((labels[sid], sid, cur_start, cur_end))
+                    cur_start, cur_end = s, e
+            merged.append((labels[sid], sid, cur_start, cur_end))
+
+        return merged
+
+    def _diarize_online_fallback(
+        self, audio: np.ndarray, sample_rate: int, chunk_seconds: float,
+    ) -> list[tuple[str, int, int, int]]:
+        """Fallback: online chunked diarization when segmentation unavailable."""
+        chunk_samples = int(chunk_seconds * sample_rate)
+        results = []
+        self.reset_session()
+        for start in range(0, len(audio), chunk_samples):
+            end = min(start + chunk_samples, len(audio))
+            chunk = audio[start:end]
+            if len(chunk) < sample_rate:
+                continue
+            segs = self.identify_segments(chunk, sample_rate)
+            for label, sid, seg_start, seg_end in segs:
+                results.append((label, sid, start + seg_start, start + seg_end))
+        return results
+
     # ── session management ────────────────────────────────
 
     def reset_session(self):

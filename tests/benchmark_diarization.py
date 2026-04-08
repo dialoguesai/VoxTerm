@@ -329,6 +329,44 @@ def run_benchmark(
     return der
 
 
+def run_benchmark_offline(
+    audio: np.ndarray,
+    ref_segments: list[dict],
+    chunk_seconds: float = 10.0,
+    max_duration: float | None = None,
+) -> dict:
+    """Run offline diarization pipeline and compute DER."""
+    from audio.diarization.engine import DiarizationEngine
+
+    engine = DiarizationEngine()
+    engine.load()
+
+    if max_duration:
+        max_samples = int(max_duration * SAMPLE_RATE)
+        audio = audio[:max_samples]
+
+    duration = len(audio) / SAMPLE_RATE
+    t_start = time.time()
+
+    results = engine.diarize_offline(audio, sample_rate=SAMPLE_RATE, chunk_seconds=chunk_seconds)
+
+    elapsed = time.time() - t_start
+    rtf = elapsed / duration if duration > 0 else 0
+
+    # Convert sample-based segments to time-based for DER computation
+    hyp_segments: list[tuple[float, float, int]] = []
+    for label, sid, start_sample, end_sample in results:
+        hyp_segments.append((start_sample / SAMPLE_RATE, end_sample / SAMPLE_RATE, sid))
+
+    der = compute_der(ref_segments, hyp_segments)
+    der["rtf"] = rtf
+    der["elapsed_sec"] = elapsed
+    der["audio_duration"] = duration
+    der["n_hyp_segments"] = len(hyp_segments)
+
+    return der
+
+
 # ── main ──────────────────────────────────────────────────
 
 
@@ -348,6 +386,8 @@ def main():
                         help="Chunk size in seconds")
     parser.add_argument("--no-vad", action="store_true")
     parser.add_argument("--no-scd", action="store_true")
+    parser.add_argument("--offline", action="store_true",
+                        help="Use offline diarization pipeline (diarize_offline)")
     args = parser.parse_args()
 
     files = [args.file] if args.file else list(BENCHMARKS.keys())
@@ -385,17 +425,24 @@ def main():
         print(f"  Audio: {len(audio)/SAMPLE_RATE:.1f}s, "
               f"Ref speakers: {len(ref_speakers)} ({', '.join(ref_speakers)})")
         print(f"  Ref segments: {len(ref)}")
-        print(f"  Config: chunk={args.chunk}s, VAD={'ON' if not args.no_vad else 'OFF'}, "
-              f"SCD={'ON' if not args.no_scd else 'OFF'}")
+        mode = "OFFLINE" if args.offline else f"VAD={'ON' if not args.no_vad else 'OFF'}, SCD={'ON' if not args.no_scd else 'OFF'}"
+        print(f"  Config: chunk={args.chunk}s, {mode}")
         print()
 
-        result = run_benchmark(
-            audio, ref,
-            chunk_seconds=args.chunk,
-            use_vad=not args.no_vad,
-            use_scd=not args.no_scd,
-            max_duration=args.max_duration,
-        )
+        if args.offline:
+            result = run_benchmark_offline(
+                audio, ref,
+                chunk_seconds=args.chunk,
+                max_duration=args.max_duration,
+            )
+        else:
+            result = run_benchmark(
+                audio, ref,
+                chunk_seconds=args.chunk,
+                use_vad=not args.no_vad,
+                use_scd=not args.no_scd,
+                max_duration=args.max_duration,
+            )
 
         der_pct = result["DER"] * 100
         miss_pct = result["miss_rate"] * 100
