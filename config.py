@@ -43,6 +43,22 @@ elif sys.platform.startswith("linux"):
     QWEN3_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
     WHISPER_MODEL = None
     FASTER_WHISPER_MODELS = {"fw-tiny", "fw-base", "fw-small", "fw-medium", "fw-large-v3", "fw-distil-large-v3"}
+elif sys.platform == "win32":
+    # Windows: Qwen3-ASR (primary, via qwen-asr/PyTorch) + faster-whisper (fallback)
+    DEFAULT_MODEL = "qwen3-0.6b"
+    AVAILABLE_MODELS = {
+        "qwen3-0.6b":  "Qwen/Qwen3-ASR-0.6B",
+        "qwen3-1.7b":  "Qwen/Qwen3-ASR-1.7B",
+        "fw-tiny":           "tiny",
+        "fw-base":           "base",
+        "fw-small":          "small",
+        "fw-medium":         "medium",
+        "fw-large-v3":       "large-v3",
+        "fw-distil-large-v3": "distil-large-v3",
+    }
+    QWEN3_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
+    WHISPER_MODEL = None
+    FASTER_WHISPER_MODELS = {"fw-tiny", "fw-base", "fw-small", "fw-medium", "fw-large-v3", "fw-distil-large-v3"}
 else:
     raise RuntimeError(f"Unsupported platform: {sys.platform}")
 
@@ -96,6 +112,15 @@ elif sys.platform.startswith("linux"):
     BIN_DIR = DATA_DIR / ".bin"
     CRASH_DIR = DATA_DIR / ".crashes"
     STATE_FILE = CONFIG_DIR / "state.json"
+elif sys.platform == "win32":
+    # Windows — %LOCALAPPDATA%\voxterm
+    _appdata = _Path(_os.environ.get("LOCALAPPDATA", _home / "AppData" / "Local"))
+    DATA_DIR = _appdata / "voxterm"
+    SESSIONS_DIR = _home / "Documents" / "voxterm"
+    LIVE_DIR = SESSIONS_DIR / ".live"
+    BIN_DIR = DATA_DIR / "bin"
+    CRASH_DIR = DATA_DIR / "crashes"
+    STATE_FILE = DATA_DIR / "state.json"
 else:
     raise RuntimeError(f"Unsupported platform: {sys.platform}")
 
@@ -144,6 +169,7 @@ CRASH_LOG_MAX_COUNT = 50      # max crash logs to keep (rotated on startup)
 # Dictation mode
 DICTATION_HOTKEY_MACOS = ("cmd", "shift", "d")
 DICTATION_HOTKEY_LINUX = ("super", "shift", "d")
+DICTATION_HOTKEY_WINDOWS = ("ctrl", "shift", "d")
 DICTATION_INTER_KEY_DELAY_MS = 1
 
 # Waveform

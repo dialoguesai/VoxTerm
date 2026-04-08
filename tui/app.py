@@ -16,6 +16,12 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Windows: force UTF-8 output so Textual's Unicode box-drawing characters render correctly
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
 # Internal runtime defaults — prevent known framework conflicts
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -40,7 +46,7 @@ warnings.filterwarnings("ignore", message="resource_tracker", category=UserWarni
 # We let it spawn (libraries need register/unregister to function) but
 # prevent it from printing warnings on stop.
 import multiprocessing.resource_tracker as _rt
-_rt._resource_tracker._stop = lambda: None
+_rt._resource_tracker._stop = lambda **kwargs: None
 
 from enum import Enum
 import numpy as np
@@ -84,6 +90,8 @@ def _clipboard_cmd() -> list[str] | None:
     """Return the clipboard copy command for this platform."""
     if sys.platform == "darwin":
         return ["pbcopy"]
+    if sys.platform == "win32":
+        return ["clip.exe"]
     if shutil.which("xclip"):
         return ["xclip", "-selection", "clipboard"]
     if shutil.which("xsel"):
@@ -694,9 +702,12 @@ class VoxTerm(App):
         gc.collect()
 
         # Memory watchdog: warn at 4GB, crash-dump at 6GB
-        import resource as _resource
-        rss_bytes = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
-        rss_mb = rss_bytes / (1024 * 1024)
+        try:
+            import resource as _resource
+            rss_bytes = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            rss_mb = rss_bytes / (1024 * 1024)
+        except ImportError:
+            return  # Windows — can't check memory, skip watchdog
         if rss_mb > 6000:
             self._write_crash_dump(f"memory_watchdog: {rss_mb:.0f}MB")
             self.query_one(TranscriptPanel).system_message(
@@ -985,7 +996,12 @@ class VoxTerm(App):
                         seen_sids.add(seg_sid)
                         self._try_cross_session_match(seg_sid)
 
-                except Exception:
+                except Exception as _diar_err:
+                    if self._debug:
+                        self.call_from_thread(
+                            self.query_one(TranscriptPanel).system_message,
+                            f"[dbg] diarizer error: {_diar_err}",
+                        )
                     segments = [("", 0, 0, len(audio))]
 
             else:
@@ -1011,9 +1027,11 @@ class VoxTerm(App):
                     )
         except Exception as e:
             self._write_crash_dump("_transcribe_audio", e)
+            import traceback
+            tb = traceback.format_exc()
             self.call_from_thread(
                 self.query_one(TranscriptPanel).system_message,
-                f"transcription error: {e}"
+                f"transcription error: {e}\n{tb}"
             )
         finally:
             # ALWAYS unblock — even if worker is cancelled or crashes
@@ -1231,25 +1249,26 @@ class VoxTerm(App):
                 # because multiprocessing.util.spawnv_passfds calls
                 # _posixsubprocess.fork_exec directly, bypassing Popen.
                 # Patch at the C-level entry point to sanitize fds_to_keep.
-                import _posixsubprocess
-                if not getattr(_posixsubprocess, '_vt_patched', False):
-                    _orig_fe = _posixsubprocess.fork_exec
-                    def _safe_fork_exec(*args):
-                        largs = list(args)
-                        fds = largs[3]  # fds_to_keep (sorted tuple of ints)
-                        if fds:
-                            clean = tuple(
-                                fd for fd in fds
-                                if isinstance(fd, int) and 0 <= fd <= 2**31
-                            )
-                            largs[3] = clean
-                        try:
-                            return _orig_fe(*largs)
-                        except ValueError:
-                            largs[3] = ()
-                            return _orig_fe(*largs)
-                    _posixsubprocess.fork_exec = _safe_fork_exec
-                    _posixsubprocess._vt_patched = True
+                if sys.platform != "win32":
+                    import _posixsubprocess
+                    if not getattr(_posixsubprocess, '_vt_patched', False):
+                        _orig_fe = _posixsubprocess.fork_exec
+                        def _safe_fork_exec(*args):
+                            largs = list(args)
+                            fds = largs[3]  # fds_to_keep (sorted tuple of ints)
+                            if fds:
+                                clean = tuple(
+                                    fd for fd in fds
+                                    if isinstance(fd, int) and 0 <= fd <= 2**31
+                                )
+                                largs[3] = clean
+                            try:
+                                return _orig_fe(*largs)
+                            except ValueError:
+                                largs[3] = ()
+                                return _orig_fe(*largs)
+                        _posixsubprocess.fork_exec = _safe_fork_exec
+                        _posixsubprocess._vt_patched = True
 
                 model_repo = AVAILABLE_MODELS[self._model_name]
                 if self._model_name in LLAMA_SERVER_MODELS:
@@ -1267,10 +1286,10 @@ class VoxTerm(App):
                 self.call_from_thread(self._on_model_loaded)
             except Exception as e:
                 import traceback
-                traceback.print_exc()
+                tb = traceback.format_exc()
                 self.call_from_thread(
                     self.query_one(TranscriptPanel).system_message,
-                    f"model load failed: {e}"
+                    f"model load failed: {e}\n{tb}"
                 )
         threading.Thread(target=_do_load, daemon=True, name="model-loader").start()
 
@@ -1888,7 +1907,8 @@ class VoxTerm(App):
             pid = getattr(_rt._resource_tracker, '_pid', None)
             if pid:
                 import signal
-                os.kill(pid, signal.SIGKILL)
+                sig = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
+                os.kill(pid, sig)
         except Exception:
             pass
         try:
