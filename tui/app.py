@@ -498,6 +498,7 @@ class VoxTerm(App):
         self._onboarding_shown = False
         # Overlapping-chunk agreement pipeline
         self._agreement = AgreementState()
+        self._agreement_lock = threading.Lock()
         self._last_tick_time: float = 0.0
         # P2P party manager — owns all P2P state and logic
         self._party = PartyManager(self, _get_config())
@@ -844,7 +845,6 @@ class VoxTerm(App):
                 waveform.set_merge_status("")
 
         # Check transcription trigger (overlapping-chunk agreement pipeline)
-        merge_delay = self._party.peer_mixer.merge_delay if self._party.peer_mixer else 0.0
         silence_duration = self._silence_chunks * self._chunk_duration
         buffer_duration = self.audio_buffer.duration
         now = time.time()
@@ -899,10 +899,11 @@ class VoxTerm(App):
                     "".join(dbg_parts), Log.SYS
                 )
 
-        if not self._had_speech or buffer_duration < AGREEMENT_MIN_AUDIO:
+        if not self._had_speech:
             return
 
         # Flush: extended silence after speech → commit remaining or reset
+        # (checked before min-audio gate so short utterances aren't lost)
         if silence_duration > AGREEMENT_FLUSH_SILENCE:
             if self._agreement.has_hypothesis:
                 self._flush_agreement()
@@ -912,7 +913,11 @@ class VoxTerm(App):
                 self.audio_buffer.clear()
                 self._had_speech = False
                 self._silence_chunks = 0
-                self._agreement.reset()
+                with self._agreement_lock:
+                    self._agreement.reset()
+            return
+
+        if buffer_duration < AGREEMENT_MIN_AUDIO:
             return
 
         # Tick: periodic overlapping transcription while speech is active
@@ -937,7 +942,8 @@ class VoxTerm(App):
 
     def _flush_agreement(self):
         """Flush pending hypothesis on extended silence — commit remaining words."""
-        flush_text = self._agreement.flush_all()
+        with self._agreement_lock:
+            flush_text = self._agreement.flush_all()
         if flush_text.strip():
             # Always called from main thread (timer or toggle_recording)
             self._on_transcription(flush_text, "", 0, "")
@@ -945,7 +951,8 @@ class VoxTerm(App):
         self.audio_buffer.clear()
         self._had_speech = False
         self._silence_chunks = 0
-        self._agreement.reset()
+        with self._agreement_lock:
+            self._agreement.reset()
 
     def _trigger_transcription(self):
         """Legacy trigger: send accumulated audio to transcription worker."""
@@ -980,7 +987,8 @@ class VoxTerm(App):
             text = result.get("text", "")
 
             # Run through agreement: compare with previous hypothesis
-            newly_committed, pending = self._agreement.tick(text)
+            with self._agreement_lock:
+                newly_committed, pending = self._agreement.tick(text)
 
             if self._debug and (newly_committed or pending):
                 self.call_from_thread(
@@ -991,10 +999,11 @@ class VoxTerm(App):
             # Trim audio buffer to slide window forward
             if newly_committed:
                 audio_duration = len(audio) / SAMPLE_RATE
-                trim_secs = self._agreement.get_trim_seconds(audio_duration)
-                if trim_secs > 0:
-                    self.audio_buffer.trim_front(trim_secs)
-                    self._agreement.committed_time += trim_secs
+                with self._agreement_lock:
+                    trim_secs = self._agreement.get_trim_seconds(audio_duration)
+                    if trim_secs > 0:
+                        self.audio_buffer.trim_front(trim_secs)
+                        self._agreement.committed_time += trim_secs
 
             # Diarize on the committed text (use full audio for speaker ID)
             speaker_label, speaker_id, confidence = "", 0, ""
@@ -1507,12 +1516,19 @@ class VoxTerm(App):
         transcript = self.query_one(TranscriptPanel)
         if self._recording:
             self._recording = False
-            # Flush any pending agreement hypothesis before stopping
+            # Flush any pending agreement hypothesis before stopping.
+            # If speech was captured but no tick ran yet, force a final
+            # transcription so buffered audio isn't silently dropped.
+            if not self._agreement.has_hypothesis and self._had_speech and self.audio_buffer.duration > 0:
+                self._trigger_agreement_tick()
             if self._agreement.has_hypothesis:
                 self._flush_agreement()
             self.audio_capture.stop()
             self.system_capture.stop()
             self._agreement.reset()
+            self.audio_buffer.clear()
+            self._had_speech = False
+            self._silence_chunks = 0
             waveform.set_recording(False)
             header.set_recording(False)
             transcript.system_message("recording stopped", Log.REC, {"stopped": "#ff4466"})
@@ -1888,6 +1904,7 @@ class VoxTerm(App):
         self.audio_buffer.clear()
         self._had_speech = False
         self._silence_chunks = 0
+        self._agreement.reset()
         self.vad.reset()
         if self._diarizer_loaded:
             self.diarizer.reset_session()
@@ -2023,6 +2040,7 @@ class VoxTerm(App):
         self.audio_buffer.clear()
         self._had_speech = False
         self._silence_chunks = 0
+        self._agreement.reset()
         self.vad.reset()
         if self._diarizer_loaded:
             self.diarizer.reset_session()

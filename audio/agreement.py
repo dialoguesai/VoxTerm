@@ -125,24 +125,23 @@ class AgreementState:
     def get_trim_seconds(self, audio_duration: float) -> float:
         """Calculate how many seconds to trim from audio buffer front.
 
-        Estimates based on the ratio of committed vs total words, with a
-        safety margin to avoid trimming into uncommitted speech. When the
-        hypothesis is fully committed (no pending words), trims most of
-        the buffer to avoid re-transcribing committed audio.
+        When the hypothesis is fully committed (no pending words), trim most
+        of the buffer and keep a small safety margin. Otherwise, base the
+        trim point on committed time rather than `_overlap_ref`, which is a
+        rolling text history and may include words no longer present in the
+        current audio window after earlier trims.
         """
-        if not self._overlap_ref:
+        if audio_duration <= 0.0 or not self._committed_words:
             return 0.0
 
-        n_committed = len(self._overlap_ref)
         n_pending = len(self._hypothesis)
-        total = n_committed + n_pending
 
         if n_pending == 0:
             # Fully committed — trim most of the buffer, keep 0.5s safety margin
             return max(0.0, audio_duration - 0.5)
 
-        committed_fraction = n_committed / total
-        trim_to = max(0.0, audio_duration * committed_fraction - 0.5)
+        committed_in_window = min(max(self._committed_time, 0.0), audio_duration)
+        trim_to = max(0.0, committed_in_window - 0.5)
         return trim_to
 
     def flush_all(self) -> str:
