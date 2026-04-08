@@ -133,13 +133,33 @@ Press `D` in the TUI to toggle debug mode. Shows in the transcript panel:
 
 ## How to run
 
+The project uses a venv at `.venv/`. The `./voxterm` launcher script handles this automatically.
+
+### Quick start (preferred)
 ```bash
-python3 app.py                    # default: qwen3-0.6b, English
-python3 app.py -m qwen3-1.7b     # larger model
-python3 app.py -l ja              # Japanese
-python3 app.py --list-models      # show all available models
-./voxterm                         # launcher script
+./voxterm                         # launcher script — uses .venv automatically
+./voxterm -m qwen3-1.7b           # larger model
+./voxterm -l ja                   # Japanese
+./voxterm --dictate               # dictation mode
 ```
+
+### Development setup
+```bash
+python3 -m venv .venv
+source .venv/bin/activate         # zsh/bash
+pip install -r requirements.txt
+pip install -r dev/requirements-dev.txt  # optional: dev/test deps
+```
+
+### Running manually (inside activated venv)
+```bash
+python3 -m tui.app                # default: qwen3-0.6b, English
+python3 -m tui.app -m qwen3-1.7b # larger model
+python3 -m tui.app -l ja          # Japanese
+python3 -m tui.app --list-models  # show all available models
+```
+
+> **Important**: The entry point is `python3 -m tui.app`, NOT `python3 app.py`. The `./voxterm` launcher wraps this. Always verify the venv exists (`.venv/bin/python3`) before giving run commands. If it doesn't exist, create it first with the setup steps above.
 
 **Keybindings**: R(record) T(tag speakers) P(profiles) M(model) L(language) S(save) C(clear) D(debug) ?(help) Q(quit)
 
