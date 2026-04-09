@@ -4,7 +4,7 @@
 
 VoxTerm is a local, offline voice transcription TUI for macOS Apple Silicon. It captures mic + system audio, transcribes speech in real-time, identifies speakers, and remembers voices across sessions.
 
-**Stack**: MLX (Qwen3-ASR transcription on Metal GPU) · CAM++ (512-dim speaker embeddings on CPU) · Silero VAD (ONNX, speech detection) · Textual (TUI) · SQLite (speaker profiles) · sounddevice (mic) · Swift/ScreenCaptureKit (system audio)
+**Stack**: MLX (Qwen3-ASR transcription on Metal GPU) · 3D-Speaker ERes2Net (512-dim speaker embeddings via ONNX) · Silero VAD (ONNX, speech detection) · Textual (TUI) · SQLite (speaker profiles) · sounddevice (mic) · Swift/ScreenCaptureKit (system audio) · 3D-Speaker LID (language identification)
 
 ## Architecture
 
@@ -18,12 +18,17 @@ MAIN PROCESS
 │
 ├─ Worker thread (@work(thread=True), group="transcription")
 │  ├─ MLX transcription (Qwen3-ASR or Whisper)
+│  ├─ 3D-Speaker diarization (ONNX, in-process — no subprocess needed)
+│  │  ├─ ERes2Net-large (512-dim embeddings, best accuracy: 0.52% EER)
+│  │  ├─ Pure-numpy Fbank features (no PyTorch/torchaudio)
+│  │  └─ Online cosine clustering with spectral re-clustering
+│  ├─ Language identification (3D-Speaker LID, ONNX)
 │  ├─ Cross-session speaker matching (SQLite writes)
 │  └─ call_from_thread() → UI updates
 │
-SUBPROCESSES
-├─ Diarizer subprocess (PyTorch/CAM++)
-│  ├─ Loads CAM++ model (~28MB, downloads on first use from ModelScope)
+SUBPROCESSES (fallback only — not used when ONNX models available)
+├─ Diarizer subprocess (PyTorch/speakerlab)
+│  ├─ Loads 3D-Speaker model via speakerlab (fallback if ONNX unavailable)
 │  ├─ Receives audio over pipe, returns speaker ID + embedding
 │  ├─ Owns all session state (centroids, names, embeddings)
 │  └─ Auto-restarts on crash; falls back to in-process if repeated failures
@@ -34,7 +39,9 @@ SUBPROCESSES
    └─ For Bluetooth: routes through BlackHole virtual device
 ```
 
-**Why process isolation?** MLX (Metal GPU) and PyTorch (CPU) have C++ runtimes that conflict when loaded in the same process, causing segfaults. The diarizer runs in its own subprocess so they never share an address space.
+**Why ONNX?** The primary speaker embedding model (3D-Speaker ERes2Net) is exported to ONNX and runs via onnxruntime in the main process — no PyTorch needed, no subprocess needed. This eliminates IPC overhead and crash recovery complexity. The PyTorch subprocess path is kept as a fallback for when ONNX models aren't available.
+
+**Legacy process isolation**: MLX (Metal GPU) and PyTorch (CPU) have C++ runtimes that conflict when loaded in the same process. The fallback diarizer subprocess prevents this, but is no longer needed with the ONNX backend.
 
 ## File map
 
@@ -53,11 +60,16 @@ SUBPROCESSES
 | `audio/_macos_sck.swift` | ScreenCaptureKit Swift helper source |
 | `audio/_macos_aggregate.swift` | Multi-output device Swift helper source |
 | `transcriber/engine.py` | Qwen3-ASR (primary) + mlx-whisper (fallback), hallucination filter, dedup |
-| `diarization/campplus.py` | CAM++ model architecture (vendored from WeSpeaker, Apache 2.0) |
-| `diarization/engine.py` | CAM++ online speaker clustering (runs inside subprocess) |
-| `diarization/proxy.py` | DiarizationProxy — same API as engine, delegates to subprocess |
+| `diarization/fbank.py` | Pure-numpy Mel filterbank (Kaldi-compatible, no PyTorch) |
+| `diarization/onnx_embedder.py` | ONNX-based speaker embedding extraction (3D-Speaker models) |
+| `diarization/campplus.py` | CAM++ model architecture (legacy, vendored from WeSpeaker) |
+| `diarization/cluster.py` | 3D-Speaker clustering algorithms: spectral (p-value pruning), AHC, auto-select |
+| `diarization/engine.py` | Online speaker clustering with ONNX/PyTorch backend dispatch |
+| `diarization/proxy.py` | DiarizationProxy — direct (ONNX), subprocess, or inprocess modes |
 | `diarization/subprocess_worker.py` | Subprocess entry point: loads model, read-process-write loop |
 | `diarization/ipc.py` | Binary IPC protocol for main↔subprocess communication |
+| `lid/engine.py` | Language identification using 3D-Speaker LID models (ONNX) |
+| `scripts/export_onnx.py` | Export 3D-Speaker models to ONNX format |
 | `speakers/models.py` | SpeakerProfile, SpeakerMeta dataclasses, multi-centroid matching |
 | `speakers/store.py` | SQLite persistence, cross-session matching, backup/restore |
 | `widgets/waveform.py` | FFT pixel-shader oscilloscope with pitch-mapped color |
@@ -95,7 +107,10 @@ These are the locations to check when debugging. All under the user's home direc
 ### Model caches (managed by frameworks)
 | Path | Contents |
 |------|----------|
-| `~/.cache/wespeaker/campplus_voxceleb/` | CAM++ speaker encoder (~28MB) |
+| `~/.cache/3dspeaker/eres2net_large/` | 3D-Speaker ERes2Net-large ONNX model (primary speaker embeddings) |
+| `~/.cache/3dspeaker/campplus/` | 3D-Speaker CAM++ ONNX model (alternative speaker embeddings) |
+| `~/.cache/3dspeaker/campplus_lid/` | 3D-Speaker CAM++ LID ONNX model (language identification) |
+| `~/.cache/wespeaker/campplus_voxceleb/` | Legacy CAM++ speaker encoder (~28MB, PyTorch fallback) |
 | `~/.cache/huggingface/` | MLX/Qwen3-ASR model weights (~600MB-1.5GB) |
 
 ## Debugging
@@ -165,11 +180,16 @@ session_speakers (
 | Adaptive boost | +0.15 * exp(-samples/10) | Stricter with fewer samples |
 | MEDIUM | 0.35 | Suggest with "?" indicator |
 | Conflict margin | 0.05 | If top-2 within this, treat as ambiguous |
-| Match threshold | 0.35 | Assign to existing speaker if above |
-| New speaker threshold | 0.30 | Must be below this vs ALL centroids to create new speaker |
-| Continuity bonus | 0.10 | Similarity boost for the most recent speaker |
+| Match threshold | 0.55 | Assign to existing speaker if above (stable phase) |
+| Match threshold (discovery) | 0.70 | Stricter threshold during first 30 calls |
+| New speaker threshold | 0.45 | Must be below this vs ALL centroids to create new speaker |
+| Continuity bonus | 0.05 | Similarity boost for the most recent speaker |
 | Conflict margin | 0.05 | If top-2 within this, prefer more established speaker |
-| Cluster merge | 0.50 | Periodic pairwise merge threshold |
+| Cluster merge | 0.65 | Periodic pairwise merge threshold |
+| Centroid EMA alpha | 0.30 | Weight for new embedding in EMA centroid update |
+| Centroid update min sim | 0.50 | Min cosine sim to centroid before updating it |
+| Max embeddings/speaker | 20 | Cap per-speaker embedding retention |
+| Max segment order | 200 | Cap temporal segment history |
 | Quality RMS gate | 0.003 | Min RMS energy for centroid updates |
 | SCD change threshold | 0.35 | Cosine distance for speaker change detection |
 | SCD window / hop | 2.0s / 0.5s | Sliding window for embedding-based SCD |

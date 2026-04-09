@@ -5,7 +5,7 @@ import io
 import numpy as np
 import pytest
 
-from diarization.ipc import encode_array, decode_array, send_msg, recv_msg
+from audio.diarization.ipc import encode_array, decode_array, send_msg, recv_msg
 
 
 class TestEncodeDecodeArray:

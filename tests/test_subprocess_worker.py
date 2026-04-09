@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from diarization.subprocess_worker import _dispatch
-from diarization.ipc import (
+from audio.diarization.subprocess_worker import _dispatch
+from audio.diarization.ipc import (
     MSG_ACK,
     MSG_ERROR,
     MSG_GET_EMBEDDINGS,
@@ -22,7 +22,7 @@ from diarization.ipc import (
     decode_array,
 )
 
-EMBEDDING_DIM = 512
+from config import SPEAKER_EMBEDDING_DIM as EMBEDDING_DIM
 SAMPLE_RATE = 16000
 
 

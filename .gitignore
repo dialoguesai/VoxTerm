@@ -34,3 +34,9 @@ tests/fixtures/speakers/tst01.wav
 
 # Generated media
 docs/pipeline.mp4
+
+# llama-swap local config (user-specific paths)
+llama-swap-config.yaml
+
+# Nix
+result

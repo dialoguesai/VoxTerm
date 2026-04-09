@@ -1,0 +1,35 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps: PortAudio with PulseAudio backend + PulseAudio client tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libportaudio2 \
+    pulseaudio-utils \
+    libpulse0 \
+    libasound2-plugins \
+    && rm -rf /var/lib/apt/lists/*
+
+# Tell ALSA to route through PulseAudio (use /etc/asound.conf to avoid
+# clobbering the system ALSA config at /etc/alsa/alsa.conf)
+RUN printf '\
+pcm.default pulse\n\
+ctl.default pulse\n\
+pcm.pulse {\n\
+    type pulse\n\
+}\n\
+ctl.pulse {\n\
+    type pulse\n\
+}\n' > /etc/asound.conf
+
+# Install CPU-only PyTorch first (much smaller than full torch)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install Python deps (only Linux-relevant ones)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy project
+COPY . .
+
+CMD ["sh"]
