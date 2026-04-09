@@ -704,7 +704,12 @@ class VoxTerm(App):
         # Memory watchdog: warn at 4GB, crash-dump at 6GB
         try:
             import resource as _resource
-            rss_bytes = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            rss_raw = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            if sys.platform == "darwin":
+                rss_bytes = rss_raw
+            else:
+                # Linux reports ru_maxrss in KiB
+                rss_bytes = rss_raw * 1024
             rss_mb = rss_bytes / (1024 * 1024)
         except ImportError:
             return  # Windows — can't check memory, skip watchdog

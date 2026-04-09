@@ -182,7 +182,12 @@ def write_crash_dump(
         lines.append("")
         lines.append("-- memory --")
         if _resource is not None:
-            rss_bytes = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            rss_raw = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            if sys.platform == "darwin":
+                rss_bytes = rss_raw
+            else:
+                # Linux and most other Unix platforms report ru_maxrss in KiB
+                rss_bytes = rss_raw * 1024
             rss_mb = rss_bytes / (1024 * 1024)
         else:
             rss_mb = -1

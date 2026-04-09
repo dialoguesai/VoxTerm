@@ -73,6 +73,25 @@ def test_rotate_keeps_max(tmp_crash_dir):
     )
 
 
+def test_crash_dump_without_resource_module(tmp_crash_dir, monkeypatch):
+    """write_crash_dump works when resource module is unavailable (Windows)."""
+    monkeypatch.setattr(diagnostics, "_resource", None)
+    diagnostics.write_crash_dump(
+        context="test_no_resource",
+        exc=RuntimeError("no resource"),
+        state={"recording": False},
+    )
+    json_files = list(tmp_crash_dir.glob("*.json"))
+    assert json_files, "No .json file created"
+    data = json.loads(json_files[0].read_text(encoding="utf-8"))
+    assert data["peak_rss_mb"] == -1
+
+    log_files = list(tmp_crash_dir.glob("*.log"))
+    assert log_files, "No .log file created"
+    content = log_files[0].read_text(encoding="utf-8")
+    assert "peak_rss_mb:      -1" in content
+
+
 def test_rotate_preserves_faulthandler_log(tmp_crash_dir):
     """rotate_crash_logs never deletes faulthandler.log."""
     fh_log = tmp_crash_dir / "faulthandler.log"
