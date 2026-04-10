@@ -463,6 +463,7 @@ class VoxTerm(App):
         self.audio_capture = AudioCapture()
         self.system_capture = SystemCapture()
         self.audio_buffer = AudioBuffer()
+        self._local_audio_buffer = AudioBuffer()  # local-only audio for diarization
         self.vad = SileroVAD()
         self.transcriber = transcriber
         self.diarizer = DiarizationProxy()
@@ -808,12 +809,17 @@ class VoxTerm(App):
                 for mc in merged_chunks:
                     if self._had_speech or is_speech:
                         self.audio_buffer.append(mc)
+                # Keep local-only audio for diarization (peer audio corrupts embeddings)
+                if self._had_speech or is_speech:
+                    self._local_audio_buffer.append(chunk)
             else:
                 # No merger — original behavior
                 if is_speech:
                     self.audio_buffer.append(chunk)
+                    self._local_audio_buffer.append(chunk)
                 elif self._had_speech:
                     self.audio_buffer.append(chunk)
+                    self._local_audio_buffer.append(chunk)
 
         waveform.tick()
 
@@ -908,15 +914,18 @@ class VoxTerm(App):
         self._transcribe_started = time.time()
         self._silence_chunks = 0
         audio = self.audio_buffer.get_and_clear()
+        local_audio = self._local_audio_buffer.get_and_clear()
         if len(audio) < int(SAMPLE_RATE * MIN_BUFFER_SECONDS):
             self._transcribing.clear()
             return
 
         self._had_speech = False
-        self._transcribe_audio(audio)
+        self._transcribe_audio(audio, local_audio)
 
     @work(thread=True, group="transcription")
-    def _transcribe_audio(self, audio: np.ndarray):
+    def _transcribe_audio(self, audio: np.ndarray, local_audio: np.ndarray | None = None):
+        # Use local-only audio for diarization to avoid peer audio corrupting embeddings
+        diarize_audio = local_audio if local_audio is not None and len(local_audio) > 0 else audio
         try:
             if self._debug:
                 duration = len(audio) / SAMPLE_RATE
@@ -945,13 +954,15 @@ class VoxTerm(App):
             if text and self._diarizer_loaded:
                 try:
                     # Use speaker-change detection for buffers >= 3s
-                    if len(audio) >= 48000:
+                    # Diarize on local-only audio to prevent peer audio from
+                    # corrupting speaker embeddings in P2P mode
+                    if len(diarize_audio) >= 48000:
                         segments = self.diarizer.identify_segments(
-                            audio.copy()
+                            diarize_audio.copy()
                         )
                     else:
-                        lbl, sid = self.diarizer.identify(audio.copy())
-                        segments = [(lbl, sid, 0, len(audio))]
+                        lbl, sid = self.diarizer.identify(diarize_audio.copy())
+                        segments = [(lbl, sid, 0, len(diarize_audio))]
 
                     # Check overlap metadata from last identify() call
                     meta = self.diarizer.get_last_identify_meta()
@@ -1356,7 +1367,10 @@ class VoxTerm(App):
                 self.audio_capture.start()
                 waveform.set_recording(True)
                 header.set_recording(True)
+                mic_name = getattr(self.audio_capture, '_device_name', 'unknown')
                 transcript.system_message("recording started", Log.REC, {"started": "#00ff88"})
+                if self._debug:
+                    transcript.system_message(f"mic: {mic_name}", Log.SYS)
             except Exception as e:
                 self._recording = False
                 waveform.set_recording(False)
@@ -1719,6 +1733,7 @@ class VoxTerm(App):
         transcript = self.query_one(TranscriptPanel)
         transcript.clear()
         self.audio_buffer.clear()
+        self._local_audio_buffer.clear()
         self._had_speech = False
         self._silence_chunks = 0
         self.vad.reset()
@@ -1854,6 +1869,7 @@ class VoxTerm(App):
         """Clear display only — live file stays on disk as the record."""
         self.query_one(TranscriptPanel).clear()
         self.audio_buffer.clear()
+        self._local_audio_buffer.clear()
         self._had_speech = False
         self._silence_chunks = 0
         self.vad.reset()
