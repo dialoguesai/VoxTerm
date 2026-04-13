@@ -26,11 +26,11 @@ class DiarizationEngine:
     """Online speaker identification using ECAPA-TDNN embeddings."""
 
     MATCH_THRESHOLD = 0.55        # cosine sim above this → assign to existing speaker
-    MATCH_THRESHOLD_DISCOVERY = 0.60  # slightly stricter during discovery to find speakers
-    NEW_SPEAKER_THRESHOLD = 0.40  # must be below this vs ALL centroids to create new speaker
+    MATCH_THRESHOLD_DISCOVERY = 0.70  # stricter during first 30 calls (discovery phase)
+    NEW_SPEAKER_THRESHOLD = 0.45  # must be below this vs ALL centroids to create new speaker
     CONTINUITY_BONUS = 0.05       # small bias toward keeping the same speaker across short turns
     CONFLICT_MARGIN = 0.05        # if top-2 within this → prefer more established speaker
-    MERGE_THRESHOLD = 0.55        # pairwise cosine sim above this → merge clusters
+    MERGE_THRESHOLD = 0.65        # pairwise cosine sim above this → merge clusters
     QUALITY_RMS_THRESHOLD = 0.003 # min RMS energy for quality-gated centroid update
     MERGE_INTERVAL = 5            # check for cluster merges every N identify() calls
     RECLUSTER_INTERVAL = 8        # spectral re-clustering every N identify() calls
@@ -271,10 +271,11 @@ class DiarizationEngine:
 
         # Overlap-aware embedding: use segmentation to weight frames
         # so overlapping speech doesn't contaminate the embedding.
-        # Skip when using the PyTorch legacy (CAM++) backend — the
-        # segmentation model was tuned for ERes2Net and produces
-        # unstable embeddings with CAM++ (cosine scores ~0.2-0.5 for
-        # same-speaker instead of expected 0.7-0.9).
+        # Skip this path for all PyTorch backends. The segmentation
+        # model is only used with the non-PyTorch embedding flow here;
+        # in particular, CAM++ produced unstable embeddings when paired
+        # with segmentation (cosine scores ~0.2-0.5 for same-speaker
+        # instead of expected 0.7-0.9).
         if (self._segmentation is not None
                 and self._backend != "pytorch"
                 and len(audio) >= _MIN_SPEECH_SAMPLES):
@@ -317,11 +318,11 @@ class DiarizationEngine:
         best_id = scores[0][1] if scores else None
 
         # Per-identify logging for debugging speaker assignments
-        if scores:
+        if scores and log.isEnabledFor(logging.DEBUG):
             top3 = [(f"{s:.3f}", sid) for s, sid in scores[:3]]
             dur = len(audio) / sample_rate
-            log.info("identify: best=%.3f id=%s n_centroids=%d rms=%.4f dur=%.1fs top3=%s",
-                     best_score, best_id, len(self._speaker_centroids), rms, dur, top3)
+            log.debug("identify: best=%.3f id=%s n_centroids=%d rms=%.4f dur=%.1fs top3=%s",
+                      best_score, best_id, len(self._speaker_centroids), rms, dur, top3)
 
         # Populate debug info for UI
         self._last_debug = {

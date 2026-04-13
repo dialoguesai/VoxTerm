@@ -438,8 +438,10 @@ class DiarizationProxy:
         except Exception as e:
             self._loaded = False
             log.error(
-                "Diarization FAILED in all modes (direct, subprocess, inprocess): %s. "
-                "All speakers will be labeled 'Speaker 1'. "
-                "Check that the ONNX model exists at ~/.cache/3dspeaker/",
+                "Diarization FAILED in all modes (direct, subprocess, inprocess): "
+                "%s: %s. All speakers will be labeled 'Speaker 1'. "
+                "Check the ONNX cache at ~/.cache/3dspeaker/ and the legacy "
+                "PyTorch/CAM++ cache or download path (for example ~/.cache/torch/).",
+                type(e).__name__,
                 e,
             )

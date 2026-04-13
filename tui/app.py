@@ -105,14 +105,27 @@ from network.party import PartyManager, PartyState, P2P_AVAILABLE as _P2P_AVAILA
 
 from config import ConfigStore
 
-_log_path = Path.home() / "Documents" / "voxterm" / "voxterm.log"
-_log_path.parent.mkdir(parents=True, exist_ok=True)
-_root_log = logging.getLogger()
-if not any(isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", "") == str(_log_path) for h in _root_log.handlers):
-    _fh = logging.FileHandler(_log_path, mode="a")
-    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    _root_log.addHandler(_fh)
-    _root_log.setLevel(logging.INFO)
+def _setup_file_logging() -> None:
+    """Best-effort file logging setup that never prevents module import."""
+    try:
+        log_path = Path.home() / "Documents" / "voxterm" / "voxterm.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        root_log = logging.getLogger()
+        if not any(
+            isinstance(h, logging.FileHandler)
+            and getattr(h, "baseFilename", "") == str(log_path)
+            for h in root_log.handlers
+        ):
+            file_handler = logging.FileHandler(log_path, mode="a")
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+            )
+            root_log.addHandler(file_handler)
+    except OSError as exc:
+        sys.stderr.write(f"Warning: could not enable file logging: {exc}\n")
+
+
+_setup_file_logging()
 
 log = logging.getLogger(__name__)
 
@@ -967,7 +980,11 @@ class VoxTerm(App):
         # Use local-only audio for diarization to avoid peer audio corrupting embeddings.
         # If local_audio is unavailable (party mode with no local capture), we cannot
         # diarize reliably — merged mono audio makes all speakers look identical.
-        has_local_audio = local_audio is not None and len(local_audio) > 0
+        has_local_audio = (
+            local_audio is not None
+            and len(local_audio) > 0
+            and float(np.sqrt(np.mean(local_audio ** 2))) >= 0.003
+        )
         diarize_audio = local_audio if has_local_audio else audio
         try:
             if self._debug:
@@ -1001,6 +1018,7 @@ class VoxTerm(App):
                     if not has_local_audio and local_audio is not None:
                         speaker_label, speaker_id = "Speaker 1", 1
                         segments = [("Speaker 1", 1, 0, len(diarize_audio))]
+                        is_overlap = False
                     # Use speaker-change detection for buffers >= 3s
                     elif len(diarize_audio) >= 48000:
                         segments = self.diarizer.identify_segments(
@@ -1011,8 +1029,10 @@ class VoxTerm(App):
                         segments = [(lbl, sid, 0, len(diarize_audio))]
 
                     # Check overlap metadata from last identify() call
-                    meta = self.diarizer.get_last_identify_meta()
-                    is_overlap = meta.get("is_overlap", False)
+                    # (only when diarization actually ran — otherwise meta is stale)
+                    if has_local_audio or local_audio is None:
+                        meta = self.diarizer.get_last_identify_meta()
+                        is_overlap = meta.get("is_overlap", False)
 
                     # Use last segment as the "current" speaker for cross-session matching
                     speaker_label, speaker_id = segments[-1][0], segments[-1][1]
