@@ -2,20 +2,37 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 _SCHEMA = (Path(__file__).parent / "schema.sql").read_text()
+
+# Sensitive index — owner-only.
+_DB_MODE = 0o600
+_DB_DIR_MODE = 0o700
 
 
 class TranscriptStore:
     def __init__(self, db_path: Path) -> None:
         self._path = db_path
         self._lock = threading.Lock()
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.parent.mkdir(parents=True, mode=_DB_DIR_MODE, exist_ok=True)
+        try:
+            os.chmod(self._path.parent, _DB_DIR_MODE)
+        except OSError:
+            pass
+        # Pre-create the file with tight perms so sqlite doesn't open it 0644.
+        if not self._path.exists():
+            fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _DB_MODE)
+            os.close(fd)
+        else:
+            try:
+                os.chmod(self._path, _DB_MODE)
+            except OSError:
+                pass
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
@@ -33,8 +50,8 @@ class TranscriptStore:
         entry_count: int,
         voxterm_version: str,
         transcript_path: str,
-        audio_path: Optional[str],
-        audio_bytes: Optional[int],
+        audio_path: str | None,
+        audio_bytes: int | None,
     ) -> None:
         with self._lock:
             self._conn.execute(
@@ -66,7 +83,7 @@ class TranscriptStore:
             )
             self._conn.commit()
 
-    def get(self, session_id: str) -> Optional[dict]:
+    def get(self, session_id: str) -> dict | None:
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM transcripts WHERE session_id = ?",

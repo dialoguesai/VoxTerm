@@ -54,9 +54,11 @@ It refuses to bind to a non-loopback address unless you set
 `VOXTERM_ALLOW_PUBLIC=1`. Don't set that flag until you've worked through this
 checklist:
 
-- [ ] **Auth.** Add a bearer-token header check (per-device tokens, issued by an
-      admin endpoint or out-of-band). The client already has plumbing for
-      `remote_upload_token` (currently absent because v1 has no auth).
+- [ ] **Auth.** Add a bearer-token header check (per-device tokens, issued by
+      an admin endpoint or out-of-band). The matching `Authorization: Bearer`
+      sender on the client side is also a v2 — there is no token plumbing in
+      the client yet, since v1 of the collector accepts unauthenticated
+      requests on loopback only.
 - [ ] **TLS.** Terminate TLS at a reverse proxy (Caddy / nginx). Don't rely on
       uvicorn's TLS for production.
 - [ ] **Rate limiting.** Per-device or per-IP, e.g. via a reverse proxy or

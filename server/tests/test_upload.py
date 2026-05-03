@@ -112,8 +112,11 @@ class TestUpload:
         )
         assert r.status_code == 400
 
-    @pytest.mark.parametrize("bad_id", ["..", "../escape", "a/b", "x\\y"])
-    def test_rejects_path_traversal(self, client, bad_id):
+    @pytest.mark.parametrize(
+        "bad_id",
+        ["..", "../escape", "a/b", "x\\y", ".", "", " ", "has space", "x\x00y"],
+    )
+    def test_rejects_bad_session_id(self, client, bad_id):
         c, _ = client
         r = c.post(
             "/v1/transcripts",
@@ -121,6 +124,50 @@ class TestUpload:
             files={"transcript": ("s.md", b"x", "text/markdown")},
         )
         assert r.status_code == 400
+
+    def test_rejects_non_object_metadata(self, client):
+        c, _ = client
+        r = c.post(
+            "/v1/transcripts",
+            data={"metadata": "[]"},  # valid JSON, wrong shape
+            files={"transcript": ("s.md", b"x", "text/markdown")},
+        )
+        assert r.status_code == 400
+
+    def test_rejects_non_integer_entry_count(self, client):
+        c, _ = client
+        meta = json.loads(_meta())
+        meta["entry_count"] = "not-a-number"
+        r = c.post(
+            "/v1/transcripts",
+            data={"metadata": json.dumps(meta)},
+            files={"transcript": ("s.md", b"x", "text/markdown")},
+        )
+        # Bad client input → 400, not 500
+        assert r.status_code == 400
+
+    def test_reupload_without_audio_clears_stale(self, client):
+        c, root = client
+        # First upload includes audio
+        c.post(
+            "/v1/transcripts",
+            data={"metadata": _meta(session_id="sid-clear")},
+            files={
+                "transcript": ("s.md", b"v1", "text/markdown"),
+                "audio": ("s.wav", b"RIFF" + b"\x00" * 50, "audio/wav"),
+            },
+        )
+        wav = root / "uploads" / "sid-clear" / "audio.wav"
+        assert wav.exists()
+        # Re-upload without audio
+        c.post(
+            "/v1/transcripts",
+            data={"metadata": _meta(session_id="sid-clear")},
+            files={"transcript": ("s.md", b"v2", "text/markdown")},
+        )
+        assert not wav.exists()
+        record = c.get("/v1/transcripts/sid-clear").json()
+        assert record["has_audio"] is False
 
 
 # ── GET /v1/transcripts ──────────────────────────────────────────
@@ -160,7 +207,26 @@ class TestFetch:
         )
         r = c.get("/v1/transcripts/sid-fetch")
         assert r.status_code == 200
-        assert r.json()["entry_count"] == 42
+        body = r.json()
+        assert body["entry_count"] == 42
+        # Internal storage paths must not leak in API responses
+        assert "transcript_path" not in body
+        assert "audio_path" not in body
+        assert body["has_audio"] is False
+
+    def test_list_strips_paths(self, client):
+        c, _ = client
+        c.post(
+            "/v1/transcripts",
+            data={"metadata": _meta(session_id="sid-list")},
+            files={"transcript": ("s.md", b"x", "text/markdown")},
+        )
+        items = c.get("/v1/transcripts").json()["items"]
+        assert items
+        for item in items:
+            assert "transcript_path" not in item
+            assert "audio_path" not in item
+            assert "has_audio" in item
 
     def test_get_one_404(self, client):
         c, _ = client
