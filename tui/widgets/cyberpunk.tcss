@@ -2,6 +2,10 @@ Screen {
     background: #0a0e14;
     overflow: hidden;
     layers: base notifications;
+    /* Always-on heavy border in the background color keeps geometry stable
+       while recording — only the color changes during the pulse, so widgets
+       below don't reflow when toggling. */
+    border: heavy #0a0e14;
     transition: border 600ms linear;
 }
 

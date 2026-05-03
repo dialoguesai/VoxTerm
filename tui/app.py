@@ -642,7 +642,7 @@ class VoxTerm(App):
         self._party.start_session_blocking(code, is_creator)
 
     def on_mount(self) -> None:
-        self._recording_pulse = RecordingPulse(self.screen)
+        self._recording_pulse = RecordingPulse(self)
 
         # Open speaker profile store (fast — just SQLite + cache load)
         try:
@@ -665,6 +665,11 @@ class VoxTerm(App):
         # Start P2P peer discovery on launch (passive — just show who's nearby)
         if _P2P_AVAILABLE:
             self._party_start_passive_discovery_worker()
+
+    def on_screen_resume(self) -> None:
+        # Carry the recording border into modals that push on top of the main screen.
+        if self._recording_pulse is not None:
+            self._recording_pulse.reapply_to_active_screen()
 
     @property
     def _chunk_duration(self) -> float:
