@@ -223,6 +223,8 @@ _DEFAULTS: dict[str, Any] = {
     "summarization_model": "",
     "summarization_strength": "medium",
     "p2p_display_name": "",
+    "remote_upload_url": "",
+    "remote_upload_include_audio": True,
 }
 
 # Expected types per key (for validation)
@@ -234,6 +236,8 @@ _TYPES: dict[str, type] = {
     "summarization_model": str,
     "summarization_strength": str,
     "p2p_display_name": str,
+    "remote_upload_url": str,
+    "remote_upload_include_audio": bool,
 }
 
 

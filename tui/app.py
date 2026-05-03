@@ -64,9 +64,11 @@ from tui.widgets.transcript import TranscriptPanel, Log
 from tui.widgets.tag_screen import SpeakerTagScreen
 from tui.widgets.profile_screen import SpeakerProfileScreen
 from tui.widgets.transcript_explorer import TranscriptExplorerScreen
+from tui.remote_upload import upload_session, build_metadata
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
 from audio.system_capture import SystemCapture
+from audio.session_recorder import SessionAudioRecorder
 from audio.transcriber import (
     Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber,
     LlamaServerTranscriber, discover_llama_audio_models,
@@ -82,6 +84,7 @@ from config import (
     DEFAULT_LANGUAGE, AVAILABLE_LANGUAGES,
     LIVE_DIR,
     LLAMA_SERVER_URL, LLAMA_SERVER_MODEL, LLAMA_SERVER_MODELS,
+    VERSION,
 )
 from config import SESSIONS_DIR, STATE_FILE as _STATE_FILE
 
@@ -408,9 +411,9 @@ class ExportScreen(ModalScreen):
         align: center middle;
     }
     #export-dialog {
-        width: 50;
+        width: 56;
         height: auto;
-        max-height: 12;
+        max-height: 16;
         border: heavy #44cc66;
         border-title-color: #66ff88;
         border-title-style: bold;
@@ -419,7 +422,7 @@ class ExportScreen(ModalScreen):
     }
     #export-list {
         height: auto;
-        max-height: 6;
+        max-height: 8;
         background: #0a0e14;
         color: #c0c0c0;
     }
@@ -428,7 +431,7 @@ class ExportScreen(ModalScreen):
         color: #00ffcc;
     }
     #export-hint {
-        height: 1;
+        height: auto;
         color: #607080;
         margin-top: 1;
     }
@@ -438,20 +441,28 @@ class ExportScreen(ModalScreen):
         Binding("escape", "cancel", "Cancel"),
     ]
 
+    def __init__(self, upload_available: bool = False) -> None:
+        super().__init__()
+        self._upload_available = upload_available
+
     def compose(self) -> ComposeResult:
         with Vertical(id="export-dialog") as dialog:
             dialog.border_title = "EXPORT TRANSCRIPT"
-            yield OptionList(
-                Option("  Save to file", id="file"),
-                Option("  Copy to clipboard", id="clipboard"),
-                Option("  Discard transcript", id="discard"),
-                id="export-list",
-            )
-            yield Static(
-                " [#607080]ENTER[/] select  [#607080]ESC[/] cancel",
-                id="export-hint",
-                markup=True,
-            )
+            options = [Option("  Save to file", id="file")]
+            if self._upload_available:
+                options.append(Option("  Save to file + upload", id="file_upload"))
+                options.append(Option("  Upload only (no local file)", id="upload_only"))
+            options.append(Option("  Copy to clipboard", id="clipboard"))
+            options.append(Option("  Discard transcript", id="discard"))
+            yield OptionList(*options, id="export-list")
+            if self._upload_available:
+                hint = " [#607080]ENTER[/] select  [#607080]ESC[/] cancel"
+            else:
+                hint = (
+                    " [#607080]ENTER[/] select  [#607080]ESC[/] cancel\n"
+                    " [#607080]set remote_upload_url in ~/.state.json or pass --remote-upload-url to enable upload[/]"
+                )
+            yield Static(hint, id="export-hint", markup=True)
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option.id)
@@ -485,15 +496,19 @@ class VoxTerm(App):
     ]
 
     def __init__(self, transcriber=None, model_name="qwen3-0.6b", language="en",
-                 p2p_name=None, p2p_create=False, p2p_join_code=None):
+                 p2p_name=None, p2p_create=False, p2p_join_code=None,
+                 remote_upload_url: str = "", remote_upload_include_audio: bool = True):
         super().__init__()
         self._p2p_auto_name = p2p_name
         self._p2p_auto_create = p2p_create
         self._p2p_auto_join_code = p2p_join_code
+        self._remote_upload_url = remote_upload_url
+        self._remote_upload_include_audio = remote_upload_include_audio
         self.audio_capture = AudioCapture()
         self.system_capture = SystemCapture()
         self.audio_buffer = AudioBuffer()
         self._local_audio_buffer = AudioBuffer()  # local-only audio for diarization
+        self._session_recorder = SessionAudioRecorder()
         self.vad = SileroVAD()
         self.transcriber = transcriber
         self.diarizer = DiarizationProxy()
@@ -840,6 +855,10 @@ class VoxTerm(App):
         for idx, chunk in enumerate(chunks):
             mic_only_chunk = mic_only_chunks[idx]
             waveform.push_samples(chunk)
+
+            # Continuous tap of merged local audio for session recording / upload.
+            # Unconditional (no speech gate): we want the full session WAV.
+            self._session_recorder.append(chunk)
 
             # Speech detection: Silero VAD (neural) with RMS fallback
             # Runs on local audio immediately (no merge delay)
@@ -1448,6 +1467,9 @@ class VoxTerm(App):
                 self.audio_capture.start()
                 waveform.set_recording(True)
                 header.set_recording(True)
+                self._session_recorder.start_if_needed(
+                    self._session_start.strftime("%Y-%m-%d_%H%M%S")
+                )
                 mic_name = getattr(self.audio_capture, '_device_name', 'unknown')
                 transcript.system_message("recording started", Log.REC, {"started": "#00ff88"})
                 if self._debug:
@@ -1752,12 +1774,17 @@ class VoxTerm(App):
                 return
             if destination == "file":
                 self._export_to_file()
+            elif destination == "file_upload":
+                self._export_to_file_and_upload()
+            elif destination == "upload_only":
+                self._upload_only()
             elif destination == "clipboard":
                 self._export_to_clipboard()
             elif destination == "discard":
                 self._discard_transcript()
 
-        self.push_screen(ExportScreen(), on_export_selected)
+        upload_available = bool(self._remote_upload_url)
+        self.push_screen(ExportScreen(upload_available=upload_available), on_export_selected)
 
     def _export_to_file(self):
         """Promote live file to final transcript."""
@@ -1774,9 +1801,129 @@ class VoxTerm(App):
         if self._live_file and self._live_file.exists():
             self._live_file.unlink()
 
+        # User chose local-only: drop the WAV
+        self._session_recorder.discard()
+
         entry_count = len(transcript.get_entries())
         self._start_new_session()
         transcript.system_message(f"exported {entry_count} entries → {filepath}", Log.REC)
+
+    def _export_to_file_and_upload(self):
+        """Save markdown locally AND upload (transcript + optional audio)."""
+        transcript = self.query_one(TranscriptPanel)
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        session_id = self._session_start.strftime("%Y-%m-%d_%H%M%S")
+        filename = session_id + "-transcript.md"
+        filepath = SESSIONS_DIR / filename
+
+        md = transcript.get_markdown(self._model_name, session_start=self._session_start, language=self._language or "")
+        filepath.write_text(md, encoding="utf-8")
+
+        if self._live_file and self._live_file.exists():
+            self._live_file.unlink()
+
+        wav_path = self._session_recorder.finalize() if self._remote_upload_include_audio else None
+        if not self._remote_upload_include_audio:
+            self._session_recorder.discard()
+
+        entry_count = len(transcript.get_entries())
+        self._kick_upload(session_id, filepath, wav_path, entry_count, delete_audio_after=True)
+
+        self._start_new_session()
+        transcript.system_message(f"exported {entry_count} entries → {filepath}", Log.REC)
+
+    def _upload_only(self):
+        """Upload transcript + optional audio without saving a local copy."""
+        transcript = self.query_one(TranscriptPanel)
+        session_id = self._session_start.strftime("%Y-%m-%d_%H%M%S")
+        # Write markdown to a temp file the upload thread can read; deleted after upload.
+        import tempfile
+        md = transcript.get_markdown(self._model_name, session_start=self._session_start, language=self._language or "")
+        tmp = tempfile.NamedTemporaryFile(prefix=f"voxterm-{session_id}-", suffix=".md", delete=False)
+        tmp.write(md.encode("utf-8"))
+        tmp.close()
+        md_path = Path(tmp.name)
+
+        # Drop the live auto-save file (user chose not to keep local)
+        if self._live_file and self._live_file.exists():
+            self._live_file.unlink()
+
+        wav_path = self._session_recorder.finalize() if self._remote_upload_include_audio else None
+        if not self._remote_upload_include_audio:
+            self._session_recorder.discard()
+
+        entry_count = len(transcript.get_entries())
+        self._kick_upload(session_id, md_path, wav_path, entry_count,
+                          delete_markdown_after=True, delete_audio_after=True)
+
+        self._start_new_session()
+        transcript.system_message(f"uploading {entry_count} entries…", Log.REC)
+
+    def _kick_upload(
+        self,
+        session_id: str,
+        markdown_path: Path,
+        audio_path: Path | None,
+        entry_count: int,
+        *,
+        delete_markdown_after: bool = False,
+        delete_audio_after: bool = False,
+    ) -> None:
+        """Spawn a daemon thread to upload a session. Never blocks the UI."""
+        url = self._remote_upload_url
+        if not url:
+            return
+        ended_at = datetime.now().isoformat()
+        metadata = build_metadata(
+            session_id=session_id,
+            model_name=self._model_name,
+            language=self._language or "",
+            started_at=self._session_start.isoformat(),
+            ended_at=ended_at,
+            entry_count=entry_count,
+            voxterm_version=VERSION,
+        )
+
+        def _run():
+            result = upload_session(url, session_id, markdown_path, audio_path, metadata)
+            if result.ok:
+                if delete_markdown_after:
+                    try: markdown_path.unlink()
+                    except Exception: pass
+                if delete_audio_after and audio_path is not None:
+                    try: audio_path.unlink()
+                    except Exception: pass
+                msg = f"uploaded {session_id} ✓"
+            else:
+                self._enqueue_upload_retry(session_id, markdown_path, audio_path, metadata, result.message)
+                msg = f"upload failed: {result.message}"
+            try:
+                self.call_from_thread(
+                    lambda: self.query_one(TranscriptPanel).system_message(msg, Log.REC)
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, name=f"upload-{session_id}", daemon=True).start()
+
+    def _enqueue_upload_retry(self, session_id, markdown_path, audio_path, metadata, error) -> None:
+        """Append a queue entry so a future --resync-uploads can retry."""
+        try:
+            import json
+            queue_path = SESSIONS_DIR / ".upload_queue.jsonl"
+            queue_path.parent.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "session_id": session_id,
+                "markdown_path": str(markdown_path),
+                "audio_path": str(audio_path) if audio_path else None,
+                "metadata": metadata,
+                "attempted_at": datetime.now().isoformat(),
+                "error": error,
+            }
+            with open(queue_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            pass
 
     def _export_to_clipboard(self):
         """Copy transcript to clipboard."""
@@ -1790,6 +1937,7 @@ class VoxTerm(App):
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
             proc.communicate(text.encode("utf-8"))
+            self._session_recorder.discard()
             self._start_new_session()
             transcript.system_message(f"copied {entry_count} entries to clipboard", Log.REC)
         except Exception:
@@ -1801,6 +1949,7 @@ class VoxTerm(App):
         # Delete the live auto-save file
         if self._live_file and self._live_file.exists():
             self._live_file.unlink()
+        self._session_recorder.discard()
         self._start_new_session()
         self.query_one(TranscriptPanel).system_message(
             f"discarded {entry_count} entries", Log.REC
@@ -1828,6 +1977,8 @@ class VoxTerm(App):
         self._session_start = datetime.now()
         self._live_file = None
         self._live_header_written = False
+        # Belt-and-suspenders: ensure no stale recorder state survives
+        self._session_recorder.discard()
 
     def _record_session_stats(self):
         """Record speaker-session mappings to persistent store."""
@@ -2061,6 +2212,24 @@ def main():
         metavar="CODE",
         help="Join a P2P session on launch (e.g. --session-join bacon-horse-galaxy)",
     )
+    parser.add_argument(
+        "--remote-upload-url",
+        type=str,
+        default=_cfg.get("remote_upload_url"),
+        metavar="URL",
+        help="Collector URL to POST transcripts (and optional audio) to. "
+             "Persisted to ~/.state.json on use.",
+    )
+    parser.add_argument(
+        "--no-remote-upload",
+        action="store_true",
+        help="Force-disable remote upload for this run, even if configured.",
+    )
+    parser.add_argument(
+        "--no-upload-audio",
+        action="store_true",
+        help="Upload transcript markdown only; skip the WAV.",
+    )
     args = parser.parse_args()
 
     # Probe llama server for audio-capable models and register them
@@ -2159,12 +2328,25 @@ def main():
     # Restore terminal on segfault so the shell doesn't get stuck in raw mode
     diagnostics.setup_signal_handlers()
 
+    # Resolve upload settings: CLI > state file. Persist URL on use.
+    _upload_url = "" if args.no_remote_upload else (args.remote_upload_url or "")
+    _upload_include_audio = (
+        bool(_cfg.get("remote_upload_include_audio")) and not args.no_upload_audio
+    )
+    if _upload_url and _upload_url != _cfg.get("remote_upload_url"):
+        try:
+            _cfg.set("remote_upload_url", _upload_url)
+        except Exception:
+            pass
+
     # Launch TUI immediately — model loads in the background
     app = VoxTerm(
         transcriber=None, model_name=model_name, language=language,
         p2p_name=args.name,
         p2p_create=args.session_create,
         p2p_join_code=args.session_join,
+        remote_upload_url=_upload_url,
+        remote_upload_include_audio=_upload_include_audio,
     )
 
     # Global exception hooks — dump diagnostics on any uncaught crash
