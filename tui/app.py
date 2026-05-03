@@ -467,7 +467,7 @@ class VoxTerm(App):
         Binding("s", "export_transcript", "Export"),
         Binding("d", "toggle_debug", "Debug"),
         Binding("c", "clear_transcript", "Clear"),
-        Binding("e", "explore_transcripts", "History"),
+        Binding("e", "explore_transcripts", "Transcripts"),
         Binding("p", "toggle_party", "Party"),
         Binding("v", "toggle_merged_view", "View"),
         Binding("?", "show_help", "Help", key_display="?"),
@@ -1358,6 +1358,7 @@ class VoxTerm(App):
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()
+                self.call_from_thread(self._show_loading_indicator, False)
                 self.call_from_thread(
                     self.query_one(TranscriptPanel).system_message,
                     f"model load failed: {e}\n{tb}"
@@ -1701,6 +1702,7 @@ class VoxTerm(App):
         self._model_loaded = False
         self._model_name = model_key
         self._update_telemetry()
+        self._show_loading_indicator(True)
         # Free old model memory before loading the new one
         self.transcriber._model = None
         self.query_one(TranscriptPanel).system_message(
@@ -1736,6 +1738,7 @@ class VoxTerm(App):
         self._model_name = model_key
         self._is_qwen3 = model_key in QWEN3_MODELS
         self._model_loaded = True
+        self._show_loading_indicator(False)
         _get_config().update({"last_model": model_key, "last_language": self._language})
         self.query_one(TranscriptPanel).system_message(f"model loaded: {model_key}", Log.SYS, {model_key: "rainbow"})
         self._update_telemetry()
@@ -1743,6 +1746,7 @@ class VoxTerm(App):
     def _on_swap_error(self, msg: str):
         self.query_one(TranscriptPanel).system_message(msg)
         self._model_loaded = True
+        self._show_loading_indicator(False)
         self._update_telemetry()
 
     def action_export_transcript(self):
@@ -1795,10 +1799,15 @@ class VoxTerm(App):
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
             proc.communicate(text.encode("utf-8"))
+            if proc.returncode != 0:
+                transcript.system_message(
+                    f"clipboard copy failed (exit {proc.returncode})", Log.REC
+                )
+                return
             self._start_new_session()
             transcript.system_message(f"copied {entry_count} entries to clipboard", Log.REC)
-        except Exception:
-            transcript.system_message("clipboard copy failed", Log.REC)
+        except Exception as e:
+            transcript.system_message(f"clipboard copy failed: {e}", Log.REC)
 
     def _discard_transcript(self):
         """Discard transcript and delete the live file."""

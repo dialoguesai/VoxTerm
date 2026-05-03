@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import shutil
 import sys
-from typing import Optional
 
 
-def clipboard_cmd() -> Optional[list[str]]:
+def clipboard_cmd() -> list[str] | None:
     """Return the clipboard copy command for this platform, or None if none available."""
     if sys.platform == "darwin":
         return ["pbcopy"]
