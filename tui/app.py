@@ -458,9 +458,11 @@ class ExportScreen(ModalScreen):
             if self._upload_available:
                 hint = " [#607080]ENTER[/] select  [#607080]ESC[/] cancel"
             else:
+                # Use the platform-aware state path, not a hardcoded ~/.state.json
+                from config import STATE_FILE as _state_path
                 hint = (
                     " [#607080]ENTER[/] select  [#607080]ESC[/] cancel\n"
-                    " [#607080]set remote_upload_url in ~/.state.json or pass --remote-upload-url to enable upload[/]"
+                    f" [#607080]set remote_upload_url in {_state_path} or pass --remote-upload-url to enable upload[/]"
                 )
             yield Static(hint, id="export-hint", markup=True)
 
@@ -508,7 +510,12 @@ class VoxTerm(App):
         self.system_capture = SystemCapture()
         self.audio_buffer = AudioBuffer()
         self._local_audio_buffer = AudioBuffer()  # local-only audio for diarization
-        self._session_recorder = SessionAudioRecorder()
+        self._session_recorder = SessionAudioRecorder(
+            on_write_error=self._on_recorder_write_error,
+        )
+        # Outstanding upload threads, joined briefly on quit so os._exit doesn't
+        # kill an in-flight upload before it can enqueue a retry.
+        self._upload_threads: list[threading.Thread] = []
         self.vad = SileroVAD()
         self.transcriber = transcriber
         self.diarizer = DiarizationProxy()
@@ -1467,9 +1474,20 @@ class VoxTerm(App):
                 self.audio_capture.start()
                 waveform.set_recording(True)
                 header.set_recording(True)
-                self._session_recorder.start_if_needed(
-                    self._session_start.strftime("%Y-%m-%d_%H%M%S")
-                )
+                # WAV recording is only useful when upload is configured; skip
+                # the temp file otherwise so local-only users don't pay disk +
+                # privacy cost. Recorder failure is non-fatal — we keep the
+                # mic running and note the WAV is unavailable.
+                if self._remote_upload_url:
+                    try:
+                        self._session_recorder.start_if_needed(
+                            self._session_start.strftime("%Y-%m-%d_%H%M%S")
+                        )
+                    except Exception as wav_err:
+                        transcript.system_message(
+                            f"session audio capture disabled (WAV setup failed: {wav_err})",
+                            Log.SYS,
+                        )
                 mic_name = getattr(self.audio_capture, '_device_name', 'unknown')
                 transcript.system_message("recording started", Log.REC, {"started": "#00ff88"})
                 if self._debug:
@@ -1478,6 +1496,7 @@ class VoxTerm(App):
                 self._recording = False
                 waveform.set_recording(False)
                 header.set_recording(False)
+                self._session_recorder.discard()
                 transcript.system_message(
                     f"microphone error: {e} — grant Terminal mic access in System Settings > Privacy",
                     Log.REC,
@@ -1836,13 +1855,13 @@ class VoxTerm(App):
         """Upload transcript + optional audio without saving a local copy."""
         transcript = self.query_one(TranscriptPanel)
         session_id = self._session_start.strftime("%Y-%m-%d_%H%M%S")
-        # Write markdown to a temp file the upload thread can read; deleted after upload.
-        import tempfile
+        # Stage the markdown under SESSIONS_DIR/.upload_pending/, NOT under
+        # /tmp — a reboot would wipe /tmp before --resync-uploads ever runs.
+        pending_dir = SESSIONS_DIR / ".upload_pending"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        md_path = pending_dir / f"{session_id}.md"
         md = transcript.get_markdown(self._model_name, session_start=self._session_start, language=self._language or "")
-        tmp = tempfile.NamedTemporaryFile(prefix=f"voxterm-{session_id}-", suffix=".md", delete=False)
-        tmp.write(md.encode("utf-8"))
-        tmp.close()
-        md_path = Path(tmp.name)
+        md_path.write_text(md, encoding="utf-8")
 
         # Drop the live auto-save file (user chose not to keep local)
         if self._live_file and self._live_file.exists():
@@ -1859,6 +1878,18 @@ class VoxTerm(App):
         self._start_new_session()
         transcript.system_message(f"uploading {entry_count} entries…", Log.REC)
 
+    def _on_recorder_write_error(self, detail: str) -> None:
+        """Recorder I/O failed mid-recording — surface the first occurrence."""
+        try:
+            self.call_from_thread(
+                lambda: self.query_one(TranscriptPanel).system_message(
+                    f"session audio write failed (uploaded WAV may be truncated): {detail}",
+                    Log.SYS,
+                )
+            )
+        except Exception:
+            pass
+
     def _kick_upload(
         self,
         session_id: str,
@@ -1869,7 +1900,12 @@ class VoxTerm(App):
         delete_markdown_after: bool = False,
         delete_audio_after: bool = False,
     ) -> None:
-        """Spawn a daemon thread to upload a session. Never blocks the UI."""
+        """Spawn a thread to upload a session. Never blocks the UI.
+
+        Uses a non-daemon thread + tracking list so _do_quit can briefly
+        join in-flight uploads before os._exit fires (otherwise the upload
+        is silently dropped if the user quits right after pressing S).
+        """
         url = self._remote_upload_url
         if not url:
             return
@@ -1895,8 +1931,16 @@ class VoxTerm(App):
                     except Exception: pass
                 msg = f"uploaded {session_id} ✓"
             else:
-                self._enqueue_upload_retry(session_id, markdown_path, audio_path, metadata, result.message)
-                msg = f"upload failed: {result.message}"
+                queued = self._enqueue_upload_retry(
+                    session_id, markdown_path, audio_path, metadata, url, result.message,
+                )
+                if queued:
+                    msg = f"upload failed (queued for retry): {result.message}"
+                else:
+                    msg = (
+                        f"upload failed AND retry queue write failed: {result.message} — "
+                        f"transcript/audio may be lost"
+                    )
             try:
                 self.call_from_thread(
                     lambda: self.query_one(TranscriptPanel).system_message(msg, Log.REC)
@@ -1904,16 +1948,24 @@ class VoxTerm(App):
             except Exception:
                 pass
 
-        threading.Thread(target=_run, name=f"upload-{session_id}", daemon=True).start()
+        t = threading.Thread(target=_run, name=f"upload-{session_id}", daemon=False)
+        self._upload_threads.append(t)
+        t.start()
 
-    def _enqueue_upload_retry(self, session_id, markdown_path, audio_path, metadata, error) -> None:
-        """Append a queue entry so a future --resync-uploads can retry."""
+    def _enqueue_upload_retry(self, session_id, markdown_path, audio_path, metadata, url, error) -> bool:
+        """Append a queue entry so a future --resync-uploads can retry.
+
+        Returns True if the queue write succeeded, False otherwise — the
+        caller surfaces the difference so we never claim a retry was queued
+        when it wasn't.
+        """
         try:
             import json
             queue_path = SESSIONS_DIR / ".upload_queue.jsonl"
             queue_path.parent.mkdir(parents=True, exist_ok=True)
             entry = {
                 "session_id": session_id,
+                "url": url,
                 "markdown_path": str(markdown_path),
                 "audio_path": str(audio_path) if audio_path else None,
                 "metadata": metadata,
@@ -1922,8 +1974,9 @@ class VoxTerm(App):
             }
             with open(queue_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
+            return True
         except Exception:
-            pass
+            return False
 
     def _export_to_clipboard(self):
         """Copy transcript to clipboard."""
@@ -1979,6 +2032,15 @@ class VoxTerm(App):
         self._live_header_written = False
         # Belt-and-suspenders: ensure no stale recorder state survives
         self._session_recorder.discard()
+        # If recording is still on (e.g. user pressed S without stopping), open
+        # a new WAV for the new session_id so subsequent chunks aren't dropped.
+        if self._recording and self._remote_upload_url:
+            try:
+                self._session_recorder.start_if_needed(
+                    self._session_start.strftime("%Y-%m-%d_%H%M%S")
+                )
+            except Exception:
+                pass
 
     def _record_session_stats(self):
         """Record speaker-session mappings to persistent store."""
@@ -2124,6 +2186,17 @@ class VoxTerm(App):
     def _do_quit(self):
         # Record stats while we still can (fast, synchronous)
         self._record_session_stats()
+        # Drop any unsaved session WAV temp file
+        try:
+            self._session_recorder.discard()
+        except Exception:
+            pass
+        # Briefly wait for in-flight uploads so os._exit doesn't kill them
+        # before they can either succeed or write a retry queue entry.
+        # 5s ceiling per thread keeps quit responsive when the network is dead.
+        for t in list(self._upload_threads):
+            if t.is_alive():
+                t.join(timeout=5.0)
         try:
             self.speaker_store.close()
         except Exception:
@@ -2328,14 +2401,20 @@ def main():
     # Restore terminal on segfault so the shell doesn't get stuck in raw mode
     diagnostics.setup_signal_handlers()
 
-    # Resolve upload settings: CLI > state file. Persist URL on use.
+    # Resolve upload settings: CLI > state file. Persist on use so subsequent
+    # launches keep the operator's choices without re-passing flags.
     _upload_url = "" if args.no_remote_upload else (args.remote_upload_url or "")
-    _upload_include_audio = (
-        bool(_cfg.get("remote_upload_include_audio")) and not args.no_upload_audio
-    )
+    _persisted_include_audio = bool(_cfg.get("remote_upload_include_audio"))
+    _upload_include_audio = _persisted_include_audio and not args.no_upload_audio
+    _to_persist: dict = {}
     if _upload_url and _upload_url != _cfg.get("remote_upload_url"):
+        _to_persist["remote_upload_url"] = _upload_url
+    if args.no_upload_audio and _persisted_include_audio:
+        # User explicitly disabled audio uploads — make it stick across runs.
+        _to_persist["remote_upload_include_audio"] = False
+    if _to_persist:
         try:
-            _cfg.set("remote_upload_url", _upload_url)
+            _cfg.update(_to_persist)
         except Exception:
             pass
 

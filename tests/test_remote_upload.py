@@ -147,7 +147,7 @@ class TestUploadSession:
         # Port 1 is reserved; connection should fail fast.
         result = upload_session(
             "http://127.0.0.1:1/upload", "sid", md, None, meta,
-            connect_timeout=1.0, read_timeout=1.0,
+            timeout=1.0,
         )
         assert not result.ok
         assert result.message

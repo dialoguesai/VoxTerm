@@ -11,7 +11,7 @@ import tempfile
 import threading
 import wave
 from pathlib import Path
-from typing import Optional
+from typing import Callable
 
 import numpy as np
 
@@ -24,13 +24,20 @@ class SessionAudioRecorder:
     Float32 [-1, 1] in -> int16 PCM mono 16kHz WAV out.
     Thread-safe: append() is called from the audio loop;
     finalize/discard from action handlers.
+
+    `on_write_error` is invoked once with the exception detail the first time
+    a chunk fails to land on disk (full partition, broken handle, etc.) — the
+    audio loop is never blocked by I/O failure but the user gets a single
+    visible warning instead of silently truncated audio.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, on_write_error: Callable[[str], None] | None = None) -> None:
         self._lock = threading.Lock()
-        self._wav: Optional[wave.Wave_write] = None
-        self._path: Optional[Path] = None
-        self._session_id: Optional[str] = None
+        self._wav: wave.Wave_write | None = None
+        self._path: Path | None = None
+        self._session_id: str | None = None
+        self._on_write_error = on_write_error
+        self._error_notified = False
 
     def start_if_needed(self, session_id: str) -> None:
         with self._lock:
@@ -53,6 +60,7 @@ class SessionAudioRecorder:
             self._wav = wav
             self._path = path
             self._session_id = session_id
+            self._error_notified = False
 
     def append(self, chunk: np.ndarray) -> None:
         if self._wav is None:
@@ -63,10 +71,16 @@ class SessionAudioRecorder:
             pcm = np.clip(chunk * 32767.0, -32768, 32767).astype(np.int16)
             try:
                 self._wav.writeframes(pcm.tobytes())
-            except Exception:
-                pass  # never break the audio loop on I/O error
+            except Exception as e:
+                # Don't break the audio loop, but tell the user once.
+                if not self._error_notified and self._on_write_error is not None:
+                    self._error_notified = True
+                    try:
+                        self._on_write_error(str(e))
+                    except Exception:
+                        pass
 
-    def finalize(self) -> Optional[Path]:
+    def finalize(self) -> Path | None:
         """Close the WAV and return its path. Caller takes ownership of the file."""
         with self._lock:
             if self._wav is None:

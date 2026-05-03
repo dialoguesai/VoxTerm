@@ -23,10 +23,45 @@ class TestDefaults:
         assert cs.get("export_format") == "markdown"
         assert cs.get("summarization_model") == ""
         assert cs.get("summarization_strength") == "medium"
+        # Remote upload defaults — opt-in (URL empty), but include audio when upload runs
+        assert cs.get("remote_upload_url") == ""
+        assert cs.get("remote_upload_include_audio") is True
 
     def test_unknown_key_returns_none(self, tmp_path_file):
         cs = ConfigStore(tmp_path_file)
         assert cs.get("nonexistent") is None
+
+
+class TestRemoteUploadKeys:
+    """Coverage for the remote_upload_* schema entries (added in PR #99)."""
+
+    def test_set_and_persist_url(self, tmp_path_file):
+        cs = ConfigStore(tmp_path_file)
+        cs.set("remote_upload_url", "http://localhost:8000/v1/transcripts")
+        assert cs.get("remote_upload_url") == "http://localhost:8000/v1/transcripts"
+        # Reload from disk
+        cs2 = ConfigStore(tmp_path_file)
+        assert cs2.get("remote_upload_url") == "http://localhost:8000/v1/transcripts"
+
+    def test_toggle_include_audio(self, tmp_path_file):
+        cs = ConfigStore(tmp_path_file)
+        cs.set("remote_upload_include_audio", False)
+        assert cs.get("remote_upload_include_audio") is False
+        # Reload from disk
+        cs2 = ConfigStore(tmp_path_file)
+        assert cs2.get("remote_upload_include_audio") is False
+
+    def test_url_must_be_str(self, tmp_path_file):
+        import pytest
+        cs = ConfigStore(tmp_path_file)
+        with pytest.raises(TypeError):
+            cs.set("remote_upload_url", 12345)
+
+    def test_include_audio_must_be_bool(self, tmp_path_file):
+        import pytest
+        cs = ConfigStore(tmp_path_file)
+        with pytest.raises(TypeError):
+            cs.set("remote_upload_include_audio", "yes")
 
 
 class TestGetSet:
