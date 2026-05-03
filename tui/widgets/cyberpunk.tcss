@@ -6,17 +6,17 @@ Screen {
        while recording — only the color changes during the pulse, so widgets
        below don't reflow when toggling. */
     border: heavy #0a0e14;
-    transition: border 600ms linear;
+    transition: border 1400ms in_out_sine;
 }
 
 /* ── Recording: full-viewport pulsing red border ─────────── */
 
 Screen.--recording {
-    border: heavy #ff0033;
+    border: heavy #a83244;
 }
 
 Screen.--recording.--recording-pulse {
-    border: heavy #770011;
+    border: heavy #4a1820;
 }
 
 #main-container {

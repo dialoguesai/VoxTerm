@@ -15,7 +15,7 @@ class RecordingPulse:
     push on top of the main screen.
     """
 
-    INTERVAL_SEC = 0.6
+    INTERVAL_SEC = 1.5
 
     def __init__(self, app: App) -> None:
         self._app = app
