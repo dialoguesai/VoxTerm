@@ -64,6 +64,7 @@ from tui.widgets.transcript import TranscriptPanel, Log
 from tui.widgets.tag_screen import SpeakerTagScreen
 from tui.widgets.profile_screen import SpeakerProfileScreen
 from tui.widgets.transcript_explorer import TranscriptExplorerScreen
+from tui.widgets.recording_pulse import RecordingPulse
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
 from audio.system_capture import SystemCapture
@@ -528,6 +529,7 @@ class VoxTerm(App):
         # P2P party manager — owns all P2P state and logic
         self._party = PartyManager(self, _get_config())
         self._wire_party_callbacks()
+        self._recording_pulse: RecordingPulse | None = None
 
     def compose(self) -> ComposeResult:
         yield CyberHeader()
@@ -640,6 +642,8 @@ class VoxTerm(App):
         self._party.start_session_blocking(code, is_creator)
 
     def on_mount(self) -> None:
+        self._recording_pulse = RecordingPulse(self.screen)
+
         # Open speaker profile store (fast — just SQLite + cache load)
         try:
             self.speaker_store.open()
@@ -1440,6 +1444,8 @@ class VoxTerm(App):
             self.system_capture.stop()
             waveform.set_recording(False)
             header.set_recording(False)
+            if self._recording_pulse:
+                self._recording_pulse.stop()
             transcript.system_message("recording stopped", Log.REC, {"stopped": "#ff4466"})
         else:
             self._recording = True
@@ -1448,6 +1454,8 @@ class VoxTerm(App):
                 self.audio_capture.start()
                 waveform.set_recording(True)
                 header.set_recording(True)
+                if self._recording_pulse:
+                    self._recording_pulse.start()
                 mic_name = getattr(self.audio_capture, '_device_name', 'unknown')
                 transcript.system_message("recording started", Log.REC, {"started": "#00ff88"})
                 if self._debug:
@@ -1456,6 +1464,8 @@ class VoxTerm(App):
                 self._recording = False
                 waveform.set_recording(False)
                 header.set_recording(False)
+                if self._recording_pulse:
+                    self._recording_pulse.stop()
                 transcript.system_message(
                     f"microphone error: {e} — grant Terminal mic access in System Settings > Privacy",
                     Log.REC,

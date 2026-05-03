@@ -2,6 +2,17 @@ Screen {
     background: #0a0e14;
     overflow: hidden;
     layers: base notifications;
+    transition: border 600ms linear;
+}
+
+/* ── Recording: full-viewport pulsing red border ─────────── */
+
+Screen.--recording {
+    border: heavy #ff0033;
+}
+
+Screen.--recording.--recording-pulse {
+    border: heavy #770011;
 }
 
 #main-container {
