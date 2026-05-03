@@ -7,7 +7,6 @@ import gc
 import logging
 import sys
 import os
-import shutil
 import subprocess
 import threading
 import time
@@ -52,7 +51,7 @@ from enum import Enum
 import numpy as np
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Static, OptionList
+from textual.widgets import Static, OptionList, LoadingIndicator
 from textual.widgets.option_list import Option
 from textual.binding import Binding
 from textual.screen import ModalScreen
@@ -64,6 +63,8 @@ from tui.widgets.transcript import TranscriptPanel, Log
 from tui.widgets.tag_screen import SpeakerTagScreen
 from tui.widgets.profile_screen import SpeakerProfileScreen
 from tui.widgets.transcript_explorer import TranscriptExplorerScreen
+from tui.widgets.confirm_screen import ConfirmScreen
+from tui.clipboard import clipboard_cmd
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
 from audio.system_capture import SystemCapture
@@ -86,19 +87,9 @@ from config import (
 from config import SESSIONS_DIR, STATE_FILE as _STATE_FILE
 
 
-def _clipboard_cmd() -> list[str] | None:
-    """Return the clipboard copy command for this platform."""
-    if sys.platform == "darwin":
-        return ["pbcopy"]
-    if sys.platform == "win32":
-        return ["clip.exe"]
-    if shutil.which("xclip"):
-        return ["xclip", "-selection", "clipboard"]
-    if shutil.which("xsel"):
-        return ["xsel", "--clipboard", "--input"]
-    if shutil.which("wl-copy"):
-        return ["wl-copy"]
-    return None
+# Clipboard command lives in tui.clipboard so transcript_explorer can share it
+# without an import cycle. Re-export for backwards compatibility within this module.
+_clipboard_cmd = clipboard_cmd
 
 
 from network.party import PartyManager, PartyState, P2P_AVAILABLE as _P2P_AVAILABLE
@@ -469,7 +460,7 @@ class VoxTerm(App):
     BINDINGS = [
         Binding("r", "toggle_recording", "Record/Pause"),
         Binding("t", "tag_speakers", "Tag"),
-        Binding("o", "manage_profiles", "Profiles", show=False),
+        Binding("o", "manage_profiles", "Profiles"),
         Binding("m", "switch_model", "Model"),
         Binding("l", "switch_language", "Language"),
         Binding("ctrl+s", "export_transcript", "Save"),
@@ -531,6 +522,9 @@ class VoxTerm(App):
 
     def compose(self) -> ComposeResult:
         yield CyberHeader()
+        loader = LoadingIndicator(id="model-loading-indicator")
+        loader.display = False
+        yield loader
         with Vertical(id="main-container"):
             yield WaveformWidget()
             yield TranscriptPanel()
@@ -542,9 +536,12 @@ class VoxTerm(App):
         yield Static(
             " [bold #00e5ff]\\[R][/][#607080] Record  [/]"
             "[bold #00e5ff]\\[T][/][#607080] Tag  [/]"
+            "[bold #00e5ff]\\[O][/][#607080] Profiles  [/]"
             "[bold #00e5ff]\\[E][/][#607080] Transcripts  [/]"
             "[bold #00e5ff]\\[P][/][#607080] Party  [/]"
             "[bold #00e5ff]\\[V][/][#607080] Merged  [/]"
+            "[bold #00e5ff]\\[C][/][#607080] Clear  [/]"
+            "[bold #00e5ff]\\[D][/][#607080] Debug  [/]"
             "[bold #00e5ff]\\[?][/][#607080] Help[/]",
             id="footer-bar",
             markup=True,
@@ -655,6 +652,7 @@ class VoxTerm(App):
             self._load_diarizer()
         else:
             self.query_one(TranscriptPanel).system_message(f"loading model: {self._model_name}...", Log.SYS, {self._model_name: "rainbow"})
+            self._show_loading_indicator(True)
             self._start_audio_timer()
             self._load_model()
 
@@ -1368,10 +1366,17 @@ class VoxTerm(App):
 
     def _on_model_loaded(self):
         self._model_loaded = True
+        self._show_loading_indicator(False)
         self.query_one(TranscriptPanel).system_message(f"model loaded: {self._model_name}", Log.SYS, {self._model_name: "rainbow"})
         if not self._diarizer_loaded:
             self._load_diarizer()
         self._update_telemetry()
+
+    def _show_loading_indicator(self, visible: bool) -> None:
+        try:
+            self.query_one("#model-loading-indicator", LoadingIndicator).display = visible
+        except Exception:
+            pass
 
     @work(thread=True, group="diarizer_loading")
     def _load_diarizer(self):
@@ -1948,17 +1953,37 @@ class VoxTerm(App):
 
     def action_clear_transcript(self):
         """Clear display only — live file stays on disk as the record."""
-        self.query_one(TranscriptPanel).clear()
-        self.audio_buffer.clear()
-        self._local_audio_buffer.clear()
-        self._had_speech = False
-        self._silence_chunks = 0
-        self.vad.reset()
-        if self._diarizer_loaded:
-            self.diarizer.reset_session()
-        if self._party.assembler:
-            self._party.assembler.clear()
-        self._speaker_profile_map.clear()
+        transcript = self.query_one(TranscriptPanel)
+        if not transcript.get_entries():
+            return  # nothing to clear; no need to confirm
+
+        def _on_confirm(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            transcript.clear()
+            self.audio_buffer.clear()
+            self._local_audio_buffer.clear()
+            self._had_speech = False
+            self._silence_chunks = 0
+            self.vad.reset()
+            if self._diarizer_loaded:
+                self.diarizer.reset_session()
+            if self._party.assembler:
+                self._party.assembler.clear()
+            self._speaker_profile_map.clear()
+
+        self.push_screen(
+            ConfirmScreen(
+                title="CLEAR TRANSCRIPT?",
+                message=(
+                    "[#ffaa00]This clears the on-screen transcript.[/]\n"
+                    "The auto-saved file on disk is kept."
+                ),
+                confirm_label="Clear",
+                cancel_label="Cancel",
+            ),
+            _on_confirm,
+        )
 
     def action_quit(self):
         if self._recording:
