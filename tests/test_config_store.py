@@ -26,6 +26,7 @@ class TestDefaults:
         # Remote upload defaults — opt-in (URL empty), but include audio when upload runs
         assert cs.get("remote_upload_url") == ""
         assert cs.get("remote_upload_include_audio") is True
+        assert cs.get("remote_upload_token") == ""
 
     def test_unknown_key_returns_none(self, tmp_path_file):
         cs = ConfigStore(tmp_path_file)
@@ -62,6 +63,18 @@ class TestRemoteUploadKeys:
         cs = ConfigStore(tmp_path_file)
         with pytest.raises(TypeError):
             cs.set("remote_upload_include_audio", "yes")
+
+    def test_token_persists(self, tmp_path_file):
+        cs = ConfigStore(tmp_path_file)
+        cs.set("remote_upload_token", "deadbeef")
+        cs2 = ConfigStore(tmp_path_file)
+        assert cs2.get("remote_upload_token") == "deadbeef"
+
+    def test_token_must_be_str(self, tmp_path_file):
+        import pytest
+        cs = ConfigStore(tmp_path_file)
+        with pytest.raises(TypeError):
+            cs.set("remote_upload_token", 0xdeadbeef)
 
 
 class TestGetSet:

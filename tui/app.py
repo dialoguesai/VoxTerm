@@ -499,13 +499,15 @@ class VoxTerm(App):
 
     def __init__(self, transcriber=None, model_name="qwen3-0.6b", language="en",
                  p2p_name=None, p2p_create=False, p2p_join_code=None,
-                 remote_upload_url: str = "", remote_upload_include_audio: bool = True):
+                 remote_upload_url: str = "", remote_upload_include_audio: bool = True,
+                 remote_upload_token: str = ""):
         super().__init__()
         self._p2p_auto_name = p2p_name
         self._p2p_auto_create = p2p_create
         self._p2p_auto_join_code = p2p_join_code
         self._remote_upload_url = remote_upload_url
         self._remote_upload_include_audio = remote_upload_include_audio
+        self._remote_upload_token = remote_upload_token
         self.audio_capture = AudioCapture()
         self.system_capture = SystemCapture()
         self.audio_buffer = AudioBuffer()
@@ -1921,7 +1923,10 @@ class VoxTerm(App):
         )
 
         def _run():
-            result = upload_session(url, session_id, markdown_path, audio_path, metadata)
+            result = upload_session(
+                url, session_id, markdown_path, audio_path, metadata,
+                token=self._remote_upload_token,
+            )
             if result.ok:
                 if delete_markdown_after:
                     try: markdown_path.unlink()
@@ -2303,6 +2308,15 @@ def main():
         action="store_true",
         help="Upload transcript markdown only; skip the WAV.",
     )
+    parser.add_argument(
+        "--remote-upload-token",
+        type=str,
+        default=_cfg.get("remote_upload_token"),
+        metavar="TOKEN",
+        help="Bearer token sent as Authorization: Bearer <token>. "
+             "Required by the Fileverse sidecar; ignored by the FastAPI collector. "
+             "Persisted on use.",
+    )
     args = parser.parse_args()
 
     # Probe llama server for audio-capable models and register them
@@ -2404,11 +2418,14 @@ def main():
     # Resolve upload settings: CLI > state file. Persist on use so subsequent
     # launches keep the operator's choices without re-passing flags.
     _upload_url = "" if args.no_remote_upload else (args.remote_upload_url or "")
+    _upload_token = "" if args.no_remote_upload else (args.remote_upload_token or "")
     _persisted_include_audio = bool(_cfg.get("remote_upload_include_audio"))
     _upload_include_audio = _persisted_include_audio and not args.no_upload_audio
     _to_persist: dict = {}
     if _upload_url and _upload_url != _cfg.get("remote_upload_url"):
         _to_persist["remote_upload_url"] = _upload_url
+    if _upload_token and _upload_token != _cfg.get("remote_upload_token"):
+        _to_persist["remote_upload_token"] = _upload_token
     if args.no_upload_audio and _persisted_include_audio:
         # User explicitly disabled audio uploads — make it stick across runs.
         _to_persist["remote_upload_include_audio"] = False
@@ -2426,6 +2443,7 @@ def main():
         p2p_join_code=args.session_join,
         remote_upload_url=_upload_url,
         remote_upload_include_audio=_upload_include_audio,
+        remote_upload_token=_upload_token,
     )
 
     # Global exception hooks — dump diagnostics on any uncaught crash

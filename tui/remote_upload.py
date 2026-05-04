@@ -104,12 +104,16 @@ def upload_session(
     audio_path: Path | None,
     metadata: dict,
     timeout: float = 60.0,
+    token: str = "",
 ) -> UploadResult:
     """POST a session's transcript (and optional audio) to the collector.
 
     `timeout` is a single value because stdlib urllib has no separate
     connect/read timeouts. Network I/O is synchronous; call this from a
     background thread.
+
+    `token`, if non-empty, is sent as `Authorization: Bearer <token>`.
+    The Fileverse sidecar requires this; the FastAPI collector ignores it.
     """
     if not markdown_path.exists():
         return UploadResult(ok=False, message=f"transcript missing: {markdown_path}")
@@ -132,6 +136,8 @@ def upload_session(
             req = urllib.request.Request(url, data=body, method="POST")
             req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
             req.add_header("Content-Length", str(body_size))
+            if token:
+                req.add_header("Authorization", f"Bearer {token}")
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     return UploadResult(ok=True, status=resp.status, message="ok")

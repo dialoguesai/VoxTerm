@@ -56,6 +56,7 @@ class _Echo(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         _Echo.received = {
             "content_type": self.headers.get("Content-Type", ""),
+            "authorization": self.headers.get("Authorization", ""),
             "body_len": len(body),
             "body": body,
         }
@@ -136,6 +137,28 @@ class TestUploadSession:
         assert b'filename="sid.wav"' in body
         # WAV begins with RIFF header
         assert b"RIFF" in body
+
+    def test_no_token_means_no_authorization_header(self, echo_server, tmp_path):
+        md = tmp_path / "s.md"
+        md.write_text("# x", encoding="utf-8")
+        meta = build_metadata(
+            session_id="sid-noauth", model_name="m", language="en",
+            started_at="x", ended_at="y", entry_count=0, voxterm_version="0",
+        )
+        result = upload_session(echo_server, "sid-noauth", md, None, meta)
+        assert result.ok, result.message
+        assert _Echo.received["authorization"] == ""
+
+    def test_token_sent_as_bearer(self, echo_server, tmp_path):
+        md = tmp_path / "s.md"
+        md.write_text("# x", encoding="utf-8")
+        meta = build_metadata(
+            session_id="sid-auth", model_name="m", language="en",
+            started_at="x", ended_at="y", entry_count=0, voxterm_version="0",
+        )
+        result = upload_session(echo_server, "sid-auth", md, None, meta, token="abc123")
+        assert result.ok, result.message
+        assert _Echo.received["authorization"] == "Bearer abc123"
 
     def test_network_error_returns_failure_result(self, tmp_path):
         md = tmp_path / "s.md"

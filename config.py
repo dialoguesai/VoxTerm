@@ -225,6 +225,7 @@ _DEFAULTS: dict[str, Any] = {
     "p2p_display_name": "",
     "remote_upload_url": "",
     "remote_upload_include_audio": True,
+    "remote_upload_token": "",
 }
 
 # Expected types per key (for validation)
@@ -238,6 +239,7 @@ _TYPES: dict[str, type] = {
     "p2p_display_name": str,
     "remote_upload_url": str,
     "remote_upload_include_audio": bool,
+    "remote_upload_token": str,
 }
 
 
