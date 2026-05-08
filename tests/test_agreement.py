@@ -1,7 +1,7 @@
 """Tests for the LocalAgreement transcription pipeline."""
 
 import pytest
-from transcriber.agreement import AgreementState, _norm, _strip_prefix
+from audio.agreement import AgreementState, _norm, _strip_prefix
 
 
 class TestNorm:

@@ -14,6 +14,7 @@ __pycache__/
 # Transcripts and live files
 *.md
 !README.md
+!CHANGELOG.md
 !docs/**/*.md
 
 # Session state and crash dumps
@@ -35,6 +36,9 @@ tests/fixtures/benchmark_2min.wav
 
 # Generated media
 docs/pipeline.mp4
+
+# llama-swap local config (user-specific paths)
+llama-swap-config.yaml
 
 # Nix
 result

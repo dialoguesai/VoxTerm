@@ -25,6 +25,13 @@
           pulseaudio
           alsa-lib
           alsa-plugins
+          # Dictation mode — keyboard injection
+          xdotool
+          wtype
+          ydotool
+          # Dictation mode — tray icon
+          libappindicator-gtk3
+          gobject-introspection
         ];
 
         commonDeps = with pkgs; [

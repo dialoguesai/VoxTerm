@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import signal
+import sys
 import queue
 import subprocess
 import threading
@@ -46,6 +47,11 @@ class SystemCapture:
             return
         if CURRENT_PLATFORM == Platform.LINUX:
             self._start_linux()
+            return
+        if CURRENT_PLATFORM == Platform.WINDOWS:
+            # Windows system audio (WASAPI loopback) not yet implemented
+            self._unavailable = True
+            self._status_message = "system audio capture not yet supported on Windows — mic capture works"
             return
         if CURRENT_PLATFORM != Platform.MACOS:
             self._unavailable = True
@@ -114,7 +120,10 @@ class SystemCapture:
         # Send SIGTERM so the helper's signal handler can stop the SCStream
         # and release the CoreAudio tap before exiting
         try:
-            self._proc.send_signal(signal.SIGTERM)
+            if sys.platform == "win32":
+                self._proc.terminate()
+            else:
+                self._proc.send_signal(signal.SIGTERM)
         except OSError:
             pass
 
@@ -170,6 +179,8 @@ class SystemCapture:
     @staticmethod
     def _kill_stale_helpers() -> None:
         """Find and SIGTERM any orphaned sck-helper processes."""
+        if sys.platform == "win32":
+            return  # No sck-helper on Windows
         try:
             result = subprocess.run(
                 ["pgrep", "-f", "sck-helper"],

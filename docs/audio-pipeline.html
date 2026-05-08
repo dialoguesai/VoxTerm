@@ -1,0 +1,2369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VOXTERM // AUDIO PIPELINE</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700;800&family=Share+Tech+Mono&display=swap');
+
+  :root {
+    --bg:        #0a0e14;
+    --bg-card:   #0c1018;
+    --bg-code:   #080b10;
+    --border:    #00e5ff;
+    --accent:    #00ffcc;
+    --cyan:      #00e5ff;
+    --magenta:   #ff00aa;
+    --violet:    #aa66ff;
+    --orange:    #ff6600;
+    --gold:      #ffcc00;
+    --red:       #ff0040;
+    --green:     #00ff88;
+    --dim:       #304050;
+    --text:      #c0d0e0;
+    --text-dim:  #607080;
+    --glow-cyan: 0 0 20px rgba(0,229,255,0.3), 0 0 60px rgba(0,229,255,0.1);
+    --glow-mag:  0 0 20px rgba(255,0,170,0.3), 0 0 60px rgba(255,0,170,0.1);
+    --glow-vio:  0 0 20px rgba(170,102,255,0.3), 0 0 60px rgba(170,102,255,0.1);
+    --glow-grn:  0 0 20px rgba(0,255,136,0.3), 0 0 60px rgba(0,255,136,0.1);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    scrollbar-width: thin;
+    scrollbar-color: #1a2030 #0a0e14;
+  }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #0a0e14; }
+  ::-webkit-scrollbar-thumb { background: #1a2535; border-radius: 3px; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* scanlines */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px);
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* grid */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: radial-gradient(circle at 1px 1px, rgba(0,229,255,0.03) 1px, transparent 0);
+    background-size: 48px 48px;
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  /* ── hero ───────────────────────────────────────────── */
+  .hero {
+    position: relative;
+    padding: 40px 40px 30px;
+    text-align: center;
+    overflow: hidden;
+  }
+  .hero-bg {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse 800px 400px at 50% 40%, rgba(0,229,255,0.06) 0%, transparent 70%),
+      radial-gradient(ellipse 600px 300px at 30% 60%, rgba(170,102,255,0.04) 0%, transparent 70%),
+      radial-gradient(ellipse 600px 300px at 70% 60%, rgba(255,0,170,0.03) 0%, transparent 70%);
+    z-index: 0;
+  }
+  .hero > * { position: relative; z-index: 1; }
+  .hero-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px; letter-spacing: 6px; text-transform: uppercase;
+    color: var(--text-dim); margin-bottom: 12px;
+  }
+  .hero h1 {
+    font-size: clamp(36px, 5vw, 64px); font-weight: 800; letter-spacing: -1px;
+    background: linear-gradient(135deg, var(--cyan), var(--accent), var(--violet));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 0 30px rgba(0,229,255,0.25));
+    margin-bottom: 8px;
+  }
+  .hero-sub {
+    font-size: 14px; color: var(--text-dim);
+    max-width: 700px; margin: 0 auto 24px;
+  }
+
+  /* hero waveform canvas */
+  .hero-wave {
+    width: 100%; height: 100px;
+    position: relative; margin: 0 auto 24px;
+    max-width: 900px;
+    border: 1px solid rgba(102,68,204,0.3);
+    background: #060810;
+    box-shadow: 0 0 40px rgba(102,68,204,0.08);
+  }
+  .hero-wave canvas { width: 100%; height: 100%; display: block; }
+  .hero-wave .wave-tag {
+    position: absolute; top: 6px; left: 10px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px; letter-spacing: 3px;
+    text-transform: uppercase; color: var(--violet); opacity: 0.6;
+  }
+
+  .hero-stats {
+    display: flex; justify-content: center; gap: 36px; flex-wrap: wrap;
+  }
+  .stat { text-align: center; }
+  .stat-value {
+    font-size: 24px; font-weight: 700; color: var(--accent);
+    text-shadow: 0 0 20px rgba(0,255,204,0.3);
+  }
+  .stat-label {
+    font-size: 9px; letter-spacing: 3px;
+    text-transform: uppercase; color: var(--text-dim);
+  }
+
+  /* ── nav ────────────────────────────────────────────── */
+  .nav {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10,14,20,0.88); backdrop-filter: blur(12px);
+    border-bottom: 1px solid rgba(0,229,255,0.15);
+    padding: 0 40px; display: flex; gap: 0; overflow-x: auto;
+  }
+  .nav a {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--text-dim); text-decoration: none;
+    padding: 12px 16px; white-space: nowrap;
+    border-bottom: 2px solid transparent; transition: all 0.3s;
+  }
+  .nav a:hover {
+    color: var(--cyan); border-bottom-color: var(--cyan);
+    background: rgba(0,229,255,0.03);
+  }
+
+  /* ── layout ────────────────────────────────────────── */
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 40px 120px; }
+  section { margin-top: 72px; }
+  .section-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; letter-spacing: 5px; text-transform: uppercase;
+    color: var(--magenta); margin-bottom: 6px; opacity: 0.7;
+  }
+  .section-title {
+    font-size: 26px; font-weight: 700; color: #fff; margin-bottom: 6px;
+  }
+  .section-title .hl   { color: var(--cyan); }
+  .section-title .hl-m { color: var(--magenta); }
+  .section-title .hl-v { color: var(--violet); }
+  .section-title .hl-g { color: var(--green); }
+  .section-title .hl-o { color: var(--orange); }
+  .section-desc {
+    color: var(--text-dim); font-size: 13px;
+    max-width: 700px; margin-bottom: 32px;
+  }
+
+  /* ── full-width canvas diagrams ────────────────────── */
+  .diagram-wrap {
+    position: relative;
+    width: 100%;
+    border: 1px solid rgba(0,229,255,0.15);
+    background: #060810;
+    margin: 24px 0;
+    box-shadow: 0 0 50px rgba(0,229,255,0.04);
+    overflow: hidden;
+  }
+  .diagram-wrap canvas {
+    width: 100%; display: block;
+  }
+  .diagram-tag {
+    position: absolute; top: 8px; left: 12px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px; letter-spacing: 3px;
+    text-transform: uppercase; color: var(--text-dim); opacity: 0.5;
+  }
+  .diagram-tag-r {
+    position: absolute; top: 8px; right: 12px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px; letter-spacing: 2px;
+    color: var(--accent); opacity: 0.4;
+  }
+
+  /* ── cards ──────────────────────────────────────────── */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 16px; margin-top: 20px;
+  }
+  .card {
+    border: 1px solid rgba(0,229,255,0.1);
+    background: var(--bg-card);
+    padding: 24px; position: relative; overflow: hidden;
+    transition: all 0.3s;
+  }
+  .card:hover {
+    border-color: rgba(0,229,255,0.25);
+    box-shadow: 0 0 30px rgba(0,229,255,0.05);
+  }
+  .card::before {
+    content: ''; position: absolute;
+    top: 0; left: 0; right: 0; height: 2px;
+  }
+  .card.c-cy::before  { background: linear-gradient(90deg, var(--cyan), transparent); }
+  .card.c-mg::before  { background: linear-gradient(90deg, var(--magenta), transparent); }
+  .card.c-vi::before  { background: linear-gradient(90deg, var(--violet), transparent); }
+  .card.c-gr::before  { background: linear-gradient(90deg, var(--green), transparent); }
+  .card.c-or::before  { background: linear-gradient(90deg, var(--orange), transparent); }
+  .card.c-go::before  { background: linear-gradient(90deg, var(--gold), transparent); }
+  .card.c-rd::before  { background: linear-gradient(90deg, var(--red), transparent); }
+
+  .card-title { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 4px; }
+  .card-sub {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 9px; letter-spacing: 2px; color: var(--text-dim);
+    text-transform: uppercase; margin-bottom: 14px;
+  }
+  .card-body { font-size: 12px; color: var(--text-dim); line-height: 1.9; }
+  .card-body code {
+    background: rgba(0,229,255,0.07); color: var(--cyan);
+    padding: 1px 5px; border-radius: 3px; font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .val { color: var(--accent); font-weight: 500; }
+
+  /* spec lists */
+  .spec-list { list-style: none; margin-top: 6px; }
+  .spec-list li {
+    display: flex; justify-content: space-between; padding: 4px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03); font-size: 12px;
+  }
+  .spec-key { color: var(--text-dim); }
+  .spec-val { color: var(--accent); font-family: 'Share Tech Mono', monospace; font-weight: 500; }
+
+  /* threshold table */
+  .tbl { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 12px; }
+  .tbl th {
+    text-align: left; font-family: 'Share Tech Mono', monospace;
+    font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--text-dim); padding: 8px 14px;
+    border-bottom: 1px solid rgba(0,229,255,0.15);
+  }
+  .tbl td { padding: 6px 14px; border-bottom: 1px solid rgba(255,255,255,0.03); color: var(--text-dim); }
+  .tbl tr:hover td { background: rgba(0,229,255,0.02); }
+  .tbl .tv { color: var(--accent); font-weight: 600; font-family: 'Share Tech Mono', monospace; }
+  .tbl .tn { color: var(--text); }
+
+  /* code blocks */
+  .codeblock {
+    background: var(--bg-code); border: 1px solid rgba(0,229,255,0.08);
+    border-left: 3px solid var(--cyan);
+    padding: 16px 20px; font-size: 12px; line-height: 1.8;
+    overflow-x: auto; margin: 14px 0; position: relative;
+  }
+  .codeblock::before {
+    content: attr(data-file); position: absolute; top: 6px; right: 10px;
+    font-size: 9px; font-family: 'Share Tech Mono', monospace;
+    color: var(--text-dim); opacity: 0.4;
+  }
+  .codeblock .kw  { color: var(--magenta); }
+  .codeblock .fn  { color: var(--cyan); }
+  .codeblock .str { color: var(--green); }
+  .codeblock .num { color: var(--orange); }
+  .codeblock .cmt { color: #405060; font-style: italic; }
+  .codeblock .cls { color: var(--gold); }
+  .codeblock .var { color: var(--text); }
+  .codeblock .op  { color: var(--dim); }
+
+  /* timing bars */
+  .timing { margin-top: 24px; border: 1px solid rgba(0,229,255,0.1); background: var(--bg-card); padding: 28px; overflow-x: auto; }
+  .timing-title { font-size: 13px; font-weight: 600; color: #fff; margin-bottom: 16px; }
+  .timing-row { display: flex; align-items: center; height: 32px; gap: 10px; margin-bottom: 3px; }
+  .timing-label {
+    width: 110px; font-size: 10px; color: var(--text-dim);
+    text-align: right; flex-shrink: 0;
+    font-family: 'Share Tech Mono', monospace;
+  }
+  .timing-track { flex: 1; height: 24px; position: relative; background: rgba(255,255,255,0.015); border-radius: 2px; }
+  .timing-bar {
+    position: absolute; height: 100%; border-radius: 2px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-family: 'Share Tech Mono', monospace;
+    letter-spacing: 1px; color: rgba(255,255,255,0.8);
+    overflow: hidden; white-space: nowrap;
+  }
+  .timing-bar.cy  { background: linear-gradient(90deg, rgba(0,229,255,0.4), rgba(0,229,255,0.15)); border: 1px solid rgba(0,229,255,0.3); }
+  .timing-bar.mg  { background: linear-gradient(90deg, rgba(255,0,170,0.4), rgba(255,0,170,0.15)); border: 1px solid rgba(255,0,170,0.3); }
+  .timing-bar.vi  { background: linear-gradient(90deg, rgba(170,102,255,0.4), rgba(170,102,255,0.15)); border: 1px solid rgba(170,102,255,0.3); }
+  .timing-bar.gr  { background: linear-gradient(90deg, rgba(0,255,136,0.4), rgba(0,255,136,0.15)); border: 1px solid rgba(0,255,136,0.3); }
+  .timing-bar.or  { background: linear-gradient(90deg, rgba(255,102,0,0.4), rgba(255,102,0,0.15)); border: 1px solid rgba(255,102,0,0.3); }
+  .timing-bar.go  { background: linear-gradient(90deg, rgba(255,204,0,0.4), rgba(255,204,0,0.15)); border: 1px solid rgba(255,204,0,0.3); }
+  .timing-bar.pulse { animation: pulse-bar 2s ease-in-out infinite; }
+  @keyframes pulse-bar { 0%,100%{opacity:1;} 50%{opacity:0.6;} }
+
+  /* thread swim lanes */
+  .swim-wrap {
+    border: 1px solid rgba(0,229,255,0.1); background: var(--bg-card);
+    margin-top: 20px; overflow: hidden;
+  }
+  .swim-header {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    border-bottom: 1px solid rgba(0,229,255,0.1);
+  }
+  .swim-header > div {
+    padding: 12px 16px; text-align: center;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+  }
+  .swim-body { position: relative; }
+  .swim-body canvas { width: 100%; display: block; }
+
+  /* footer */
+  .footer {
+    margin-top: 80px; padding: 24px 0;
+    border-top: 1px solid rgba(0,229,255,0.1);
+    text-align: center; font-size: 10px; color: var(--text-dim);
+    font-family: 'Share Tech Mono', monospace;
+  }
+  .footer a { color: var(--cyan); text-decoration: none; }
+
+  /* tags */
+  .tag {
+    display: inline-block; font-size: 9px;
+    font-family: 'Share Tech Mono', monospace;
+    letter-spacing: 1px; padding: 2px 7px; border-radius: 2px; margin-right: 4px;
+  }
+  .tag.cy  { background: rgba(0,229,255,0.1); color: var(--cyan); border: 1px solid rgba(0,229,255,0.2); }
+  .tag.mg  { background: rgba(255,0,170,0.1); color: var(--magenta); border: 1px solid rgba(255,0,170,0.2); }
+  .tag.vi  { background: rgba(170,102,255,0.1); color: var(--violet); border: 1px solid rgba(170,102,255,0.2); }
+  .tag.gr  { background: rgba(0,255,136,0.1); color: var(--green); border: 1px solid rgba(0,255,136,0.2); }
+  .tag.or  { background: rgba(255,102,0,0.1); color: var(--orange); border: 1px solid rgba(255,102,0,0.2); }
+  .tag.go  { background: rgba(255,204,0,0.1); color: var(--gold); border: 1px solid rgba(255,204,0,0.2); }
+
+  /* responsive */
+  @media (max-width: 900px) {
+    .card-grid { grid-template-columns: 1fr; }
+    .hero-stats { gap: 20px; }
+    .container { padding: 0 16px 80px; }
+    .nav { padding: 0 12px; }
+    .nav a { padding: 10px 12px; font-size: 9px; }
+    .swim-header { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════ HERO -->
+<div class="hero">
+  <div class="hero-bg"></div>
+  <div class="hero-label">system documentation // rev 2026.04</div>
+  <h1>AUDIO PIPELINE</h1>
+  <p class="hero-sub">
+    Real-time audio capture, neural speech detection, multi-source merging,
+    ASR transcription, and speaker diarization &mdash; running locally on Apple Silicon.
+  </p>
+  <div class="hero-wave">
+    <canvas id="heroWave"></canvas>
+    <div class="wave-tag">waveform // live</div>
+  </div>
+  <div class="hero-stats">
+    <div class="stat"><div class="stat-value">16kHz</div><div class="stat-label">Sample Rate</div></div>
+    <div class="stat"><div class="stat-value">64ms</div><div class="stat-label">Chunk Size</div></div>
+    <div class="stat"><div class="stat-value">15fps</div><div class="stat-label">Audio Timer</div></div>
+    <div class="stat"><div class="stat-value">~100ms</div><div class="stat-label">Qwen3 Latency</div></div>
+    <div class="stat"><div class="stat-value">512-dim</div><div class="stat-label">Embeddings</div></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ NAV -->
+<nav class="nav">
+  <a href="#arch">Architecture</a>
+  <a href="#flow">Data Flow</a>
+  <a href="#capture">Capture</a>
+  <a href="#vad">VAD</a>
+  <a href="#buffer">Buffer</a>
+  <a href="#merge">P2P Merge</a>
+  <a href="#transcription">ASR</a>
+  <a href="#diarization">Diarization</a>
+  <a href="#waveform">Waveform</a>
+  <a href="#threading">Threading</a>
+  <a href="#timing">Timing</a>
+</nav>
+
+<div class="container">
+
+<!-- ════════════════════════════════════════ SYSTEM ARCHITECTURE -->
+<section id="arch">
+  <div class="section-label">00 // System</div>
+  <div class="section-title">Process <span class="hl">Architecture</span></div>
+  <p class="section-desc">
+    The main process runs the Textual event loop, audio timer, and ONNX inference.
+    PyTorch diarization is isolated in a subprocess to prevent C++ runtime conflicts with MLX.
+    System audio is captured via a compiled Swift helper.
+  </p>
+  <div class="diagram-wrap" style="height:620px;">
+    <canvas id="archDiagram"></canvas>
+    <div class="diagram-tag">process architecture // animated</div>
+    <div class="diagram-tag-r">hover for details</div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════ DATA FLOW ANIMATION -->
+<section id="flow">
+  <div class="section-label">01 // Pipeline</div>
+  <div class="section-title">End-to-End <span class="hl-v">Data Flow</span></div>
+  <p class="section-desc">
+    Audio chunks flow through 7 stages: capture &rarr; mix &rarr; VAD &rarr; buffer &rarr;
+    transcription &rarr; diarization &rarr; output. Watch the data packets move through the pipeline.
+  </p>
+  <div class="diagram-wrap" style="height:560px;">
+    <canvas id="flowDiagram"></canvas>
+    <div class="diagram-tag">data flow // realtime</div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════ CAPTURE -->
+<section id="capture">
+  <div class="section-label">02 // Input</div>
+  <div class="section-title">Audio <span class="hl">Capture</span></div>
+  <p class="section-desc">
+    Three independent audio sources converge into the pipeline.
+  </p>
+
+  <!-- Capture source diagram -->
+  <div class="diagram-wrap" style="height:340px;">
+    <canvas id="captureDiagram"></canvas>
+    <div class="diagram-tag">capture sources // topology</div>
+  </div>
+
+  <div class="card-grid">
+    <div class="card c-cy">
+      <div class="card-title">AudioCapture</div>
+      <div class="card-sub">Microphone // sounddevice</div>
+      <div class="card-body">
+        <ul class="spec-list">
+          <li><span class="spec-key">Sample rate</span><span class="spec-val">16000 Hz</span></li>
+          <li><span class="spec-key">Block size</span><span class="spec-val">1024 samples</span></li>
+          <li><span class="spec-key">Queue</span><span class="spec-val">maxsize=500</span></li>
+          <li><span class="spec-key">Overflow</span><span class="spec-val">drop oldest</span></li>
+          <li><span class="spec-key">Thread</span><span class="spec-val">OS real-time audio</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="card c-mg">
+      <div class="card-title">SystemCapture</div>
+      <div class="card-sub">Desktop Audio // Platform-Specific</div>
+      <div class="card-body">
+        <ul class="spec-list">
+          <li><span class="spec-key">macOS</span><span class="spec-val">ScreenCaptureKit</span></li>
+          <li><span class="spec-key">Linux</span><span class="spec-val">parec (PulseAudio)</span></li>
+          <li><span class="spec-key">Bluetooth</span><span class="spec-val">BlackHole routing</span></li>
+          <li><span class="spec-key">Transport</span><span class="spec-val">stdout pipe</span></li>
+          <li><span class="spec-key">Threads</span><span class="spec-val">reader + stderr</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="card c-vi">
+      <div class="card-title">Peer Audio (UDP)</div>
+      <div class="card-sub">P2P // AES-256-GCM</div>
+      <div class="card-body">
+        <ul class="spec-list">
+          <li><span class="spec-key">Frame size</span><span class="spec-val">320 samples (20ms)</span></li>
+          <li><span class="spec-key">Encryption</span><span class="spec-val">AES-256-GCM</span></li>
+          <li><span class="spec-key">Port</span><span class="spec-val">UDP 9901</span></li>
+          <li><span class="spec-key">Protocol</span><span class="spec-val">fire-and-forget</span></li>
+          <li><span class="spec-key">Gap fill</span><span class="spec-val">silence injection</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════ VAD -->
+<section id="vad">
+  <div class="section-label">03 // Detection</div>
+  <div class="section-title">Silero <span class="hl-m">VAD</span></div>
+  <p class="section-desc">
+    Neural voice activity detection via ONNX Runtime. The probability waveform
+    shows how VAD detects speech boundaries in real-time.
+  </p>
+
+  <!-- VAD probability visualization -->
+  <div class="diagram-wrap" style="height:240px;">
+    <canvas id="vadDiagram"></canvas>
+    <div class="diagram-tag">vad speech probability // simulated</div>
+    <div class="diagram-tag-r">threshold = 0.5</div>
+  </div>
+
+  <div class="card-grid">
+    <div class="card c-mg">
+      <div class="card-title">Model Architecture</div>
+      <div class="card-sub">Silero VAD v5 // ONNX</div>
+      <div class="card-body">
+        <ul class="spec-list">
+          <li><span class="spec-key">Input</span><span class="spec-val">512 samples (32ms)</span></li>
+          <li><span class="spec-key">Context</span><span class="spec-val">64 samples prepended</span></li>
+          <li><span class="spec-key">Hidden state</span><span class="spec-val">2 &times; 1 &times; 128</span></li>
+          <li><span class="spec-key">Output</span><span class="spec-val">P(speech) [0, 1]</span></li>
+          <li><span class="spec-key">Threshold</span><span class="spec-val">&ge; 0.5</span></li>
+          <li><span class="spec-key">Provider</span><span class="spec-val">CPUExecutionProvider</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="card c-cy">
+      <div class="card-title">Processing Flow</div>
+      <div class="card-sub">1024 &rarr; 2&times;512 Sub-Chunks</div>
+      <div class="card-body">
+        Each 1024-sample chunk splits into two 512-sample sub-chunks.
+        Returns <strong>max probability</strong> across sub-chunks.<br><br>
+        State persists across calls (streaming). Reset between sessions.
+        Last 64 samples carry forward as context window.
+        <code>get_speech_segments()</code>: min speech <span class="val">500ms</span>,
+        min silence <span class="val">300ms</span>, max segment <span class="val">6.0s</span>.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════ BUFFER -->
+<section id="buffer">
+  <div class="section-label">04 // Accumulation</div>
+  <div class="section-title">Buffer &amp; <span class="hl-g">Trigger</span></div>
+  <p class="section-desc">
+    Audio accumulates during speech. Transcription triggers on silence after speech,
+    or when the buffer hits the maximum duration.
+  </p>
+
+  <!-- Buffer fill/drain visualization -->
+  <div class="diagram-wrap" style="height:220px;">
+    <canvas id="bufferDiagram"></canvas>
+    <div class="diagram-tag">buffer fill &amp; drain cycle // animated</div>
+  </div>
+
+  <table class="tbl">
+    <thead><tr><th>Parameter</th><th>Value</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td class="tn">SILENCE_TRIGGER_SECONDS</td><td class="tv">0.3s</td><td>Silence before trigger</td></tr>
+      <tr><td class="tn">MIN_BUFFER_SECONDS</td><td class="tv">1.0s</td><td>Min audio to transcribe</td></tr>
+      <tr><td class="tn">MAX_BUFFER_SECONDS</td><td class="tv">3.0s</td><td>Force transcription</td></tr>
+      <tr><td class="tn">VAD_THRESHOLD</td><td class="tv">0.50</td><td>Speech probability cutoff</td></tr>
+      <tr><td class="tn">P2P_MERGE_DELAY_MS</td><td class="tv">60ms</td><td>Added to trigger with peers</td></tr>
+      <tr><td class="tn">RMS gate</td><td class="tv">0.005</td><td>Skip quiet buffers</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ════════════════════════════════════════ P2P MERGE -->
+<section id="merge">
+  <div class="section-label">05 // P2P</div>
+  <div class="section-title">Multi-Source <span class="hl-v">Audio Merge</span></div>
+  <p class="section-desc">
+    When peers connect, multiple microphones are merged with energy-weighted mixing
+    and a jitter buffer for time alignment.
+  </p>
+
+  <!-- P2P merge network diagram -->
+  <div class="diagram-wrap" style="height:420px;">
+    <canvas id="mergeDiagram"></canvas>
+    <div class="diagram-tag">p2p audio merge // network topology</div>
+  </div>
+
+  <div class="card-grid">
+    <div class="card c-vi">
+      <div class="card-title">PeerAudioBuffer</div>
+      <div class="card-sub">Sequence-Based Ring Buffer</div>
+      <div class="card-body">
+        Each peer: <span class="val">2.0s</span> ring buffer (int16).
+        Frames indexed by sequence number. Gaps &rarr; silence fill.
+        Out-of-order / duplicate dropped.
+        <code>read(sec)</code> &rarr; float32 [-1, 1].
+      </div>
+    </div>
+    <div class="card c-or">
+      <div class="card-title">Energy-Weighted Mix</div>
+      <div class="card-sub">Closest Mic Wins</div>
+      <div class="card-body">
+        <code>w[i] = sqrt(rms[i]) / &sum;sqrt(rms[j])</code><br>
+        RMS &lt; <span class="val">0.003</span> &rarr; zero weight.
+        EMA smoothing &alpha;=<span class="val">0.15</span>.
+        Result &times; <span class="val">1.2</span> boost, clipped [-1,1].
+      </div>
+    </div>
+    <div class="card c-cy">
+      <div class="card-title">Jitter Buffer</div>
+      <div class="card-sub">60ms Time Alignment</div>
+      <div class="card-body">
+        Local chunks buffered <span class="val">60ms</span> before merge.
+        Absorbs network jitter. <strong>Zero-latency</strong> when no peers.
+        <code>flush()</code> drains on session end.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════ TRANSCRIPTION -->
+<section id="transcription">
+  <div class="section-label">06 // ASR</div>
+  <div class="section-title"><span class="hl">Transcription</span> Engine</div>
+  <p class="section-desc">
+    Three backends auto-selected by platform. All share hallucination filtering and dedup.
+  </p>
+
+  <!-- Transcription pipeline diagram -->
+  <div class="diagram-wrap" style="height:240px;">
+    <canvas id="asrDiagram"></canvas>
+    <div class="diagram-tag">asr pipeline // filter chain</div>
+  </div>
+
+  <div class="card-grid">
+    <div class="card c-go">
+      <div class="card-title">Qwen3-ASR</div>
+      <div class="card-sub">Primary // MLX + PyTorch</div>
+      <div class="card-body">
+        <ul class="spec-list">
+          <li><span class="spec-key">Models</span><span class="spec-val">0.6B, 1.7B</span></li>
+          <li><span class="spec-key">macOS</span><span class="spec-val">MLX (Metal GPU)</span></li>
+          <li><span class="spec-key">Linux</span><span class="spec-val">qwen-asr (PyTorch)</span></li>
+          <li><span class="spec-key">Latency</span><span class="spec-val">~100ms (MLX)</span></li>
+          <li><span class="spec-key">Languages</span><span class="spec-val">14 supported</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="card c-cy">
+      <div class="card-title">mlx-whisper</div>
+      <div class="card-sub">Fallback // macOS Only</div>
+      <div class="card-body">
+        <ul class="spec-list">
+          <li><span class="spec-key">Models</span><span class="spec-val">tiny &rarr; large-v3</span></li>
+          <li><span class="spec-key">Backend</span><span class="spec-val">MLX (Metal)</span></li>
+          <li><span class="spec-key">Latency</span><span class="spec-val">~2-4s</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="card c-gr">
+      <div class="card-title">faster-whisper</div>
+      <div class="card-sub">Linux Fallback // CTranslate2</div>
+      <div class="card-body">
+        <ul class="spec-list">
+          <li><span class="spec-key">Models</span><span class="spec-val">tiny &rarr; large-v3</span></li>
+          <li><span class="spec-key">Backend</span><span class="spec-val">CTranslate2</span></li>
+          <li><span class="spec-key">Beam size</span><span class="spec-val">5</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="card c-rd" style="margin-top:16px;">
+    <div class="card-title" style="color:var(--red);">Hallucination Filter</div>
+    <div class="card-sub">5-Layer Defense</div>
+    <div class="card-body">
+      <strong>1.</strong> Script mismatch: reject CJK/Cyrillic when expecting Latin<br>
+      <strong>2.</strong> Length: &lt; 2 chars or &gt; 80 words<br>
+      <strong>3.</strong> N-gram repeat: any n-gram &ge; 3&times; AND &gt; 25% of text<br>
+      <strong>4.</strong> Clich&eacute;s: "thanks for watching", "[music]", filler words<br>
+      <strong>5.</strong> Dedup: last 5 outputs, consecutive duplicates suppressed
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════ DIARIZATION -->
+<section id="diarization">
+  <div class="section-label">07 // Identity</div>
+  <div class="section-title">Speaker <span class="hl-m">Diarization</span></div>
+  <p class="section-desc">
+    ONNX speaker embeddings with online cosine clustering, cross-session profile matching,
+    and active learning confirmations.
+  </p>
+
+  <!-- Embedding space visualization -->
+  <div class="diagram-wrap" style="height:440px;">
+    <canvas id="diarizeDiagram"></canvas>
+    <div class="diagram-tag">speaker embedding space // clustering</div>
+    <div class="diagram-tag-r">cosine similarity</div>
+  </div>
+
+  <div class="card-grid">
+    <div class="card c-mg">
+      <div class="card-title">DiarizationProxy</div>
+      <div class="card-sub">3 Execution Modes</div>
+      <div class="card-body">
+        <strong style="color:var(--accent)">Direct</strong>: ONNX in-process. No PyTorch. Safe with MLX.<br>
+        <strong style="color:var(--gold)">Subprocess</strong>: PyTorch child process. IPC over pipes. Max 3 restarts in 60s.<br>
+        <strong style="color:var(--text-dim)">In-process</strong>: Last resort. PyTorch + Lock + <code>OMP_THREADS=1</code>.
+      </div>
+    </div>
+    <div class="card c-vi">
+      <div class="card-title">ERes2Net-Large <span style="font-size:11px;color:var(--accent);">(default)</span></div>
+      <div class="card-sub">3D-Speaker // ONNX</div>
+      <div class="card-body">
+        <ul class="spec-list">
+          <li><span class="spec-key">Embedding</span><span class="spec-val">512-dim</span></li>
+          <li><span class="spec-key">EER</span><span class="spec-val">0.52% (VoxCeleb)</span></li>
+          <li><span class="spec-key">Features</span><span class="spec-val">80-dim Fbank (numpy)</span></li>
+          <li><span class="spec-key">Runtime</span><span class="spec-val">ONNX (CPU)</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="card c-or">
+      <div class="card-title">CAM++</div>
+      <div class="card-sub">Alternative + LID + Legacy Fallback</div>
+      <div class="card-body">
+        <ul class="spec-list">
+          <li><span class="spec-key">Embedding</span><span class="spec-val">512-dim</span></li>
+          <li><span class="spec-key">ONNX model</span><span class="spec-val">campplus.onnx</span></li>
+          <li><span class="spec-key">LID variant</span><span class="spec-val">campplus_lid (lang ID)</span></li>
+          <li><span class="spec-key">PyTorch fallback</span><span class="spec-val">WeSpeaker vendored</span></li>
+        </ul>
+        Lighter and faster than ERes2Net. Also used for <strong>language identification</strong>
+        (3D-Speaker LID model). The PyTorch CAM++ from WeSpeaker is the last-resort fallback
+        when neither ONNX model is available.
+      </div>
+    </div>
+  </div>
+
+  <div class="card c-mg" style="margin-top:16px;">
+    <div class="card-title">Cross-Session Matching</div>
+    <div class="card-sub">Cosine Similarity // Adaptive Thresholds</div>
+    <div class="card-body">
+      <table class="tbl">
+        <thead><tr><th>Threshold</th><th>Value</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td class="tn">HIGH confidence</td><td class="tv">&ge; 0.55</td><td>Auto-assign name</td></tr>
+          <tr><td class="tn">Adaptive boost</td><td class="tv">+0.15e<sup>-n/10</sup></td><td>Stricter with fewer samples</td></tr>
+          <tr><td class="tn">MEDIUM confidence</td><td class="tv">&ge; 0.35</td><td>Prompt confirmation</td></tr>
+          <tr><td class="tn">Conflict margin</td><td class="tv">0.05</td><td>Top-2 ambiguity &rarr; skip</td></tr>
+          <tr><td class="tn">Continuity bonus</td><td class="tv">0.10</td><td>Boost for recent speaker</td></tr>
+          <tr><td class="tn">Cluster merge</td><td class="tv">0.50</td><td>Periodic pairwise merge</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════ WAVEFORM WIDGET -->
+<section id="waveform">
+  <div class="section-label">08 // Visualization</div>
+  <div class="section-title">Pixel-Shader <span class="hl-v">Oscilloscope</span></div>
+  <p class="section-desc">
+    FFT spectral centroid mapped through a 9-stop neon gradient.
+    Half-block Unicode rendering at 2&times; vertical resolution with glow compositing.
+  </p>
+
+  <!-- Large animated waveform -->
+  <div class="diagram-wrap" style="height:180px;">
+    <canvas id="waveformBig"></canvas>
+    <div class="diagram-tag">waveform widget // shader preview</div>
+  </div>
+
+  <div class="card-grid">
+    <div class="card c-vi">
+      <div class="card-title">Colour Gradient</div>
+      <div class="card-sub">Spectral Centroid &rarr; 9-Stop Neon</div>
+      <div class="card-body" style="line-height:2.4;">
+        <span style="color:#ff1440">&#x2588;&#x2588;</span> deep-red &rarr;
+        <span style="color:#ff00aa">&#x2588;&#x2588;</span> magenta &rarr;
+        <span style="color:#aa1eff">&#x2588;&#x2588;</span> violet &rarr;
+        <span style="color:#2878ff">&#x2588;&#x2588;</span> blue &rarr;
+        <span style="color:#00ffdc">&#x2588;&#x2588;</span> cyan &rarr;
+        <span style="color:#39ff14">&#x2588;&#x2588;</span> green &rarr;
+        <span style="color:#e6ff00">&#x2588;&#x2588;</span> yellow &rarr;
+        <span style="color:#ff7800">&#x2588;&#x2588;</span> orange &rarr;
+        <span style="color:#ff00b4">&#x2588;&#x2588;</span> pink
+      </div>
+    </div>
+    <div class="card c-cy">
+      <div class="card-title">Render Stages</div>
+      <div class="card-sub">Per-Frame Pipeline</div>
+      <div class="card-body">
+        <ol style="padding-left:16px; margin:0;">
+          <li>RMS per column, noise-gated at <code>0.003</code></li>
+          <li>Gain: <code>(rms&times;45)^0.45</code></li>
+          <li>3-pass spatial smooth (amplitude + pitch)</li>
+          <li>3-harmonic sine wave shape</li>
+          <li>Distance-field glow (r=4.5, p=1.5)</li>
+          <li>Edge/interior/glow compositing</li>
+          <li>Lightsaber center-line ignition</li>
+          <li>Scanlines + background dot grid</li>
+          <li>Half-block (&#x2580;) render to terminal</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════ THREADING -->
+<section id="threading">
+  <div class="section-label">09 // Concurrency</div>
+  <div class="section-title">Threading <span class="hl-g">Model</span></div>
+  <p class="section-desc">
+    Four thread groups, carefully partitioned to prevent GPU races, UI freezes,
+    and C++ runtime conflicts.
+  </p>
+
+  <!-- Swim lane diagram -->
+  <div class="diagram-wrap" style="height:380px;">
+    <canvas id="threadDiagram"></canvas>
+    <div class="diagram-tag">thread swim lanes // execution timeline</div>
+  </div>
+
+  <div class="card c-go" style="margin-top:16px;">
+    <div class="card-title">Synchronization Primitives</div>
+    <div class="card-sub">Preventing Race Conditions</div>
+    <div class="card-body">
+      <table class="tbl">
+        <thead><tr><th>Primitive</th><th>Type</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="tn"><code>_transcribe_lock</code></td><td class="tv">Lock</td><td>Serializes MLX Metal GPU (concurrent = segfault)</td></tr>
+          <tr><td class="tn"><code>_transcribing</code></td><td class="tv">Event</td><td>Set = busy, prevents new trigger. Watchdog monitors.</td></tr>
+          <tr><td class="tn"><code>AudioBuffer._lock</code></td><td class="tv">Lock</td><td>Atomic swap between timer &amp; worker threads</td></tr>
+          <tr><td class="tn"><code>Queue(500)</code></td><td class="tv">Queue</td><td>Bounded audio chunks, drop oldest on overflow</td></tr>
+          <tr><td class="tn"><code>DiarizationProxy._lock</code></td><td class="tv">Lock</td><td>Serializes subprocess IPC calls</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════ TIMING -->
+<section id="timing">
+  <div class="section-label">10 // Latency</div>
+  <div class="section-title">End-to-End <span class="hl-o">Timing</span></div>
+  <p class="section-desc">
+    From sound wave hitting the microphone to text on screen.
+    Dominant latency is the speech buffering wait.
+  </p>
+
+  <div class="timing">
+    <div class="timing-title">Typical Pipeline Latency (Qwen3-ASR 0.6B, no P2P)</div>
+    <div class="timing-row"><div class="timing-label">Audio I/O</div><div class="timing-track"><div class="timing-bar cy" style="left:0%;width:3%;">64ms</div></div></div>
+    <div class="timing-row"><div class="timing-label">VAD</div><div class="timing-track"><div class="timing-bar mg" style="left:3%;width:1%;">&lt;1ms</div></div></div>
+    <div class="timing-row"><div class="timing-label">Speech buffer</div><div class="timing-track"><div class="timing-bar gr pulse" style="left:4%;width:55%;">1.0 &ndash; 3.0s (variable)</div></div></div>
+    <div class="timing-row"><div class="timing-label">Silence wait</div><div class="timing-track"><div class="timing-bar or" style="left:59%;width:10%;">300ms</div></div></div>
+    <div class="timing-row"><div class="timing-label">Qwen3 ASR</div><div class="timing-track"><div class="timing-bar go" style="left:69%;width:4%;">~100ms</div></div></div>
+    <div class="timing-row"><div class="timing-label">Diarization</div><div class="timing-track"><div class="timing-bar mg" style="left:73%;width:3%;">~50ms</div></div></div>
+    <div class="timing-row"><div class="timing-label">X-session</div><div class="timing-track"><div class="timing-bar vi" style="left:76%;width:1%;">~10ms</div></div></div>
+    <div class="timing-row"><div class="timing-label">UI render</div><div class="timing-track"><div class="timing-bar cy" style="left:77%;width:1%;">&lt;1ms</div></div></div>
+    <div class="timing-row" style="margin-top:10px;"><div class="timing-label" style="font-weight:600;color:var(--accent);">Total</div><div class="timing-track"><div class="timing-bar gr" style="left:0%;width:78%;background:linear-gradient(90deg,rgba(0,255,136,0.2),rgba(0,255,204,0.3));border:1px solid rgba(0,255,136,0.4);">~1.5 &ndash; 3.5s (dominated by buffering)</div></div></div>
+  </div>
+
+  <!-- Watchdog -->
+  <div class="card c-rd" style="margin-top:16px;">
+    <div class="card-title" style="color:var(--red);">Watchdog System</div>
+    <div class="card-sub">Graduated Timeout Response</div>
+    <div class="card-body">
+      <table class="tbl">
+        <thead><tr><th>Elapsed</th><th>Action</th></tr></thead>
+        <tbody>
+          <tr><td class="tv">&gt; 8s</td><td>Log "transcription slow" (debug mode)</td></tr>
+          <tr><td class="tv">&gt; 15s</td><td>Force-reset + system message</td></tr>
+          <tr><td class="tv">&gt; 30s</td><td>Force-reset + crash dump + suggest smaller model</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<div class="footer">
+  VOXTERM // AUDIO PIPELINE DOCUMENTATION<br>
+  <span style="opacity:0.4;">generated from source &mdash; <a href="https://github.com/dmarzzz/voxterm">github.com/dmarzzz/voxterm</a></span>
+</div>
+
+</div><!-- /container -->
+
+<!-- ════════════════════════════════════════════════════════════
+     CANVAS RENDERING ENGINE
+     ════════════════════════════════════════════════════════════ -->
+<script>
+// ── Shared utilities ────────────────────────────────────────
+const DPR = window.devicePixelRatio || 1;
+const CYAN = '#00e5ff', MAGENTA = '#ff00aa', VIOLET = '#aa66ff',
+      GREEN = '#00ff88', GOLD = '#ffcc00', ORANGE = '#ff6600',
+      RED = '#ff0040', ACCENT = '#00ffcc', BG = '#060810',
+      TEXT_DIM = '#506070', TEXT = '#c0d0e0';
+
+function initCanvas(id, h) {
+  const c = document.getElementById(id);
+  if (!c) return null;
+  const r = c.parentElement.getBoundingClientRect();
+  c.width = r.width * DPR;
+  c.height = (h || r.height) * DPR;
+  c.style.height = (h || r.height) + 'px';
+  const ctx = c.getContext('2d');
+  ctx.scale(DPR, DPR);
+  return { c, ctx, w: r.width, h: h || r.height };
+}
+
+function hex2rgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgba(hex, a) {
+  const [r, g, b] = hex2rgb(hex);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// 9-stop gradient matching the TUI waveform widget
+const GRAD_STOPS = [
+  [0.000, [255,20,60]], [0.125, [255,0,170]], [0.250, [170,30,255]],
+  [0.375, [40,120,255]], [0.500, [0,255,220]], [0.625, [57,255,20]],
+  [0.750, [230,255,0]], [0.875, [255,120,20]], [1.000, [255,0,180]],
+];
+function gradColor(t) {
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 0; i < GRAD_STOPS.length - 1; i++) {
+    if (t <= GRAD_STOPS[i + 1][0]) {
+      const f = (t - GRAD_STOPS[i][0]) / (GRAD_STOPS[i + 1][0] - GRAD_STOPS[i][0]);
+      const c = GRAD_STOPS[i][1].map((v, j) => Math.round(v + (GRAD_STOPS[i + 1][1][j] - v) * f));
+      return c;
+    }
+  }
+  return GRAD_STOPS[8][1];
+}
+
+function drawRoundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// ── drawWaveform (reused for hero + big waveform) ───────────
+function drawWaveform(ctx, w, h, phase, scroll) {
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, w, h);
+
+  // dot grid
+  ctx.fillStyle = 'rgba(0,229,255,0.03)';
+  for (let y = 0; y < h; y += 20) for (let x = 0; x < w; x += 20) ctx.fillRect(x, y, 1, 1);
+
+  // scanlines
+  ctx.fillStyle = 'rgba(0,0,0,0.05)';
+  for (let y = 0; y < h; y += 3) ctx.fillRect(0, y, w, 1);
+
+  const cx = h / 2;
+  const cols = Math.floor(w / 2);
+  for (let i = 0; i < cols; i++) {
+    const x = (i / cols) * w;
+    const t = i / cols;
+    const amp = 0.15 + 0.35 * Math.abs(Math.sin(t * 3.14 + phase * 0.3)) *
+      (0.6 + 0.4 * Math.sin(phase * 0.7 + t * 2)) +
+      0.15 * Math.sin(t * 8 + scroll) * Math.sin(phase * 1.5 + t * 3);
+    const wave = 0.65 * Math.sin(t * 10 + scroll) +
+      0.22 * Math.sin(t * 23 + scroll * 1.3 + 0.9) +
+      0.13 * Math.sin(t * 38 + scroll * 0.8 + 2.3);
+    const y = cx + wave * amp * cx * 0.7;
+    const pitchT = 0.3 + 0.4 * Math.sin(t * 2 + phase * 0.2);
+    const [r, g, b] = gradColor(pitchT);
+
+    // glow
+    for (let dy = -5; dy <= 5; dy++) {
+      const gy = y + dy;
+      if (gy < 0 || gy >= h) continue;
+      const gi = Math.pow(Math.max(0, 1 - Math.abs(dy) / 5), 2) * amp * 0.35;
+      if (gi < 0.01) continue;
+      ctx.fillStyle = `rgba(${r},${g},${b},${gi})`;
+      ctx.fillRect(x, gy, 2, 1);
+    }
+    const br = 0.7 + 0.3 * amp;
+    ctx.fillStyle = `rgba(${Math.min(255, r * br)|0},${Math.min(255, g * br)|0},${Math.min(255, b * br)|0},${0.6 + amp * 0.4})`;
+    ctx.fillRect(x, y - 1, 2, 2);
+  }
+
+  // center line
+  ctx.strokeStyle = 'rgba(0,255,204,0.04)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, cx); ctx.lineTo(w, cx); ctx.stroke();
+}
+
+// ── HERO WAVEFORM ───────────────────────────────────────────
+(function() {
+  const cv = initCanvas('heroWave', 100);
+  if (!cv) return;
+  let phase = 0, scroll = 0;
+  function frame() {
+    drawWaveform(cv.ctx, cv.w, cv.h, phase, scroll);
+    phase += 0.02; scroll += 0.08;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── PROCESS ARCHITECTURE DIAGRAM ────────────────────────────
+(function() {
+  const cv = initCanvas('archDiagram', 620);
+  if (!cv) return;
+  const { ctx, w, h } = cv;
+  let t = 0;
+
+  // Boxes definition: {label, sub, x, y, w, h, color, items}
+  const boxes = [
+    { label: 'MAIN PROCESS', sub: 'Python + MLX + ONNX', x: 0.03, y: 0.04, bw: 0.62, bh: 0.88, color: CYAN,
+      children: [
+        { label: 'Main Thread', sub: 'Textual Event Loop', x: 0.05, y: 0.12, bw: 0.28, bh: 0.35, color: CYAN,
+          items: ['15fps audio timer', 'Silero VAD (ONNX)', 'UI rendering', 'Buffer management', 'Keybindings'] },
+        { label: 'Worker Thread', sub: '@work(thread=True)', x: 0.35, y: 0.12, bw: 0.28, bh: 0.35, color: GOLD,
+          items: ['MLX transcription', 'ONNX diarization', 'Online clustering', 'X-session matching', 'gc.collect() / 20'] },
+        { label: 'Audio I/O', sub: 'Real-time + Daemon', x: 0.05, y: 0.54, bw: 0.28, bh: 0.30, color: MAGENTA,
+          items: ['sounddevice callback', 'SCK reader thread', 'stderr monitor', 'UDP audio recv'] },
+        { label: 'P2P Network', sub: 'SessionManager', x: 0.35, y: 0.54, bw: 0.28, bh: 0.30, color: VIOLET,
+          items: ['TCP accept', 'Heartbeat (1.0s)', 'Per-peer read', 'mDNS discovery'] },
+      ]},
+    { label: 'SUBPROCESS', sub: 'PyTorch (fallback)', x: 0.70, y: 0.04, bw: 0.27, bh: 0.40, color: ORANGE,
+      items: ['PyTorch diarizer', '3D-Speaker model', 'IPC: JSON over pipe', 'Auto-restart (3x/60s)', 'Fallback to in-proc'] },
+    { label: 'SCK HELPER', sub: 'Swift / ScreenCaptureKit', x: 0.70, y: 0.50, bw: 0.27, bh: 0.20, color: MAGENTA,
+      items: ['Compiled from .swift', 'stdout: raw PCM', 'SIGTERM shutdown'] },
+    { label: 'SQLite', sub: 'Speaker Profiles', x: 0.70, y: 0.76, bw: 0.12, bh: 0.16, color: GREEN,
+      items: ['WAL mode', 'AES-256 enc'] },
+    { label: 'Metal GPU', sub: 'Apple Silicon', x: 0.84, y: 0.76, bw: 0.13, bh: 0.16, color: GOLD,
+      items: ['MLX inference', 'Qwen3-ASR'] },
+  ];
+
+  function drawBox(b, baseX, baseY, baseW, baseH) {
+    const bx = baseX + b.x * baseW, by = baseY + b.y * baseH;
+    const bw = b.bw * baseW, bh = b.bh * baseH;
+
+    // bg
+    ctx.fillStyle = rgba(b.color, 0.04);
+    drawRoundRect(ctx, bx, by, bw, bh, 4);
+    ctx.fill();
+
+    // border
+    ctx.strokeStyle = rgba(b.color, 0.3 + 0.1 * Math.sin(t * 2));
+    ctx.lineWidth = 1;
+    drawRoundRect(ctx, bx, by, bw, bh, 4);
+    ctx.stroke();
+
+    // glow top edge
+    const grd = ctx.createLinearGradient(bx, by, bx + bw * 0.5, by);
+    grd.addColorStop(0, rgba(b.color, 0.5));
+    grd.addColorStop(1, rgba(b.color, 0));
+    ctx.fillStyle = grd;
+    ctx.fillRect(bx, by, bw, 2);
+
+    // label
+    ctx.font = '600 16px "JetBrains Mono"';
+    ctx.fillStyle = b.color;
+    ctx.fillText(b.label, bx + 10, by + 20);
+    ctx.font = '14px "Share Tech Mono"';
+    ctx.fillStyle = TEXT_DIM;
+    ctx.fillText(b.sub, bx + 10, by + 36);
+
+    // items
+    if (b.items) {
+      ctx.font = '14px "JetBrains Mono"';
+      ctx.fillStyle = rgba(b.color, 0.6);
+      b.items.forEach((item, i) => {
+        ctx.fillStyle = TEXT_DIM;
+        ctx.fillText('> ', bx + 12, by + 50 + i * 20);
+        ctx.fillStyle = rgba(TEXT, 0.7);
+        ctx.fillText(item, bx + 28, by + 50 + i * 20);
+      });
+    }
+
+    // children
+    if (b.children) {
+      b.children.forEach(c => drawBox(c, bx, by, bw, bh));
+    }
+
+    return { x: bx, y: by, w: bw, h: bh };
+  }
+
+  // Animated data packets flowing between boxes
+  const packets = [];
+  for (let i = 0; i < 12; i++) {
+    packets.push({
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.3 + Math.random() * 0.4,
+      route: Math.floor(Math.random() * 4), // 0=main-worker, 1=audio-main, 2=main-subprocess, 3=sck-main
+      color: [CYAN, MAGENTA, GOLD, VIOLET][Math.floor(Math.random() * 4)],
+      size: 2 + Math.random() * 2,
+    });
+  }
+
+  // Routes: each is array of [x%, y%] waypoints
+  const routes = [
+    [[0.19, 0.30], [0.49, 0.30]], // main thread -> worker
+    [[0.19, 0.65], [0.19, 0.40]], // audio IO -> main thread
+    [[0.63, 0.25], [0.70, 0.25]], // main -> subprocess
+    [[0.70, 0.60], [0.63, 0.60]], // sck -> main
+  ];
+
+  function frame() {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, w, h);
+
+    // background grid
+    ctx.fillStyle = 'rgba(0,229,255,0.015)';
+    for (let y = 0; y < h; y += 32) for (let x = 0; x < w; x += 32) ctx.fillRect(x, y, 1, 1);
+
+    // Draw boxes
+    boxes.forEach(b => drawBox(b, 0, 0, w, h));
+
+    // Draw connection lines
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1;
+    routes.forEach((route, ri) => {
+      ctx.strokeStyle = rgba([CYAN, MAGENTA, ORANGE, MAGENTA][ri], 0.15);
+      ctx.beginPath();
+      ctx.moveTo(route[0][0] * w, route[0][1] * h);
+      ctx.lineTo(route[1][0] * w, route[1][1] * h);
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+
+    // Animate packets
+    packets.forEach(p => {
+      const route = routes[p.route];
+      const prog = (Math.sin(t * p.speed + p.phase) * 0.5 + 0.5);
+      const px = route[0][0] + (route[1][0] - route[0][0]) * prog;
+      const py = route[0][1] + (route[1][1] - route[0][1]) * prog;
+
+      ctx.beginPath();
+      ctx.arc(px * w, py * h, p.size, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(p.color, 0.7);
+      ctx.fill();
+
+      // glow
+      ctx.beginPath();
+      ctx.arc(px * w, py * h, p.size * 3, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(p.color, 0.08);
+      ctx.fill();
+    });
+
+    t += 0.016;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── DATA FLOW PIPELINE ──────────────────────────────────────
+(function() {
+  const cv = initCanvas('flowDiagram', 560);
+  if (!cv) return;
+  const { ctx, w, h } = cv;
+  let t = 0;
+
+  const stages = [
+    { label: 'MIC', sub: 'sounddevice', color: CYAN, icon: '\u{1F399}' },
+    { label: 'SYS', sub: 'ScreenCaptureKit', color: MAGENTA, icon: '\u{1F4BB}' },
+    { label: 'MIX', sub: 'np.clip(a+b)', color: ACCENT, icon: '\u{2728}' },
+    { label: 'VAD', sub: 'Silero ONNX', color: MAGENTA, icon: '\u{1F50D}' },
+    { label: 'BUF', sub: 'AudioBuffer', color: GREEN, icon: '\u{1F4E6}' },
+    { label: 'ASR', sub: 'Qwen3-ASR', color: GOLD, icon: '\u{1F9E0}' },
+    { label: 'DIA', sub: 'ERes2Net', color: VIOLET, icon: '\u{1F464}' },
+    { label: 'OUT', sub: 'Transcript', color: GREEN, icon: '\u{1F4DD}' },
+  ];
+
+  // Layout: two sources merge, then linear
+  function getStagePos(i) {
+    if (i === 0) return { x: 0.08, y: 0.22 }; // MIC
+    if (i === 1) return { x: 0.08, y: 0.62 }; // SYS
+    // After merge, linear across
+    const idx = i - 2;
+    return { x: 0.22 + idx * 0.115, y: 0.42 };
+  }
+
+  // Packets
+  const flowPackets = [];
+  for (let i = 0; i < 20; i++) {
+    flowPackets.push({
+      progress: Math.random(), // 0-1 along entire path
+      speed: 0.002 + Math.random() * 0.003,
+      size: 2 + Math.random() * 2,
+      branch: Math.random() < 0.5 ? 0 : 1, // 0=mic, 1=sys
+    });
+  }
+
+  function getPathPoint(progress, branch) {
+    // 0-0.2: source to merge
+    // 0.2-1.0: merge through linear stages
+    if (progress < 0.2) {
+      const t = progress / 0.2;
+      const src = branch === 0 ? getStagePos(0) : getStagePos(1);
+      const dst = getStagePos(2);
+      return { x: src.x + (dst.x - src.x) * t, y: src.y + (dst.y - src.y) * t };
+    }
+    const t = (progress - 0.2) / 0.8;
+    const idx = t * 5; // 6 stages after merge
+    const i = Math.min(5, Math.floor(idx));
+    const f = idx - i;
+    const a = getStagePos(i + 2);
+    const b = getStagePos(Math.min(i + 3, 7));
+    return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+  }
+
+  function frame() {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, w, h);
+
+    // grid
+    ctx.fillStyle = 'rgba(0,229,255,0.015)';
+    for (let y = 0; y < h; y += 32) for (let x = 0; x < w; x += 32) ctx.fillRect(x, y, 1, 1);
+
+    // Connection lines
+    ctx.setLineDash([3, 5]);
+    ctx.lineWidth = 1;
+    // MIC -> MIX
+    ctx.strokeStyle = rgba(CYAN, 0.15);
+    ctx.beginPath();
+    let a = getStagePos(0), b = getStagePos(2);
+    ctx.moveTo(a.x * w + 30, a.y * h); ctx.lineTo(b.x * w - 30, b.y * h);
+    ctx.stroke();
+    // SYS -> MIX
+    ctx.strokeStyle = rgba(MAGENTA, 0.15);
+    ctx.beginPath();
+    a = getStagePos(1); b = getStagePos(2);
+    ctx.moveTo(a.x * w + 30, a.y * h); ctx.lineTo(b.x * w - 30, b.y * h);
+    ctx.stroke();
+    // Linear chain
+    for (let i = 2; i < 7; i++) {
+      a = getStagePos(i); b = getStagePos(i + 1);
+      ctx.strokeStyle = rgba(stages[i].color, 0.12);
+      ctx.beginPath();
+      ctx.moveTo(a.x * w + 30, a.y * h);
+      ctx.lineTo(b.x * w - 30, b.y * h);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Draw stage nodes
+    stages.forEach((s, i) => {
+      const p = getStagePos(i);
+      const sx = p.x * w, sy = p.y * h;
+      const nodeW = 68, nodeH = 68;
+
+      // Glow
+      const grd = ctx.createRadialGradient(sx, sy, 0, sx, sy, 50);
+      grd.addColorStop(0, rgba(s.color, 0.08 + 0.04 * Math.sin(t * 2 + i)));
+      grd.addColorStop(1, 'transparent');
+      ctx.fillStyle = grd;
+      ctx.fillRect(sx - 50, sy - 50, 100, 100);
+
+      // Box
+      ctx.fillStyle = rgba(s.color, 0.06);
+      drawRoundRect(ctx, sx - nodeW / 2, sy - nodeH / 2, nodeW, nodeH, 6);
+      ctx.fill();
+      ctx.strokeStyle = rgba(s.color, 0.4 + 0.15 * Math.sin(t * 3 + i));
+      ctx.lineWidth = 1.5;
+      drawRoundRect(ctx, sx - nodeW / 2, sy - nodeH / 2, nodeW, nodeH, 6);
+      ctx.stroke();
+
+      // Icon
+      ctx.font = '24px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = s.color;
+      ctx.fillText(s.icon, sx, sy + 2);
+
+      // Label below
+      ctx.font = '600 14px "JetBrains Mono"';
+      ctx.fillStyle = s.color;
+      ctx.fillText(s.label, sx, sy + nodeH / 2 + 16);
+      ctx.font = '12px "Share Tech Mono"';
+      ctx.fillStyle = TEXT_DIM;
+      ctx.fillText(s.sub, sx, sy + nodeH / 2 + 28);
+      ctx.textAlign = 'left';
+    });
+
+    // Animate packets
+    flowPackets.forEach(p => {
+      p.progress += p.speed;
+      if (p.progress > 1) { p.progress = 0; p.branch = Math.random() < 0.5 ? 0 : 1; }
+      const pt = getPathPoint(p.progress, p.branch);
+
+      // Color based on stage
+      let stageIdx = p.progress < 0.2 ? (p.branch === 0 ? 0 : 1) : Math.min(7, 2 + Math.floor((p.progress - 0.2) / 0.8 * 6));
+      const color = stages[stageIdx].color;
+
+      ctx.beginPath();
+      ctx.arc(pt.x * w, pt.y * h, p.size, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(color, 0.8);
+      ctx.fill();
+
+      // trail glow
+      ctx.beginPath();
+      ctx.arc(pt.x * w, pt.y * h, p.size * 4, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(color, 0.06);
+      ctx.fill();
+    });
+
+    // Labels for data at each stage
+    const dataLabels = [
+      { x: 0.08, y: 0.10, text: 'float32[1024]', color: CYAN },
+      { x: 0.08, y: 0.80, text: 'float32[1024]', color: MAGENTA },
+      { x: 0.22, y: 0.28, text: 'clip(a+b, -1, 1)', color: ACCENT },
+      { x: 0.335, y: 0.28, text: 'P(speech) \u2265 0.5', color: MAGENTA },
+      { x: 0.45, y: 0.28, text: '1.0\u20133.0s audio', color: GREEN },
+      { x: 0.565, y: 0.28, text: '"hello world"', color: GOLD },
+      { x: 0.68, y: 0.28, text: 'Speaker 1, id=3', color: VIOLET },
+      { x: 0.795, y: 0.28, text: 'transcript.md', color: GREEN },
+    ];
+    ctx.font = '12px "Share Tech Mono"';
+    ctx.textAlign = 'center';
+    dataLabels.forEach(l => {
+      ctx.fillStyle = rgba(l.color, 0.5);
+      ctx.fillText(l.text, l.x * w, l.y * h);
+    });
+    ctx.textAlign = 'left';
+
+    // P2P branch: from MIC node, goes down-right to "PEER UDP"
+    const peerLabel = { x: 0.08, y: 0.92 };
+    ctx.font = '14px "Share Tech Mono"';
+    ctx.fillStyle = rgba(VIOLET, 0.4);
+    ctx.textAlign = 'center';
+    ctx.fillText('P2P UDP OUT', peerLabel.x * w, peerLabel.y * h);
+    ctx.textAlign = 'left';
+    ctx.setLineDash([2, 4]);
+    ctx.strokeStyle = rgba(VIOLET, 0.1);
+    ctx.beginPath();
+    ctx.moveTo(0.08 * w, 0.28 * h);
+    ctx.lineTo(0.08 * w, 0.88 * h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    t += 0.016;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── CAPTURE SOURCES DIAGRAM ─────────────────────────────────
+(function() {
+  const cv = initCanvas('captureDiagram', 340);
+  if (!cv) return;
+  const { ctx, w, h } = cv;
+  let t = 0;
+
+  const sources = [
+    { label: 'MICROPHONE', sub: 'sounddevice InputStream', x: 0.10, y: 0.22, color: CYAN,
+      detail: '16kHz / mono / float32 / 1024 samples' },
+    { label: 'SYSTEM AUDIO', sub: 'ScreenCaptureKit (Swift)', x: 0.10, y: 0.52, color: MAGENTA,
+      detail: 'stdout pipe / 4KB reads / daemon thread' },
+    { label: 'PEER AUDIO', sub: 'UDP 9901 / AES-256-GCM', x: 0.10, y: 0.82, color: VIOLET,
+      detail: '320 samples / 20ms frames / fire-and-forget' },
+  ];
+
+  function frame() {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(0,229,255,0.012)';
+    for (let y = 0; y < h; y += 24) for (let x = 0; x < w; x += 24) ctx.fillRect(x, y, 1, 1);
+
+    // Queue box on right
+    const qx = 0.72 * w, qy = 0.15 * h, qw = 0.22 * w, qh = 0.70 * h;
+    ctx.fillStyle = rgba(CYAN, 0.03);
+    drawRoundRect(ctx, qx, qy, qw, qh, 6);
+    ctx.fill();
+    ctx.strokeStyle = rgba(CYAN, 0.2);
+    drawRoundRect(ctx, qx, qy, qw, qh, 6);
+    ctx.stroke();
+    ctx.font = '600 16px "JetBrains Mono"';
+    ctx.fillStyle = CYAN;
+    ctx.textAlign = 'center';
+    ctx.fillText('Queue(500)', qx + qw / 2, qy + 18);
+    ctx.font = '14px "Share Tech Mono"';
+    ctx.fillStyle = TEXT_DIM;
+    ctx.fillText('drain() @ 15fps', qx + qw / 2, qy + 32);
+
+    // Draw queue slots
+    const slotH = 6, slotGap = 2, slotW = qw * 0.7;
+    const slotX = qx + (qw - slotW) / 2;
+    const slotStartY = qy + 44;
+    const maxSlots = Math.floor((qh - 52) / (slotH + slotGap));
+    for (let i = 0; i < maxSlots; i++) {
+      const sy = slotStartY + i * (slotH + slotGap);
+      const fill = Math.sin(t * 3 + i * 0.3) * 0.5 + 0.5;
+      const color = i < maxSlots * 0.6 ? CYAN : (i < maxSlots * 0.8 ? ACCENT : GREEN);
+      ctx.fillStyle = rgba(color, fill * 0.3 + 0.02);
+      ctx.fillRect(slotX, sy, slotW * (0.3 + fill * 0.7), slotH);
+    }
+    ctx.textAlign = 'left';
+
+    // Sources
+    sources.forEach((s, i) => {
+      const sx = s.x * w, sy = s.y * h;
+
+      // source box
+      const bw = 0.48 * w, bh = 62;
+      ctx.fillStyle = rgba(s.color, 0.04);
+      drawRoundRect(ctx, sx, sy - bh / 2, bw, bh, 4);
+      ctx.fill();
+      ctx.strokeStyle = rgba(s.color, 0.3);
+      drawRoundRect(ctx, sx, sy - bh / 2, bw, bh, 4);
+      ctx.stroke();
+
+      ctx.font = '600 16px "JetBrains Mono"';
+      ctx.fillStyle = s.color;
+      ctx.fillText(s.label, sx + 10, sy - 4);
+      ctx.font = '14px "Share Tech Mono"';
+      ctx.fillStyle = TEXT_DIM;
+      ctx.fillText(s.sub, sx + 10, sy + 10);
+      ctx.font = '12px "Share Tech Mono"';
+      ctx.fillStyle = rgba(s.color, 0.4);
+      ctx.fillText(s.detail, sx + 10, sy + 22);
+
+      // Arrow to queue
+      const arrowStartX = sx + bw + 4;
+      ctx.setLineDash([3, 4]);
+      ctx.strokeStyle = rgba(s.color, 0.2);
+      ctx.beginPath();
+      ctx.moveTo(arrowStartX, sy);
+      ctx.lineTo(qx - 4, qy + qh * (0.2 + i * 0.3));
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // animated dot
+      const prog = (Math.sin(t * 2 + i * 2) * 0.5 + 0.5);
+      const dx = arrowStartX + (qx - 4 - arrowStartX) * prog;
+      const dy = sy + (qy + qh * (0.2 + i * 0.3) - sy) * prog;
+      ctx.beginPath();
+      ctx.arc(dx, dy, 3, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(s.color, 0.7);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(dx, dy, 8, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(s.color, 0.08);
+      ctx.fill();
+    });
+
+    t += 0.016;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── VAD PROBABILITY VISUALIZATION ───────────────────────────
+(function() {
+  const cv = initCanvas('vadDiagram', 240);
+  if (!cv) return;
+  const { ctx, w, h } = cv;
+  let t = 0;
+  const probHistory = new Float32Array(Math.ceil(w / 2));
+
+  function frame() {
+    // Shift history left, add new sample
+    for (let i = 0; i < probHistory.length - 1; i++) probHistory[i] = probHistory[i + 1];
+    // Simulate speech patterns: silence -> speech -> silence
+    const cycle = (t * 0.5) % 10;
+    let prob;
+    if (cycle < 1.5) prob = 0.05 + Math.random() * 0.1; // silence
+    else if (cycle < 1.8) prob = 0.3 + Math.random() * 0.3; // onset
+    else if (cycle < 5) prob = 0.7 + Math.random() * 0.25; // speech
+    else if (cycle < 5.3) prob = 0.4 + Math.random() * 0.3; // offset
+    else if (cycle < 7) prob = 0.03 + Math.random() * 0.08; // silence
+    else if (cycle < 7.3) prob = 0.35 + Math.random() * 0.3; // onset
+    else if (cycle < 9.5) prob = 0.65 + Math.random() * 0.3; // speech
+    else prob = 0.1 + Math.random() * 0.15; // silence
+    probHistory[probHistory.length - 1] = prob;
+
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, w, h);
+
+    // Grid
+    ctx.fillStyle = 'rgba(0,229,255,0.012)';
+    for (let y = 0; y < h; y += 20) for (let x = 0; x < w; x += 20) ctx.fillRect(x, y, 1, 1);
+
+    const marginT = 20, marginB = 30;
+    const plotH = h - marginT - marginB;
+    const plotY = marginT;
+
+    // Threshold line at 0.5
+    const threshY = plotY + plotH * 0.5;
+    ctx.strokeStyle = rgba(MAGENTA, 0.3);
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, threshY); ctx.lineTo(w, threshY); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Labels
+    ctx.font = '14px "Share Tech Mono"';
+    ctx.fillStyle = rgba(MAGENTA, 0.5);
+    ctx.textAlign = 'right';
+    ctx.fillText('THRESHOLD 0.5', w - 8, threshY - 4);
+    ctx.fillStyle = rgba(GREEN, 0.4);
+    ctx.fillText('SPEECH', w - 8, plotY + 12);
+    ctx.fillStyle = rgba(TEXT_DIM, 0.4);
+    ctx.fillText('SILENCE', w - 8, plotY + plotH - 4);
+    ctx.textAlign = 'left';
+
+    // Y-axis labels
+    ctx.fillStyle = rgba(TEXT_DIM, 0.3);
+    ctx.font = '12px "Share Tech Mono"';
+    ctx.fillText('1.0', 4, plotY + 8);
+    ctx.fillText('0.0', 4, plotY + plotH - 2);
+
+    // Speech region fill
+    ctx.beginPath();
+    ctx.moveTo(0, threshY);
+    for (let i = 0; i < probHistory.length; i++) {
+      const x = (i / probHistory.length) * w;
+      const p = probHistory[i];
+      const y = plotY + plotH * (1 - p);
+      if (p >= 0.5) {
+        ctx.lineTo(x, y);
+      } else {
+        ctx.lineTo(x, threshY);
+      }
+    }
+    ctx.lineTo(w, threshY);
+    ctx.closePath();
+    ctx.fillStyle = rgba(GREEN, 0.08);
+    ctx.fill();
+
+    // Probability line
+    ctx.beginPath();
+    for (let i = 0; i < probHistory.length; i++) {
+      const x = (i / probHistory.length) * w;
+      const p = probHistory[i];
+      const y = plotY + plotH * (1 - p);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = rgba(CYAN, 0.7);
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Glow under the line
+    ctx.beginPath();
+    for (let i = 0; i < probHistory.length; i++) {
+      const x = (i / probHistory.length) * w;
+      const p = probHistory[i];
+      const y = plotY + plotH * (1 - p);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.lineTo(w, plotY + plotH);
+    ctx.lineTo(0, plotY + plotH);
+    ctx.closePath();
+    ctx.fillStyle = rgba(CYAN, 0.04);
+    ctx.fill();
+
+    // Speech/Silence labels at bottom
+    const lastP = probHistory[probHistory.length - 1];
+    ctx.font = '600 16px "JetBrains Mono"';
+    ctx.textAlign = 'center';
+    if (lastP >= 0.5) {
+      ctx.fillStyle = rgba(GREEN, 0.8);
+      ctx.fillText('SPEECH DETECTED', w / 2, h - 8);
+    } else {
+      ctx.fillStyle = rgba(TEXT_DIM, 0.5);
+      ctx.fillText('SILENCE', w / 2, h - 8);
+    }
+
+    // Current probability readout
+    ctx.textAlign = 'left';
+    ctx.font = '600 16px "Share Tech Mono"';
+    ctx.fillStyle = lastP >= 0.5 ? GREEN : TEXT_DIM;
+    ctx.fillText('P=' + lastP.toFixed(2), 8, h - 8);
+
+    t += 0.016;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── BUFFER FILL/DRAIN DIAGRAM ───────────────────────────────
+(function() {
+  const cv = initCanvas('bufferDiagram', 220);
+  if (!cv) return;
+  const { ctx, w, h } = cv;
+  let t = 0;
+
+  function frame() {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(0,229,255,0.012)';
+    for (let y = 0; y < h; y += 20) for (let x = 0; x < w; x += 20) ctx.fillRect(x, y, 1, 1);
+
+    const margin = 40;
+    const plotW = w - margin * 2;
+    const plotH = h - 60;
+    const plotX = margin;
+    const plotY = 25;
+
+    // Axes
+    ctx.strokeStyle = rgba(CYAN, 0.15);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(plotX, plotY);
+    ctx.lineTo(plotX, plotY + plotH);
+    ctx.lineTo(plotX + plotW, plotY + plotH);
+    ctx.stroke();
+
+    // Y-axis labels
+    ctx.font = '12px "Share Tech Mono"';
+    ctx.fillStyle = rgba(TEXT_DIM, 0.4);
+    ctx.textAlign = 'right';
+    ctx.fillText('3.0s', plotX - 4, plotY + 4);
+    ctx.fillText('1.0s', plotX - 4, plotY + plotH * 0.66 + 4);
+    ctx.fillText('0.0s', plotX - 4, plotY + plotH + 4);
+
+    // Max line
+    ctx.strokeStyle = rgba(RED, 0.2);
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(plotX, plotY);
+    ctx.lineTo(plotX + plotW, plotY);
+    ctx.stroke();
+    ctx.fillStyle = rgba(RED, 0.4);
+    ctx.textAlign = 'left';
+    ctx.fillText('MAX_BUFFER (force trigger)', plotX + plotW * 0.6, plotY - 4);
+
+    // Min line
+    const minY = plotY + plotH * 0.66;
+    ctx.strokeStyle = rgba(GREEN, 0.15);
+    ctx.beginPath();
+    ctx.moveTo(plotX, minY);
+    ctx.lineTo(plotX + plotW, minY);
+    ctx.stroke();
+    ctx.fillStyle = rgba(GREEN, 0.3);
+    ctx.fillText('MIN_BUFFER', plotX + plotW * 0.75, minY - 4);
+    ctx.setLineDash([]);
+
+    // Animated buffer fill: sawtooth with variable period
+    const cycle = 4.0; // seconds per fill-drain cycle
+    const progress = (t % cycle) / cycle;
+
+    // Draw fill history
+    const segments = 80;
+    ctx.beginPath();
+    for (let i = 0; i <= segments; i++) {
+      const seg_t = i / segments;
+      const x = plotX + seg_t * plotW;
+
+      // Multiple overlapping cycles
+      let level = 0;
+      for (let c = 0; c < 3; c++) {
+        const offset = c * 1.3;
+        const ct = ((t * 0.5 + offset + seg_t * 2) % cycle) / cycle;
+        if (ct < 0.7) {
+          level = Math.max(level, ct / 0.7); // fill phase
+        } else {
+          level = Math.max(level, Math.max(0, 1 - (ct - 0.7) / 0.05)); // drain
+        }
+      }
+
+      const y = plotY + plotH * (1 - level);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.lineTo(plotX + plotW, plotY + plotH);
+    ctx.lineTo(plotX, plotY + plotH);
+    ctx.closePath();
+
+    const fillGrd = ctx.createLinearGradient(0, plotY, 0, plotY + plotH);
+    fillGrd.addColorStop(0, rgba(GREEN, 0.15));
+    fillGrd.addColorStop(1, rgba(GREEN, 0.02));
+    ctx.fillStyle = fillGrd;
+    ctx.fill();
+
+    // Line on top
+    ctx.beginPath();
+    for (let i = 0; i <= segments; i++) {
+      const seg_t = i / segments;
+      const x = plotX + seg_t * plotW;
+      let level = 0;
+      for (let c = 0; c < 3; c++) {
+        const offset = c * 1.3;
+        const ct = ((t * 0.5 + offset + seg_t * 2) % cycle) / cycle;
+        if (ct < 0.7) level = Math.max(level, ct / 0.7);
+        else level = Math.max(level, Math.max(0, 1 - (ct - 0.7) / 0.05));
+      }
+      const y = plotY + plotH * (1 - level);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = rgba(GREEN, 0.6);
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Drain flash indicators
+    for (let c = 0; c < 3; c++) {
+      const offset = c * 1.3;
+      const ct = ((t * 0.5 + offset) % cycle) / cycle;
+      if (ct > 0.69 && ct < 0.75) {
+        const flash = 1 - (ct - 0.69) / 0.06;
+        ctx.font = '600 14px "JetBrains Mono"';
+        ctx.fillStyle = rgba(GOLD, flash * 0.8);
+        ctx.textAlign = 'center';
+        ctx.fillText('TRIGGER', plotX + plotW * 0.5, plotY + plotH + 18);
+        ctx.textAlign = 'left';
+      }
+    }
+
+    // X label
+    ctx.font = '12px "Share Tech Mono"';
+    ctx.fillStyle = rgba(TEXT_DIM, 0.3);
+    ctx.textAlign = 'center';
+    ctx.fillText('TIME \u2192', plotX + plotW / 2, h - 4);
+    ctx.textAlign = 'left';
+
+    t += 0.016;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── P2P MERGE NETWORK DIAGRAM ───────────────────────────────
+(function() {
+  const cv = initCanvas('mergeDiagram', 420);
+  if (!cv) return;
+  const { ctx, w, h } = cv;
+  let t = 0;
+
+  // Nodes: local + 3 peers
+  const nodes = [
+    { label: 'YOU', sub: 'local mic', x: 0.5, y: 0.5, color: CYAN, radius: 32 },
+    { label: 'ALICE', sub: 'peer #1', x: 0.2, y: 0.25, color: MAGENTA, radius: 24 },
+    { label: 'BOB', sub: 'peer #2', x: 0.8, y: 0.25, color: VIOLET, radius: 24 },
+    { label: 'EVE', sub: 'peer #3', x: 0.5, y: 0.12, color: ORANGE, radius: 20 },
+  ];
+
+  // Mixer output
+  const mixer = { label: 'MIXER', sub: 'energy-weighted', x: 0.5, y: 0.82, color: GREEN, radius: 28 };
+
+  // Audio packets flowing between nodes
+  const audioPackets = [];
+  for (let i = 0; i < 15; i++) {
+    audioPackets.push({
+      from: 1 + Math.floor(Math.random() * 3), // from a peer
+      progress: Math.random(),
+      speed: 0.006 + Math.random() * 0.006,
+      size: 2 + Math.random() * 2,
+    });
+  }
+  // Mixer output packets
+  for (let i = 0; i < 5; i++) {
+    audioPackets.push({
+      from: -1, // from mixer (special)
+      progress: Math.random(),
+      speed: 0.004 + Math.random() * 0.004,
+      size: 2 + Math.random() * 1.5,
+    });
+  }
+
+  function frame() {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(0,229,255,0.012)';
+    for (let y = 0; y < h; y += 24) for (let x = 0; x < w; x += 24) ctx.fillRect(x, y, 1, 1);
+
+    // Connection lines from peers to local
+    nodes.forEach((n, i) => {
+      if (i === 0) return;
+      ctx.setLineDash([3, 5]);
+      ctx.strokeStyle = rgba(n.color, 0.12);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(n.x * w, n.y * h);
+      ctx.lineTo(nodes[0].x * w, nodes[0].y * h);
+      ctx.stroke();
+    });
+    // Local to mixer
+    ctx.strokeStyle = rgba(GREEN, 0.12);
+    ctx.beginPath();
+    ctx.moveTo(nodes[0].x * w, nodes[0].y * h);
+    ctx.lineTo(mixer.x * w, mixer.y * h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Draw weight arcs around local node
+    const weights = [
+      { label: 'you 58%', angle: Math.PI * 1.1, color: CYAN },
+      { label: 'alice 25%', angle: Math.PI * 0.4, color: MAGENTA },
+      { label: 'bob 12%', angle: Math.PI * 0.0, color: VIOLET },
+      { label: 'eve 5%', angle: Math.PI * 1.7, color: ORANGE },
+    ];
+    weights.forEach(wt => {
+      const wx = nodes[0].x * w + Math.cos(wt.angle) * 65;
+      const wy = nodes[0].y * h + Math.sin(wt.angle) * 50;
+      ctx.font = '12px "Share Tech Mono"';
+      ctx.fillStyle = rgba(wt.color, 0.5);
+      ctx.textAlign = 'center';
+      ctx.fillText(wt.label, wx, wy);
+    });
+    ctx.textAlign = 'left';
+
+    // Draw nodes
+    [...nodes, mixer].forEach(n => {
+      const nx = n.x * w, ny = n.y * h;
+
+      // Glow
+      const grd = ctx.createRadialGradient(nx, ny, 0, nx, ny, n.radius * 2.5);
+      grd.addColorStop(0, rgba(n.color, 0.06 + 0.03 * Math.sin(t * 2)));
+      grd.addColorStop(1, 'transparent');
+      ctx.fillStyle = grd;
+      ctx.fillRect(nx - n.radius * 3, ny - n.radius * 3, n.radius * 6, n.radius * 6);
+
+      // Circle
+      ctx.beginPath();
+      ctx.arc(nx, ny, n.radius, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(n.color, 0.06);
+      ctx.fill();
+      ctx.strokeStyle = rgba(n.color, 0.4 + 0.15 * Math.sin(t * 3));
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Label
+      ctx.font = '600 14px "JetBrains Mono"';
+      ctx.fillStyle = n.color;
+      ctx.textAlign = 'center';
+      ctx.fillText(n.label, nx, ny + 3);
+      ctx.font = '12px "Share Tech Mono"';
+      ctx.fillStyle = TEXT_DIM;
+      ctx.fillText(n.sub, nx, ny + n.radius + 14);
+      ctx.textAlign = 'left';
+    });
+
+    // Animate audio packets
+    audioPackets.forEach(p => {
+      p.progress += p.speed;
+      if (p.progress > 1) p.progress = 0;
+
+      let sx, sy, ex, ey, color;
+      if (p.from === -1) {
+        // mixer output going down
+        sx = mixer.x * w; sy = mixer.y * h;
+        ex = mixer.x * w; ey = h + 10;
+        color = GREEN;
+      } else {
+        const src = nodes[p.from];
+        sx = src.x * w; sy = src.y * h;
+        ex = nodes[0].x * w; ey = nodes[0].y * h;
+        color = src.color;
+      }
+
+      const px = sx + (ex - sx) * p.progress;
+      const py = sy + (ey - sy) * p.progress;
+
+      ctx.beginPath();
+      ctx.arc(px, py, p.size, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(color, 0.7);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(px, py, p.size * 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(color, 0.06);
+      ctx.fill();
+    });
+
+    // Merge formula
+    ctx.font = '14px "Share Tech Mono"';
+    ctx.fillStyle = rgba(GREEN, 0.5);
+    ctx.textAlign = 'center';
+    ctx.fillText('w[i] = sqrt(rms[i]) / \u03A3 sqrt(rms[j])   \u00B7   jitter buffer: 60ms', w * 0.5, h - 10);
+    ctx.textAlign = 'left';
+
+    t += 0.016;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── ASR PIPELINE DIAGRAM ────────────────────────────────────
+(function() {
+  const cv = initCanvas('asrDiagram', 240);
+  if (!cv) return;
+  const { ctx, w, h } = cv;
+  let t = 0;
+
+  const stages = [
+    { label: 'RMS Gate', value: '> 0.005', color: ORANGE },
+    { label: 'Qwen3-ASR', value: '~100ms', color: GOLD },
+    { label: 'Script Check', value: 'Latin only', color: RED },
+    { label: 'Length Check', value: '2-80 words', color: RED },
+    { label: 'N-gram Filter', value: '< 3\u00D7 / 25%', color: RED },
+    { label: 'Cliche Filter', value: 'pattern match', color: RED },
+    { label: 'Dedup', value: 'last 5', color: MAGENTA },
+    { label: 'OUTPUT', value: 'text', color: GREEN },
+  ];
+
+  function frame() {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(0,229,255,0.012)';
+    for (let y = 0; y < h; y += 20) for (let x = 0; x < w; x += 20) ctx.fillRect(x, y, 1, 1);
+
+    const startX = 30, endX = w - 30;
+    const stageW = (endX - startX) / stages.length;
+    const centerY = h * 0.45;
+
+    // Connection line
+    ctx.strokeStyle = rgba(CYAN, 0.1);
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(startX, centerY);
+    ctx.lineTo(endX, centerY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Stages
+    stages.forEach((s, i) => {
+      const x = startX + stageW * i + stageW / 2;
+      const boxW = stageW * 0.85;
+
+      // Box
+      ctx.fillStyle = rgba(s.color, 0.04);
+      drawRoundRect(ctx, x - boxW / 2, centerY - 30, boxW, 60, 4);
+      ctx.fill();
+      ctx.strokeStyle = rgba(s.color, 0.3 + 0.1 * Math.sin(t * 2 + i));
+      ctx.lineWidth = 1;
+      drawRoundRect(ctx, x - boxW / 2, centerY - 30, boxW, 60, 4);
+      ctx.stroke();
+
+      // Label
+      ctx.font = '600 13px "JetBrains Mono"';
+      ctx.fillStyle = s.color;
+      ctx.textAlign = 'center';
+      ctx.fillText(s.label, x, centerY - 4);
+      ctx.font = '12px "Share Tech Mono"';
+      ctx.fillStyle = TEXT_DIM;
+      ctx.fillText(s.value, x, centerY + 10);
+    });
+
+    // Animated packet
+    const progress = (t * 0.3) % 1;
+    const px = startX + progress * (endX - startX);
+    const stageIdx = Math.min(stages.length - 1, Math.floor(progress * stages.length));
+    const color = stages[stageIdx].color;
+
+    ctx.beginPath();
+    ctx.arc(px, centerY, 4, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(color, 0.8);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(px, centerY, 12, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(color, 0.1);
+    ctx.fill();
+
+    // Section labels
+    ctx.font = '12px "Share Tech Mono"';
+    ctx.fillStyle = rgba(TEXT_DIM, 0.4);
+    ctx.textAlign = 'center';
+    ctx.fillText('AUDIO IN \u2192', startX, h - 10);
+    ctx.fillText('\u2192 TRANSCRIPT OUT', endX, h - 10);
+
+    // Hallucination filter bracket
+    const filterStart = startX + stageW * 2 + stageW / 2;
+    const filterEnd = startX + stageW * 5 + stageW / 2;
+    ctx.strokeStyle = rgba(RED, 0.2);
+    ctx.lineWidth = 1;
+    const bracketY = centerY + 36;
+    ctx.beginPath();
+    ctx.moveTo(filterStart, bracketY);
+    ctx.lineTo(filterStart, bracketY + 8);
+    ctx.lineTo(filterEnd, bracketY + 8);
+    ctx.lineTo(filterEnd, bracketY);
+    ctx.stroke();
+    ctx.font = '12px "Share Tech Mono"';
+    ctx.fillStyle = rgba(RED, 0.4);
+    ctx.fillText('HALLUCINATION FILTER', (filterStart + filterEnd) / 2, bracketY + 20);
+
+    ctx.textAlign = 'left';
+    t += 0.016;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── DIARIZATION EMBEDDING SPACE ─────────────────────────────
+(function() {
+  const cv = initCanvas('diarizeDiagram', 440);
+  if (!cv) return;
+  const { ctx, w, h } = cv;
+  let t = 0;
+
+  // Simulated speaker clusters in 2D
+  const speakers = [
+    { label: 'Speaker 1', color: CYAN, cx: 0.25, cy: 0.35, points: [], centroid: null },
+    { label: 'Speaker 2', color: MAGENTA, cx: 0.65, cy: 0.30, points: [], centroid: null },
+    { label: 'Speaker 3', color: GOLD, cx: 0.45, cy: 0.70, points: [], centroid: null },
+    { label: 'Speaker 4', color: VIOLET, cx: 0.78, cy: 0.65, points: [], centroid: null },
+  ];
+
+  // Generate initial points
+  speakers.forEach(s => {
+    for (let i = 0; i < 12; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const r = 0.04 + Math.random() * 0.06;
+      s.points.push({
+        x: s.cx + Math.cos(angle) * r,
+        y: s.cy + Math.sin(angle) * r,
+        age: Math.random() * 5,
+      });
+    }
+  });
+
+  // New embedding arriving
+  let newEmb = { x: 0, y: 0, active: false, assignedTo: -1, progress: 0 };
+  let nextEmbTime = 2;
+
+  function frame() {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, w, h);
+
+    // Grid
+    ctx.fillStyle = 'rgba(0,229,255,0.012)';
+    for (let y = 0; y < h; y += 24) for (let x = 0; x < w; x += 24) ctx.fillRect(x, y, 1, 1);
+
+    const margin = 40;
+    const plotW = w - margin * 2;
+    const plotH = h - margin * 2 - 20;
+    const plotX = margin;
+    const plotY = margin;
+
+    // Axes
+    ctx.strokeStyle = rgba(CYAN, 0.08);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(plotX, plotY); ctx.lineTo(plotX, plotY + plotH);
+    ctx.lineTo(plotX + plotW, plotY + plotH);
+    ctx.stroke();
+
+    ctx.font = '12px "Share Tech Mono"';
+    ctx.fillStyle = rgba(TEXT_DIM, 0.3);
+    ctx.fillText('embedding dim 1 \u2192', plotX + plotW / 2 - 40, plotY + plotH + 16);
+    ctx.save();
+    ctx.translate(plotX - 8, plotY + plotH / 2 + 40);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('embedding dim 2 \u2192', 0, 0);
+    ctx.restore();
+
+    // Draw similarity threshold circles around centroids
+    speakers.forEach(s => {
+      const cx = plotX + s.cx * plotW;
+      const cy = plotY + s.cy * plotH;
+
+      // Outer ring (match threshold 0.35)
+      ctx.beginPath();
+      ctx.arc(cx, cy, 75, 0, Math.PI * 2);
+      ctx.strokeStyle = rgba(s.color, 0.06);
+      ctx.setLineDash([2, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Inner ring (high confidence 0.55)
+      ctx.beginPath();
+      ctx.arc(cx, cy, 45, 0, Math.PI * 2);
+      ctx.strokeStyle = rgba(s.color, 0.1);
+      ctx.setLineDash([2, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    });
+
+    // Draw points
+    speakers.forEach(s => {
+      s.points.forEach(p => {
+        const px = plotX + p.x * plotW;
+        const py = plotY + p.y * plotH;
+
+        // glow
+        ctx.beginPath();
+        ctx.arc(px, py, 8, 0, Math.PI * 2);
+        ctx.fillStyle = rgba(s.color, 0.04);
+        ctx.fill();
+
+        // point
+        ctx.beginPath();
+        ctx.arc(px, py, 3, 0, Math.PI * 2);
+        ctx.fillStyle = rgba(s.color, 0.5 + 0.2 * Math.sin(t + p.age));
+        ctx.fill();
+      });
+
+      // Centroid (larger, brighter)
+      const cx = plotX + s.cx * plotW;
+      const cy = plotY + s.cy * plotH;
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(s.color, 0.15);
+      ctx.fill();
+      ctx.strokeStyle = rgba(s.color, 0.6);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Cross
+      ctx.strokeStyle = rgba(s.color, 0.5);
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx - 8, cy); ctx.lineTo(cx + 8, cy); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8); ctx.stroke();
+
+      // Label
+      ctx.font = '600 14px "JetBrains Mono"';
+      ctx.fillStyle = s.color;
+      ctx.textAlign = 'center';
+      ctx.fillText(s.label, cx, cy - 14);
+      ctx.textAlign = 'left';
+    });
+
+    // Animate new embedding arrival
+    nextEmbTime -= 0.016;
+    if (nextEmbTime <= 0 && !newEmb.active) {
+      newEmb.active = true;
+      newEmb.progress = 0;
+      newEmb.x = 0.1 + Math.random() * 0.8;
+      newEmb.y = -0.05;
+      newEmb.assignedTo = Math.floor(Math.random() * speakers.length);
+    }
+
+    if (newEmb.active) {
+      newEmb.progress += 0.012;
+      const target = speakers[newEmb.assignedTo];
+
+      let px, py;
+      if (newEmb.progress < 0.4) {
+        // Fall in from top
+        const p = newEmb.progress / 0.4;
+        px = plotX + newEmb.x * plotW;
+        py = plotY + (newEmb.y + p * 0.5) * plotH;
+      } else if (newEmb.progress < 0.8) {
+        // Move toward cluster
+        const p = (newEmb.progress - 0.4) / 0.4;
+        const startX = newEmb.x;
+        const startY = newEmb.y + 0.5;
+        px = plotX + (startX + (target.cx - startX) * p) * plotW;
+        py = plotY + (startY + (target.cy - startY) * p) * plotH;
+      } else {
+        px = plotX + target.cx * plotW;
+        py = plotY + target.cy * plotH;
+      }
+
+      if (newEmb.progress < 1.0) {
+        // Draw the new embedding
+        ctx.beginPath();
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.fillStyle = rgba(target.color, 0.9);
+        ctx.fill();
+
+        // Trail
+        ctx.beginPath();
+        ctx.arc(px, py, 15, 0, Math.PI * 2);
+        ctx.fillStyle = rgba(target.color, 0.08);
+        ctx.fill();
+
+        // "NEW" label
+        if (newEmb.progress < 0.5) {
+          ctx.font = '600 13px "Share Tech Mono"';
+          ctx.fillStyle = rgba(ACCENT, 0.7);
+          ctx.textAlign = 'center';
+          ctx.fillText('NEW EMBEDDING', px, py - 12);
+          ctx.textAlign = 'left';
+        }
+        // Assignment label
+        if (newEmb.progress > 0.5 && newEmb.progress < 0.9) {
+          ctx.font = '14px "Share Tech Mono"';
+          ctx.fillStyle = rgba(target.color, 0.6);
+          ctx.textAlign = 'center';
+          ctx.fillText('\u2192 ' + target.label, px + 20, py - 8);
+          ctx.textAlign = 'left';
+        }
+      } else {
+        // Add point to cluster
+        const angle = Math.random() * Math.PI * 2;
+        const r = 0.02 + Math.random() * 0.04;
+        target.points.push({
+          x: target.cx + Math.cos(angle) * r,
+          y: target.cy + Math.sin(angle) * r,
+          age: Math.random() * 5,
+        });
+        if (target.points.length > 18) target.points.shift();
+        newEmb.active = false;
+        nextEmbTime = 1.5 + Math.random() * 2;
+      }
+    }
+
+    // Legend
+    ctx.font = '14px "Share Tech Mono"';
+    ctx.fillStyle = rgba(TEXT_DIM, 0.4);
+    ctx.textAlign = 'right';
+    ctx.fillText('inner ring: HIGH confidence (\u2265 0.55)', w - margin, plotY + plotH + 16);
+    ctx.fillText('outer ring: MEDIUM confidence (\u2265 0.35)', w - margin, plotY + plotH + 28);
+    ctx.textAlign = 'left';
+
+    t += 0.016;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── LARGE WAVEFORM WIDGET ───────────────────────────────────
+(function() {
+  const cv = initCanvas('waveformBig', 180);
+  if (!cv) return;
+  let phase = 0, scroll = 0;
+  function frame() {
+    drawWaveform(cv.ctx, cv.w, cv.h, phase, scroll);
+    phase += 0.025; scroll += 0.1;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── THREAD SWIM LANE DIAGRAM ────────────────────────────────
+(function() {
+  const cv = initCanvas('threadDiagram', 380);
+  if (!cv) return;
+  const { ctx, w, h } = cv;
+  let t = 0;
+
+  const lanes = [
+    { label: 'MAIN THREAD', sub: 'Textual Event Loop', color: CYAN, y: 0.12 },
+    { label: 'WORKER THREAD', sub: '@work(thread=True)', color: GOLD, y: 0.37 },
+    { label: 'AUDIO I/O', sub: 'Realtime + Daemon', color: MAGENTA, y: 0.62 },
+    { label: 'P2P NETWORK', sub: 'SessionManager', color: VIOLET, y: 0.87 },
+  ];
+
+  // Task blocks on each lane
+  const tasks = [
+    // Main thread: repeating audio timer ticks
+    { lane: 0, label: 'audio timer', start: 0, dur: 0.04, repeat: 0.067, color: CYAN },
+    { lane: 0, label: 'VAD', start: 0.04, dur: 0.005, repeat: 0.067, color: MAGENTA },
+    { lane: 0, label: 'UI render', start: 0.05, dur: 0.01, repeat: 0.067, color: CYAN },
+    // Worker: transcription bursts
+    { lane: 1, label: 'Qwen3 ASR', start: 0.0, dur: 0.1, repeat: 1.5, color: GOLD },
+    { lane: 1, label: 'diarize', start: 0.1, dur: 0.05, repeat: 1.5, color: VIOLET },
+    { lane: 1, label: 'x-session', start: 0.15, dur: 0.02, repeat: 1.5, color: GREEN },
+    // Audio I/O: continuous
+    { lane: 2, label: 'mic callback', start: 0, dur: 0.064, repeat: 0.064, color: MAGENTA },
+    { lane: 2, label: 'SCK read', start: 0, dur: 1, repeat: 1, color: ORANGE },
+    // P2P: heartbeats + reads
+    { lane: 3, label: 'heartbeat', start: 0, dur: 0.01, repeat: 1.0, color: VIOLET },
+    { lane: 3, label: 'peer read', start: 0, dur: 0.8, repeat: 0.8, color: CYAN },
+  ];
+
+  function frame() {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, w, h);
+
+    const laneH = h / lanes.length;
+    const labelW = 130;
+    const trackW = w - labelW - 20;
+    const trackX = labelW;
+
+    // Draw lanes
+    lanes.forEach((lane, i) => {
+      const ly = lane.y * h;
+
+      // Lane divider
+      if (i > 0) {
+        ctx.strokeStyle = rgba(lane.color, 0.06);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, ly - laneH * 0.42);
+        ctx.lineTo(w, ly - laneH * 0.42);
+        ctx.stroke();
+      }
+
+      // Lane label
+      ctx.font = '600 14px "JetBrains Mono"';
+      ctx.fillStyle = lane.color;
+      ctx.fillText(lane.label, 8, ly - 4);
+      ctx.font = '12px "Share Tech Mono"';
+      ctx.fillStyle = TEXT_DIM;
+      ctx.fillText(lane.sub, 8, ly + 10);
+    });
+
+    // Time axis markers
+    const scrollOffset = (t * 50) % trackW;
+    ctx.font = '11px "Share Tech Mono"';
+    for (let x = -scrollOffset % 80; x < trackW; x += 80) {
+      ctx.fillStyle = rgba(TEXT_DIM, 0.15);
+      ctx.fillRect(trackX + x, 0, 1, h);
+    }
+
+    // Draw task blocks
+    const timeWindow = 3.0; // seconds visible
+    tasks.forEach(task => {
+      const lane = lanes[task.lane];
+      const ly = lane.y * h;
+      const taskH = 18;
+
+      // Draw repeating instances
+      for (let startTime = -task.repeat; startTime < timeWindow + task.repeat; startTime += task.repeat) {
+        const visibleStart = ((startTime + t * 0.5) % timeWindow + timeWindow) % timeWindow;
+        const x = trackX + (visibleStart / timeWindow) * trackW;
+        const bw = (task.dur / timeWindow) * trackW;
+
+        if (x + bw < trackX || x > trackX + trackW) continue;
+
+        // Clip to track bounds
+        const clippedX = Math.max(trackX, x);
+        const clippedW = Math.min(x + bw, trackX + trackW) - clippedX;
+        if (clippedW <= 0) continue;
+
+        ctx.fillStyle = rgba(task.color, 0.15);
+        drawRoundRect(ctx, clippedX, ly - taskH / 2, clippedW, taskH, 3);
+        ctx.fill();
+        ctx.strokeStyle = rgba(task.color, 0.3);
+        ctx.lineWidth = 1;
+        drawRoundRect(ctx, clippedX, ly - taskH / 2, clippedW, taskH, 3);
+        ctx.stroke();
+
+        if (clippedW > 40) {
+          ctx.font = '11px "Share Tech Mono"';
+          ctx.fillStyle = rgba(task.color, 0.6);
+          ctx.textAlign = 'center';
+          ctx.fillText(task.label, clippedX + clippedW / 2, ly + 3);
+          ctx.textAlign = 'left';
+        }
+      }
+    });
+
+    // Playhead
+    const playheadX = trackX + trackW * 0.7;
+    ctx.strokeStyle = rgba(ACCENT, 0.3);
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(playheadX, 0); ctx.lineTo(playheadX, h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = '12px "Share Tech Mono"';
+    ctx.fillStyle = rgba(ACCENT, 0.4);
+    ctx.fillText('NOW', playheadX + 4, 12);
+
+    // Lock icon between main and worker (call_from_thread)
+    const lockY = (lanes[0].y + lanes[1].y) * h / 2;
+    const lockX = trackX + trackW * 0.5;
+    ctx.font = '15px sans-serif';
+    ctx.fillStyle = rgba(RED, 0.4 + 0.2 * Math.sin(t * 4));
+    ctx.textAlign = 'center';
+    ctx.fillText('\u{1F512}', lockX, lockY + 3);
+    ctx.font = '11px "Share Tech Mono"';
+    ctx.fillStyle = rgba(RED, 0.3);
+    ctx.fillText('_transcribe_lock', lockX, lockY + 14);
+    ctx.textAlign = 'left';
+
+    t += 0.016;
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+// ── Handle resize ───────────────────────────────────────────
+window.addEventListener('resize', () => {
+  // Reinitialize all canvases — simplest approach
+  // Canvases auto-resize via CSS width:100%, but the internal
+  // resolution needs updating. For this doc, we accept the initial
+  // size. A production version would debounce and reinit.
+});
+</script>
+
+</body>
+</html>

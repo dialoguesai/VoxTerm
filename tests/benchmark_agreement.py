@@ -25,7 +25,7 @@ import soundfile as sf
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import SAMPLE_RATE, AGREEMENT_TICK_SECONDS, AGREEMENT_MIN_AUDIO, AGREEMENT_FLUSH_SILENCE
-from transcriber.agreement import AgreementState
+from audio.agreement import AgreementState
 from audio.buffer import AudioBuffer
 
 
@@ -287,9 +287,10 @@ def main():
                         help="Output JSON path")
     args = parser.parse_args()
 
-    from transcriber.engine import Qwen3Transcriber, QWEN3_MODELS
+    from audio.transcriber import Qwen3Transcriber
+    from config import AVAILABLE_MODELS
 
-    model_id = QWEN3_MODELS.get(args.model, args.model)
+    model_id = AVAILABLE_MODELS.get(args.model, args.model)
     print(f"Loading model: {args.model} ({model_id})...")
     transcriber = Qwen3Transcriber(model=model_id, language="en")
     transcriber.load()
