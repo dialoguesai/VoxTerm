@@ -420,6 +420,13 @@ def main():
 
         audio = load_wav(wav_path, max_duration=args.max_duration)
         ref = parse_rttm(rttm_path, rttm_id)
+        # Truncate reference to match audio duration so DER is comparable
+        if args.max_duration is not None:
+            cap = float(args.max_duration)
+            ref = [
+                {"speaker": s["speaker"], "start": s["start"], "end": min(s["end"], cap)}
+                for s in ref if s["start"] < cap
+            ]
         ref_speakers = sorted({s["speaker"] for s in ref})
 
         print(f"  Audio: {len(audio)/SAMPLE_RATE:.1f}s, "
