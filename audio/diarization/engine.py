@@ -137,12 +137,28 @@ class DiarizationEngine:
         self._loaded = True
 
     def _load_onnx(self) -> None:
-        """Load 3D-Speaker model via ONNX Runtime (no PyTorch)."""
+        """Load 3D-Speaker model via ONNX Runtime (no PyTorch).
+
+        Falls back to the vendored PyTorch CAM++ path if the ONNX
+        model is missing or unloadable. The published GitHub release
+        for eres2net_large ships only the graph half (.onnx) without
+        the external-weights sidecar (.onnx.data), so onnxruntime
+        raises on session init for any fresh install.
+        """
         from config import SPEAKER_MODEL_NAME
         from .onnx_embedder import OnnxSpeakerEmbedder
 
         self._onnx_embedder = OnnxSpeakerEmbedder(model_name=SPEAKER_MODEL_NAME)
-        self._onnx_embedder.load()
+        try:
+            self._onnx_embedder.load()
+        except Exception as e:
+            log.warning(
+                "ONNX embedder load failed (%s) — falling back to vendored "
+                "PyTorch CAM++ legacy backend.", e,
+            )
+            self._onnx_embedder = None
+            self._load_pytorch()
+            return
         self._backend = "onnx"
         log.info("Diarization engine using ONNX backend (%s)", SPEAKER_MODEL_NAME)
 
@@ -238,10 +254,13 @@ class DiarizationEngine:
             speaker_id – integer key (1-based)
         """
         if not self._loaded:
+            log.warning("identify() called but diarization model not loaded — returning Speaker 1")
             return "Speaker 1", 1
         if self._backend == "pytorch" and self._model is None:
+            log.warning("identify() called but PyTorch model is None — returning Speaker 1")
             return "Speaker 1", 1
         if self._backend == "onnx" and self._onnx_embedder is None:
+            log.warning("identify() called but ONNX embedder is None — returning Speaker 1")
             return "Speaker 1", 1
 
         # Ensure mono float32
@@ -262,8 +281,15 @@ class DiarizationEngine:
         is_high_quality = rms >= self.QUALITY_RMS_THRESHOLD
 
         # Overlap-aware embedding: use segmentation to weight frames
-        # so overlapping speech doesn't contaminate the embedding
-        if self._segmentation is not None and len(audio) >= _MIN_SPEECH_SAMPLES:
+        # so overlapping speech doesn't contaminate the embedding.
+        # Skip this path for all PyTorch backends. The segmentation
+        # model is only used with the non-PyTorch embedding flow here;
+        # in particular, CAM++ produced unstable embeddings when paired
+        # with segmentation (cosine scores ~0.2-0.5 for same-speaker
+        # instead of expected 0.7-0.9).
+        if (self._segmentation is not None
+                and self._backend != "pytorch"
+                and len(audio) >= _MIN_SPEECH_SAMPLES):
             # Check if segmentation detects any active speaker at all
             activation = self._segmentation.segment(audio)
             active_speakers = self._segmentation.get_active_speakers(activation)
@@ -301,6 +327,13 @@ class DiarizationEngine:
 
         best_score = scores[0][0] if scores else -1.0
         best_id = scores[0][1] if scores else None
+
+        # Per-identify logging for debugging speaker assignments
+        if scores and log.isEnabledFor(logging.DEBUG):
+            top3 = [(f"{s:.3f}", sid) for s, sid in scores[:3]]
+            dur = len(audio) / sample_rate
+            log.debug("identify: best=%.3f id=%s n_centroids=%d rms=%.4f dur=%.1fs top3=%s",
+                      best_score, best_id, len(self._speaker_centroids), rms, dur, top3)
 
         # Populate debug info for UI
         self._last_debug = {
@@ -474,7 +507,8 @@ class DiarizationEngine:
 
         import torch
         feats_t = torch.tensor(feats, dtype=torch.float32).unsqueeze(0)
-        embedding = self._model(feats_t).squeeze().cpu().numpy()
+        with torch.no_grad():
+            embedding = self._model(feats_t).squeeze().cpu().detach().numpy()
         return embedding
 
     def _compute_fbank(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray | None:
@@ -537,7 +571,8 @@ class DiarizationEngine:
 
         import torch
         feats_t = torch.tensor(feats, dtype=torch.float32).unsqueeze(0)
-        embedding = self._model(feats_t).squeeze().cpu().numpy()
+        with torch.no_grad():
+            embedding = self._model(feats_t).squeeze().cpu().detach().numpy()
         return embedding
 
     def _extract_overlap_aware(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray | None:
@@ -609,6 +644,7 @@ class DiarizationEngine:
         Falls back to single identify() when audio is too short for SCD.
         """
         if not self._loaded:
+            log.warning("identify_segments() called but model not loaded — returning Speaker 1")
             return [("Speaker 1", 1, 0, len(audio))]
 
         # Ensure mono float32

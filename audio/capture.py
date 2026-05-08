@@ -1,7 +1,9 @@
+import math
 import queue
 import numpy as np
 import sounddevice as sd
-from config import SAMPLE_RATE, CHUNK_SIZE, CHANNELS, DTYPE
+from scipy.signal import resample_poly
+from config import SAMPLE_RATE, CHUNK_SIZE, DTYPE
 
 
 class AudioCapture:
@@ -10,23 +12,47 @@ class AudioCapture:
     def __init__(self):
         self.queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=500)
         self._stream = None
+        self._native_rate = None
+        self._resample_up = None
+        self._resample_down = None
 
     def _callback(self, indata, frames, time_info, status):
+        # Mix to mono
+        if indata.shape[1] > 1:
+            mono = indata.mean(axis=1)
+        else:
+            mono = indata[:, 0]
+        # Resample if device rate differs from target
+        if self._resample_up is not None:
+            mono = resample_poly(mono, self._resample_up, self._resample_down)
+        chunk = mono.astype(np.float32)
         try:
-            self.queue.put_nowait(indata[:, 0].copy())
+            self.queue.put_nowait(chunk)
         except queue.Full:
             try:
                 self.queue.get_nowait()
             except queue.Empty:
                 pass
-            self.queue.put_nowait(indata[:, 0].copy())
+            self.queue.put_nowait(chunk)
 
     def start(self):
+        dev_info = sd.query_devices(kind='input')
+        self._device_name = dev_info['name']
+        native_channels = dev_info['max_input_channels']
+        self._native_rate = int(dev_info['default_samplerate'])
+        # Compute resample ratio as integer up/down factors
+        if self._native_rate != SAMPLE_RATE:
+            g = math.gcd(SAMPLE_RATE, self._native_rate)
+            self._resample_up = SAMPLE_RATE // g
+            self._resample_down = self._native_rate // g
+        else:
+            self._resample_up = None
+            self._resample_down = None
         self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
+            samplerate=self._native_rate,
+            channels=native_channels,
             dtype=DTYPE,
-            blocksize=CHUNK_SIZE,
+            blocksize=int(CHUNK_SIZE * self._native_rate / SAMPLE_RATE),
             callback=self._callback,
         )
         self._stream.start()

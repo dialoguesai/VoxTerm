@@ -11,12 +11,16 @@ import logging
 import gc
 import json
 import os
-import resource
 import signal
 import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+try:
+    import resource as _resource
+except ImportError:
+    _resource = None  # Windows — no resource module
 
 from config import CRASH_LOG_MAX_COUNT
 
@@ -57,7 +61,11 @@ def setup_signal_handlers() -> None:
     """Install a SIGSEGV handler that restores terminal settings before dying.
 
     Must be called after the terminal is configured but before app.run().
+    On Windows: no-op (no termios, SIGSEGV handler not reliable).
     """
+    if sys.platform == "win32":
+        return
+
     global _saved_termios
 
     try:
@@ -176,8 +184,16 @@ def write_crash_dump(
 
         lines.append("")
         lines.append("-- memory --")
-        rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        rss_mb = rss_bytes / (1024 * 1024)
+        if _resource is not None:
+            rss_raw = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            if sys.platform == "darwin":
+                rss_bytes = rss_raw
+            else:
+                # Linux and most other Unix platforms report ru_maxrss in KiB
+                rss_bytes = rss_raw * 1024
+            rss_mb = rss_bytes / (1024 * 1024)
+        else:
+            rss_mb = -1
         lines.append(f"peak_rss_mb:      {rss_mb:.1f}")
         for key in (
             "audio_buf_dur", "style_cache", "transcript_entries",
