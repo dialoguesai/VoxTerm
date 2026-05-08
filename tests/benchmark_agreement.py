@@ -203,12 +203,15 @@ def simulate_agreement(transcriber, audio: np.ndarray,
             text = result.get("text", "").strip()
             newly_committed, pending = agreement.tick(text)
 
-            # Trim buffer on commit
+            # Trim buffer on commit (production code in tui/app.py also updates
+            # agreement.committed_time — required for the _committed_time-based
+            # trim algorithm to slide the window forward across ticks)
             if newly_committed:
                 audio_duration = len(audio_window) / SAMPLE_RATE
                 trim_secs = agreement.get_trim_seconds(audio_duration)
                 if trim_secs > 0:
                     buf.trim_front(trim_secs)
+                    agreement.committed_time += trim_secs
                 ticks_with_commit += 1
                 committed_results.append({
                     "text": newly_committed.strip(),
