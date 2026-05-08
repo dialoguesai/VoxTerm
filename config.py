@@ -105,6 +105,9 @@ P2P_HEARTBEAT_TIMEOUT = 5.0        # seconds without heartbeat → peer dead
 P2P_PROTO_VERSION = 1
 P2P_MAX_PEERS = 20
 P2P_AUDIO_FRAME_MS = 20            # milliseconds per UDP audio frame
+P2P_AUDIO_MERGE_ENABLED = True     # merge peer audio before transcription
+P2P_MERGE_DELAY_MS = 60            # jitter buffer delay for audio merging
+P2P_AUDIO_QUALITY_GATE = 0.003     # min RMS to include a source in the mix
 P2P_CLOCK_SYNC_WINDOW = 20         # sliding window of offset samples
 P2P_SERVICE_TYPE = "_voxterm._tcp.local."
 
