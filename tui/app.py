@@ -1003,7 +1003,10 @@ class VoxTerm(App):
         """Send accumulated audio to transcription worker."""
         if not self._transcribe_busy.acquire(blocking=False):
             return  # previous worker still running
-        self._transcribe_started = time.time()
+        # Defer starting the watchdog timer until GPU work actually begins
+        # (set inside _transcribe_lock in _transcribe_audio). 0 means "not
+        # yet running"; the watchdog treats elapsed==0 as not-yet-started.
+        self._transcribe_started = 0.0
         self._watchdog_warned = False
         self._watchdog_critical_warned = False
         self._silence_chunks = 0
@@ -1148,11 +1151,15 @@ class VoxTerm(App):
                 f"transcription error: {e}\n{tb}"
             )
         finally:
-            # ALWAYS unblock — even if worker is cancelled or crashes
+            # The lock is the concurrency gate. Acquire happens exactly once
+            # in _trigger_transcription, release happens exactly once here.
+            # An unexpected RuntimeError means the gate is corrupt and
+            # concurrent transcriptions could re-occur — surface it rather
+            # than silently continuing.
             try:
                 self._transcribe_busy.release()
-            except RuntimeError:
-                pass  # already released
+            except RuntimeError as e:
+                self._write_crash_dump(f"transcribe_busy_release_failed: {e}", e)
 
     def _try_cross_session_match(self, speaker_id: int) -> None:
         """Attempt cross-session matching for a speaker (worker thread)."""
