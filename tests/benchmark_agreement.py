@@ -2,14 +2,20 @@
 """Benchmark: Fire-and-Forget vs LocalAgreement transcription pipeline.
 
 Simulates both approaches on the same audio file, measuring:
-- Transcription latency per chunk
-- Total wall time
-- Word-level output comparison
-- Number of transcribe() calls
-- Buffer behavior (clear vs sliding window)
+- Transcription latency per chunk, total wall time, call count (cost)
+- Jaccard word overlap between the two pipelines (consistency)
+- Word Error Rate vs ground-truth reference (quality)
+- Hallucination probe via silence padding (insertion count)
 
 Usage:
-    python3 tests/benchmark_agreement.py [--model qwen3-0.6b] [--audio tests/fixtures/speakers/dev00.wav]
+    # Cost + Jaccard only
+    python3 tests/benchmark_agreement.py --audio path/to.wav
+
+    # + WER (looks for path/to.txt sidecar, or pass --reference)
+    python3 tests/benchmark_agreement.py --audio path/to.wav --reference path/to.txt
+
+    # Hallucination probe — pad with silence and count insertions
+    python3 tests/benchmark_agreement.py --audio path/to.wav --reference path/to.txt --silence-padding 3
 """
 
 import argparse
@@ -277,12 +283,107 @@ def word_overlap(text_a: str, text_b: str) -> dict:
     }
 
 
+def _wer_tokenize(text: str) -> list[str]:
+    import re
+    text = text.lower()
+    text = re.sub(r"[^\w\s']", " ", text)
+    return text.split()
+
+
+def compute_wer(reference: str, hypothesis: str) -> dict:
+    """Levenshtein-based WER with substitution/deletion/insertion breakdown.
+
+    WER = (S + D + I) / N, where N = number of reference words. Insertions
+    are the dominant signal for hallucinations — a pipeline that fabricates
+    words without basis in the reference will inflate I.
+    """
+    ref = _wer_tokenize(reference)
+    hyp = _wer_tokenize(hypothesis)
+    n, m = len(ref), len(hyp)
+    if n == 0:
+        # All hypothesis words are insertions (hallucinations) when ref is empty
+        return {
+            "wer": float("inf") if m > 0 else 0.0,
+            "substitutions": 0, "deletions": 0, "insertions": m,
+            "n_ref": 0, "n_hyp": m,
+        }
+
+    # DP table: d[i][j] = edits to align ref[:i] with hyp[:j]
+    d = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        d[i][0] = i
+    for j in range(m + 1):
+        d[0][j] = j
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            if ref[i - 1] == hyp[j - 1]:
+                d[i][j] = d[i - 1][j - 1]
+            else:
+                d[i][j] = 1 + min(
+                    d[i - 1][j],      # deletion
+                    d[i][j - 1],      # insertion
+                    d[i - 1][j - 1],  # substitution
+                )
+
+    # Backtrace to count S/D/I
+    S = D = I = 0
+    i, j = n, m
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and ref[i - 1] == hyp[j - 1]:
+            i -= 1; j -= 1
+        elif i > 0 and j > 0 and d[i][j] == d[i - 1][j - 1] + 1:
+            S += 1; i -= 1; j -= 1
+        elif j > 0 and (i == 0 or d[i][j] == d[i][j - 1] + 1):
+            I += 1; j -= 1
+        else:
+            D += 1; i -= 1
+
+    return {
+        "wer": round((S + D + I) / n, 4),
+        "substitutions": S,
+        "deletions": D,
+        "insertions": I,
+        "n_ref": n,
+        "n_hyp": m,
+    }
+
+
+def pad_with_silence(audio: np.ndarray, seconds: float) -> np.ndarray:
+    """Pad audio with leading + trailing silence (exposes tail-hallucinations)."""
+    silence = np.zeros(int(seconds * SAMPLE_RATE), dtype=np.float32)
+    return np.concatenate([silence, audio, silence])
+
+
+def load_reference(args) -> str | None:
+    """Load ground-truth transcript: --reference flag, or sidecar .txt next to audio."""
+    if args.reference:
+        return open(args.reference).read().strip()
+    sidecar = os.path.splitext(args.audio)[0] + ".txt"
+    if os.path.exists(sidecar):
+        print(f"Found reference sidecar: {sidecar}")
+        return open(sidecar).read().strip()
+    return None
+
+
+def print_wer_row(label: str, wer: dict):
+    if wer["wer"] == float("inf"):
+        print(f"  {label:<20} WER=inf (N=0)  S={wer['substitutions']} D={wer['deletions']} I={wer['insertions']}  hyp={wer['n_hyp']}")
+    else:
+        print(f"  {label:<20} WER={wer['wer']:.1%}  S={wer['substitutions']} D={wer['deletions']} I={wer['insertions']}  N={wer['n_ref']} hyp={wer['n_hyp']}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="qwen3-0.6b",
                         help="Model key (e.g., qwen3-0.6b, qwen3-1.7b)")
     parser.add_argument("--audio", default="tests/fixtures/speakers/dev00.wav",
                         help="Path to WAV file")
+    parser.add_argument("--reference", default=None,
+                        help="Ground-truth transcript file (defaults to <audio>.txt sidecar)")
+    parser.add_argument("--silence-padding", type=float, default=0.0,
+                        help="Seconds of silence to pad on each side. Hallucination probe: "
+                             "any words emitted during padding are spurious. WER insertions "
+                             "show how many tail-words leaked through.")
     parser.add_argument("--output", default="tests/benchmark_results.json",
                         help="Output JSON path")
     args = parser.parse_args()
@@ -298,8 +399,18 @@ def main():
 
     print(f"Loading audio: {args.audio}")
     audio = load_audio(args.audio)
+    if args.silence_padding > 0:
+        audio = pad_with_silence(audio, args.silence_padding)
+        print(f"Padded with {args.silence_padding}s silence on each side (hallucination probe)")
     duration = len(audio) / SAMPLE_RATE
     print(f"Audio duration: {duration:.1f}s ({len(audio)} samples)\n")
+
+    reference = load_reference(args)
+    if reference:
+        print(f"Reference loaded: {len(reference.split())} words\n")
+    else:
+        print("No reference transcript — WER metrics will be skipped.\n"
+              "  (Pass --reference PATH or place a <audio>.txt sidecar to enable.)\n")
 
     # Warm up the model with a short transcription
     print("Warming up model...")
@@ -349,6 +460,35 @@ def main():
     print(f"  Unique to LA:  {overlap['unique_to_b']}")
     print()
 
+    # WER vs reference (the actual quality signal)
+    ff_wer = la_wer = None
+    if reference:
+        ff_wer = compute_wer(reference, ff_results["full_text"])
+        la_wer = compute_wer(reference, la_results["full_text"])
+        print("Word Error Rate vs reference")
+        print("-" * 60)
+        print_wer_row("Fire-and-Forget", ff_wer)
+        print_wer_row("LocalAgreement", la_wer)
+        if ff_wer["wer"] != float("inf") and la_wer["wer"] != float("inf"):
+            delta = la_wer["wer"] - ff_wer["wer"]
+            sign = "↓" if delta < 0 else "↑"
+            print(f"  Δ WER (LA - F&F): {sign} {abs(delta):.1%}  "
+                  f"({'LA better' if delta < 0 else 'F&F better' if delta > 0 else 'tie'})")
+        ins_delta = la_wer["insertions"] - ff_wer["insertions"]
+        print(f"  Δ insertions (hallucination proxy): "
+              f"{'↓' if ins_delta < 0 else '↑'} {abs(ins_delta)}")
+        print()
+    elif args.silence_padding > 0:
+        # No reference but silence padding active: every emitted word in the padded
+        # version that wasn't in the unpadded run is suspect. Crude proxy: total word
+        # count, since clean speech has a fixed expected count.
+        print("Hallucination probe (no reference)")
+        print("-" * 60)
+        print(f"  F&F words emitted: {ff_results['word_count']}")
+        print(f"  LA  words emitted: {la_results['word_count']}")
+        print(f"  Lower is better when padding > 0 — extra words are likely spurious.")
+        print()
+
     # Print transcripts side by side
     print("--- Fire-and-Forget transcript ---")
     for r in ff_results["results"]:
@@ -364,10 +504,14 @@ def main():
     output = {
         "audio_file": args.audio,
         "audio_duration_sec": round(duration, 1),
+        "silence_padding_sec": args.silence_padding,
+        "reference_provided": reference is not None,
         "model": args.model,
         "fire_and_forget": ff_results,
         "local_agreement": la_results,
         "comparison": overlap,
+        "wer_fire_and_forget": ff_wer,
+        "wer_local_agreement": la_wer,
         "config": {
             "tick_interval": AGREEMENT_TICK_SECONDS,
             "min_audio": AGREEMENT_MIN_AUDIO,
