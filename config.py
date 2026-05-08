@@ -110,8 +110,3 @@ P2P_MERGE_DELAY_MS = 60            # jitter buffer delay for audio merging
 P2P_AUDIO_QUALITY_GATE = 0.003     # min RMS to include a source in the mix
 P2P_CLOCK_SYNC_WINDOW = 20         # sliding window of offset samples
 P2P_SERVICE_TYPE = "_voxterm._tcp.local."
-
-# P2P audio merge
-P2P_AUDIO_MERGE_ENABLED = True       # send/receive raw audio between peers
-P2P_MERGE_DELAY_MS = 60              # ms to buffer local audio for peer alignment
-P2P_AUDIO_QUALITY_GATE = 0.003       # min RMS energy to contribute to mix

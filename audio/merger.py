@@ -19,6 +19,7 @@ from config import (
     P2P_MERGE_DELAY_MS,
     SAMPLE_RATE,
 )
+from network.segments import LOCAL_NODE_ID
 
 
 class PeerAudioMixer:
@@ -56,12 +57,12 @@ class PeerAudioMixer:
         self.peer_contributions: int = 0  # chunks where ≥1 peer contributed
 
         # Live weight tracking: node_id → rolling average weight (0.0–1.0)
-        # "__local__" key for local mic. Updated every merge.
+        # LOCAL_NODE_ID key for local mic. Updated every merge.
         self._live_weights: dict[str, float] = {}
         self._weight_alpha = 0.15  # EMA smoothing factor
 
         # Dominant source: which mic has the highest weight right now
-        self._dominant_source: str = "__local__"
+        self._dominant_source: str = LOCAL_NODE_ID
 
     @property
     def merge_delay_sec(self) -> float:
@@ -82,17 +83,25 @@ class PeerAudioMixer:
         """Feed a chunk from a peer (timestamp already adjusted to local clock)."""
         with self._lock:
             if node_id not in self._peer_buffers:
-                self._peer_buffers[node_id] = collections.deque(maxsize=500) if hasattr(collections.deque, 'maxsize') else collections.deque()
-            buf = self._peer_buffers[node_id]
-            buf.append((local_timestamp, pcm_float32))
-            # Evict old entries (keep ~2s worth at 50 chunks/sec)
-            while len(buf) > 200:
-                buf.popleft()
+                # ~2s worth at 50 chunks/sec
+                self._peer_buffers[node_id] = collections.deque(maxlen=200)
+            self._peer_buffers[node_id].append((local_timestamp, pcm_float32))
 
-    def remove_peer(self, node_id: str) -> None:
-        """Remove a peer's buffer when they disconnect."""
+    def remove_peer(self, node_id: str) -> list[np.ndarray]:
+        """Remove a peer's buffer when they disconnect.
+
+        If this was the last peer, drain any local chunks still waiting in
+        the delay buffer so they aren't lost — returns them as merged
+        chunks (with whatever peer audio remained).
+        """
+        drained: list[np.ndarray] = []
         with self._lock:
             self._peer_buffers.pop(node_id, None)
+            if not self._peer_buffers:
+                while self._local_queue:
+                    ts, local_chunk = self._local_queue.popleft()
+                    drained.append(self._merge_with_peers(local_chunk, ts))
+        return drained
 
     def add_local_chunk(self, chunk: np.ndarray, timestamp: float) -> np.ndarray | None:
         """Buffer a local chunk and return merged audio when delay has elapsed.
@@ -173,7 +182,7 @@ class PeerAudioMixer:
 
         # Local source
         local_rms = float(np.sqrt(np.mean(local_chunk ** 2)))
-        sources.append(("__local__", local_chunk, local_rms))
+        sources.append((LOCAL_NODE_ID, local_chunk, local_rms))
 
         # Peer sources — find the best-aligned chunk for each peer
         for node_id, peer_buf in self._peer_buffers.items():
@@ -186,7 +195,7 @@ class PeerAudioMixer:
 
         # Single source — no mixing needed
         if len(sources) == 1:
-            self._update_live_weights([("__local__", 1.0)])
+            self._update_live_weights([(LOCAL_NODE_ID, 1.0)])
             return local_chunk
 
         self.peer_contributions += 1

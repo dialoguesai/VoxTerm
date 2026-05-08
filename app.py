@@ -83,7 +83,7 @@ def _clipboard_cmd() -> list[str] | None:
 # P2P networking — optional, gracefully degrade if dependencies missing
 try:
     from network.session import SessionManager
-    from network.segments import TranscriptAssembler
+    from network.segments import TranscriptAssembler, LOCAL_NODE_ID
     from network.crypto import generate_session_code, derive_session_key
     from network.debug import P2PDebugStats
     from network.discovery import PeerDiscovery
@@ -711,7 +711,7 @@ class VoxTerm(App):
                     names = self._get_peer_names()
                     parts = []
                     for nid, w in sorted(weights.items(), key=lambda x: -x[1]):
-                        name = "you" if nid == "__local__" else names.get(nid, nid[:6])
+                        name = "you" if nid == LOCAL_NODE_ID else names.get(nid, nid[:6])
                         parts.append(f"{name} {int(w*100)}%")
                     waveform.set_merge_status(" | ".join(parts))
                 else:
@@ -769,7 +769,7 @@ class VoxTerm(App):
                             names = self._get_peer_names()
                             parts = []
                             for nid, w in sorted(weights.items(), key=lambda x: -x[1]):
-                                name = "you" if nid == "__local__" else names.get(nid, nid[:6])
+                                name = "you" if nid == LOCAL_NODE_ID else names.get(nid, nid[:6])
                                 parts.append(f"{name}={int(w*100)}%")
                             dbg_parts.append(f"  mix=[{' | '.join(parts)}]")
                 self.query_one(TranscriptPanel).system_message(
@@ -1833,9 +1833,12 @@ class VoxTerm(App):
             )
             if self._assembler:
                 self._assembler.clear_peer(node_id)
-            # Remove peer from audio mixer
+            # Remove peer from audio mixer; drain any delayed local chunks
+            # so we don't lose audio when the last peer drops out.
             if self._peer_audio_mixer:
-                self._peer_audio_mixer.remove_peer(node_id)
+                drained = self._peer_audio_mixer.remove_peer(node_id)
+                for chunk in drained:
+                    self.audio_buffer.append(chunk)
             self.call_from_thread(self._update_telemetry)
 
         def on_final(node_id, msg):
@@ -1974,6 +1977,10 @@ class VoxTerm(App):
         # Leave P2P session and stop discovery
         self._stop_discovery()
         if self._peer_audio_mixer:
+            # Flush any audio still waiting in the merge-delay buffer so we
+            # don't truncate the tail of the last utterance.
+            for chunk in self._peer_audio_mixer.flush():
+                self.audio_buffer.append(chunk)
             self._peer_audio_mixer.clear()
             self._peer_audio_mixer = None
         if self._session_mgr and self._session_mgr.is_in_session:

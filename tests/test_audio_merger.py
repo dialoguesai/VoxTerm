@@ -155,6 +155,20 @@ class TestPeerAudioMixerLifecycle:
         mixer = PeerAudioMixer()
         mixer.remove_peer("nonexistent")  # should not raise
 
+    def test_remove_last_peer_drains_delayed_chunks(self):
+        # Last peer dropping out must release any local chunks still waiting
+        # in the merge-delay buffer; otherwise audio is lost.
+        mixer = PeerAudioMixer(merge_delay_ms=100)
+        now = time.monotonic()
+        mixer.feed_peer("peer-1", _sine_chunk(), now)
+        # Two chunks queued, delay not elapsed → nothing returned yet
+        assert mixer.add_local_chunk(_sine_chunk(), now) is None
+        assert mixer.add_local_chunk(_sine_chunk(), now + 0.01) is None
+
+        drained = mixer.remove_peer("peer-1")
+        assert len(drained) == 2
+        assert mixer.active_peers == 0
+
     def test_clear(self):
         mixer = PeerAudioMixer(merge_delay_ms=0)
         mixer.feed_peer("peer-1", _sine_chunk(), time.monotonic())

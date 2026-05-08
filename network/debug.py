@@ -103,13 +103,14 @@ class P2PDebugStats:
             # Live weight bars — shows which mic is dominant right now
             weights = ms.get("live_weights", {})
             if weights:
-                # Build name map: __local__ → local name, node_ids → display names
+                from network.segments import LOCAL_NODE_ID
+                # Build name map: LOCAL_NODE_ID → local name, node_ids → display names
                 peer_info = snap["peers"]
-                name_map = {"__local__": "you"}
+                name_map = {LOCAL_NODE_ID: "you"}
                 for p in peer_info:
                     # Match by prefix since live_weights uses full node_id
                     for nid in weights:
-                        if nid != "__local__" and nid.startswith(p["node_id"]):
+                        if nid != LOCAL_NODE_ID and nid.startswith(p["node_id"]):
                             name_map[nid] = p["display_name"]
                             break
 

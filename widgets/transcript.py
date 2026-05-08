@@ -53,14 +53,13 @@ class TranscriptPanel(RichLog):
         self._peer_names: dict[str, str] = {}  # node_id → display_name
 
     def system_message(self, msg: str):
-        """Add a system message."""
+        """Add a system message. Always renders, even in merged view."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._entries.append((timestamp, "system", msg, "", 0, ""))
-        if not self._merged_view:
-            text = Text()
-            text.append("SYSTEM [SYS]  ", Style(color="#ff6600", bold=True))
-            text.append(msg, Style(color="#607080"))
-            self.write(text)
+        text = Text()
+        text.append("SYSTEM [SYS]  ", Style(color="#ff6600", bold=True))
+        text.append(msg, Style(color="#607080"))
+        self.write(text)
 
     def add_transcript(
         self, content: str, speaker: str = "", speaker_id: int = 0,
@@ -172,6 +171,15 @@ class TranscriptPanel(RichLog):
         for seg in partials:
             text = self._render_merged_segment(seg, local_name, is_partial=True)
             self.write(text)
+
+        # System messages aren't in the assembler — render them after segments
+        # so connection/debug status stays visible in merged view.
+        for entry in self._entries:
+            if entry[1] == "system":
+                text = Text()
+                text.append("SYSTEM [SYS]  ", Style(color="#ff6600", bold=True))
+                text.append(entry[2], Style(color="#607080"))
+                self.write(text)
 
     def _render_merged_segment(self, seg, local_name: str, is_partial: bool = False) -> Text:
         """Render a single MergedSegment."""
