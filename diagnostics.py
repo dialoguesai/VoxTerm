@@ -7,6 +7,7 @@ captured — even for C-level segfaults that bypass Python exception handling.
 from __future__ import annotations
 
 import faulthandler
+import logging
 import gc
 import json
 import os
@@ -22,6 +23,8 @@ except ImportError:
     _resource = None  # Windows — no resource module
 
 from config import CRASH_LOG_MAX_COUNT
+
+log = logging.getLogger(__name__)
 
 # ── crash directory ───────────────────────────────────────────
 
@@ -283,4 +286,4 @@ def rotate_crash_logs() -> None:
             # Keep last 100KB
             fh_log.write_text(content[-100_000:], encoding="utf-8")
     except Exception:
-        pass
+        log.warning("crash log rotation failed", exc_info=True)

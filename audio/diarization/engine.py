@@ -15,6 +15,16 @@ from __future__ import annotations
 import logging
 import numpy as np
 
+from config import (
+    MATCH_THRESHOLD, MATCH_THRESHOLD_DISCOVERY, NEW_SPEAKER_THRESHOLD,
+    CONTINUITY_BONUS, DIARIZATION_CONFLICT_MARGIN, MERGE_THRESHOLD,
+    QUALITY_RMS_THRESHOLD, MERGE_INTERVAL, RECLUSTER_INTERVAL,
+    RECLUSTER_MIN_SEGMENTS, LOOP_PROB, WHITEN_MIN_SEGMENTS,
+    SCD_CHANGE_THRESHOLD, SCD_WINDOW_SEC, SCD_HOP_SEC,
+    CENTROID_EMA_ALPHA, CENTROID_UPDATE_MIN_SIM, MAX_EMBEDDINGS_PER_SPEAKER,
+    MAX_SEGMENT_ORDER, DISCOVERY_PHASE_CALLS,
+)
+
 log = logging.getLogger(__name__)
 
 _MIN_SPEECH_SAMPLES = 16000   # 1.0 s at 16 kHz — shorter → unreliable embeddings
@@ -25,26 +35,27 @@ _SCD_MIN_SAMPLES = 48000     # 3.0 s at 16 kHz — minimum audio length for SCD
 class DiarizationEngine:
     """Online speaker identification using ECAPA-TDNN embeddings."""
 
-    MATCH_THRESHOLD = 0.55        # cosine sim above this → assign to existing speaker
-    MATCH_THRESHOLD_DISCOVERY = 0.70  # stricter during first 30 calls (discovery phase)
-    NEW_SPEAKER_THRESHOLD = 0.45  # must be below this vs ALL centroids to create new speaker
-    CONTINUITY_BONUS = 0.05       # small bias toward keeping the same speaker across short turns
-    CONFLICT_MARGIN = 0.05        # if top-2 within this → prefer more established speaker
-    MERGE_THRESHOLD = 0.65        # pairwise cosine sim above this → merge clusters
-    QUALITY_RMS_THRESHOLD = 0.003 # min RMS energy for quality-gated centroid update
-    MERGE_INTERVAL = 5            # check for cluster merges every N identify() calls
-    RECLUSTER_INTERVAL = 8        # spectral re-clustering every N identify() calls
-    RECLUSTER_MIN_SEGMENTS = 4    # min total segments before re-clustering kicks in
-    LOOP_PROB = 0.99              # VBx-style HMM self-transition probability
-    WHITEN_MIN_SEGMENTS = 8       # min segments before PLDA-lite whitening kicks in
-    SCD_CHANGE_THRESHOLD = 0.6    # cosine distance above this → speaker change detected
-    SCD_WINDOW_SEC = 2.0          # sliding window duration for SCD embedding extraction
-    SCD_HOP_SEC = 0.5             # hop between consecutive SCD windows
-    CENTROID_EMA_ALPHA = 0.3      # EMA weight for new embedding when updating centroids
-    CENTROID_UPDATE_MIN_SIM = 0.50  # min cosine sim to centroid before updating it
-    MAX_EMBEDDINGS_PER_SPEAKER = 20  # cap per-speaker embedding retention
-    MAX_SEGMENT_ORDER = 200       # cap temporal segment history
-    DISCOVERY_PHASE_CALLS = 30    # number of identify() calls for discovery phase
+    # Expose config thresholds as class attributes for backward compatibility
+    MATCH_THRESHOLD = MATCH_THRESHOLD
+    MATCH_THRESHOLD_DISCOVERY = MATCH_THRESHOLD_DISCOVERY
+    NEW_SPEAKER_THRESHOLD = NEW_SPEAKER_THRESHOLD
+    CONTINUITY_BONUS = CONTINUITY_BONUS
+    CONFLICT_MARGIN = DIARIZATION_CONFLICT_MARGIN
+    MERGE_THRESHOLD = MERGE_THRESHOLD
+    QUALITY_RMS_THRESHOLD = QUALITY_RMS_THRESHOLD
+    MERGE_INTERVAL = MERGE_INTERVAL
+    RECLUSTER_INTERVAL = RECLUSTER_INTERVAL
+    RECLUSTER_MIN_SEGMENTS = RECLUSTER_MIN_SEGMENTS
+    LOOP_PROB = LOOP_PROB
+    WHITEN_MIN_SEGMENTS = WHITEN_MIN_SEGMENTS
+    SCD_CHANGE_THRESHOLD = SCD_CHANGE_THRESHOLD
+    SCD_WINDOW_SEC = SCD_WINDOW_SEC
+    SCD_HOP_SEC = SCD_HOP_SEC
+    CENTROID_EMA_ALPHA = CENTROID_EMA_ALPHA
+    CENTROID_UPDATE_MIN_SIM = CENTROID_UPDATE_MIN_SIM
+    MAX_EMBEDDINGS_PER_SPEAKER = MAX_EMBEDDINGS_PER_SPEAKER
+    MAX_SEGMENT_ORDER = MAX_SEGMENT_ORDER
+    DISCOVERY_PHASE_CALLS = DISCOVERY_PHASE_CALLS
 
     def __init__(self):
         self._model = None

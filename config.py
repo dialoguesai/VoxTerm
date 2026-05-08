@@ -138,6 +138,7 @@ LLAMA_SERVER_MODELS: set[str] = set()  # populated at runtime from AVAILABLE_MOD
 
 # Diarizer subprocess
 DIARIZER_TIMEOUT = 5.0        # seconds to wait for subprocess response
+DIARIZER_STARTUP_TIMEOUT = 30.0  # seconds to wait for subprocess READY on startup
 DIARIZER_MAX_RESTARTS = 3     # max restarts before falling back to in-process
 DIARIZER_RESTART_WINDOW = 60  # seconds — restart counter resets after this
 
@@ -177,6 +178,36 @@ DICTATION_INTER_KEY_DELAY_MS = 1
 # Waveform
 WAVEFORM_FPS = 15
 WAVEFORM_HEIGHT = 11
+
+# Online diarization thresholds
+MATCH_THRESHOLD = 0.55             # cosine sim above this → assign to existing speaker
+MATCH_THRESHOLD_DISCOVERY = 0.70   # stricter threshold during discovery phase
+NEW_SPEAKER_THRESHOLD = 0.45      # must be below this vs ALL centroids to create new speaker
+CONTINUITY_BONUS = 0.05           # small bias toward keeping the same speaker across short turns
+DIARIZATION_CONFLICT_MARGIN = 0.05  # if top-2 within this → prefer more established speaker
+MERGE_THRESHOLD = 0.65            # pairwise cosine sim above this → merge clusters
+QUALITY_RMS_THRESHOLD = 0.003     # min RMS energy for quality-gated centroid update
+MERGE_INTERVAL = 5                # check for cluster merges every N identify() calls
+RECLUSTER_INTERVAL = 8            # spectral re-clustering every N identify() calls
+RECLUSTER_MIN_SEGMENTS = 4        # min total segments before re-clustering kicks in
+LOOP_PROB = 0.99                  # VBx-style HMM self-transition probability
+WHITEN_MIN_SEGMENTS = 8           # min segments before PLDA-lite whitening kicks in
+SCD_CHANGE_THRESHOLD = 0.6        # cosine distance above this → speaker change detected
+SCD_WINDOW_SEC = 2.0              # sliding window duration for SCD embedding extraction
+SCD_HOP_SEC = 0.5                 # hop between consecutive SCD windows
+CENTROID_EMA_ALPHA = 0.3          # EMA weight for new embedding when updating centroids
+CENTROID_UPDATE_MIN_SIM = 0.50    # min cosine sim to centroid before updating it
+MAX_EMBEDDINGS_PER_SPEAKER = 20   # cap per-speaker embedding retention
+MAX_SEGMENT_ORDER = 200           # cap temporal segment history
+DISCOVERY_PHASE_CALLS = 30        # number of identify() calls for discovery phase
+
+# Cross-session speaker matching thresholds
+CROSS_SESSION_HIGH_BASE = 0.55    # base threshold for auto-assign
+CROSS_SESSION_MEDIUM = 0.35       # below this → unknown
+ADAPTIVE_BOOST = 0.15             # extra strictness for new profiles
+ADAPTIVE_DECAY_RATE = 10          # how fast the boost decays with samples
+CROSS_SESSION_CONFLICT_MARGIN = 0.05  # if top-2 profiles within this → treat as ambiguous
+COLD_START_MIN_CONFIRMED = 10     # min confirmed before auto-updates allowed
 
 # Colors
 BG_COLOR = "#0a0e14"
