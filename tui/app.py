@@ -16,6 +16,12 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Windows: force UTF-8 output so Textual's Unicode box-drawing characters render correctly
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
 # Internal runtime defaults — prevent known framework conflicts
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -40,7 +46,7 @@ warnings.filterwarnings("ignore", message="resource_tracker", category=UserWarni
 # We let it spawn (libraries need register/unregister to function) but
 # prevent it from printing warnings on stop.
 import multiprocessing.resource_tracker as _rt
-_rt._resource_tracker._stop = lambda: None
+_rt._resource_tracker._stop = lambda **kwargs: None
 
 from enum import Enum
 import numpy as np
@@ -58,6 +64,7 @@ from tui.widgets.transcript import TranscriptPanel, Log
 from tui.widgets.tag_screen import SpeakerTagScreen
 from tui.widgets.profile_screen import SpeakerProfileScreen
 from tui.widgets.transcript_explorer import TranscriptExplorerScreen
+from tui.widgets.recording_pulse import RecordingPulse
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
 from audio.system_capture import SystemCapture
@@ -84,6 +91,8 @@ def _clipboard_cmd() -> list[str] | None:
     """Return the clipboard copy command for this platform."""
     if sys.platform == "darwin":
         return ["pbcopy"]
+    if sys.platform == "win32":
+        return ["clip.exe"]
     if shutil.which("xclip"):
         return ["xclip", "-selection", "clipboard"]
     if shutil.which("xsel"):
@@ -96,6 +105,28 @@ def _clipboard_cmd() -> list[str] | None:
 from network.party import PartyManager, PartyState, P2P_AVAILABLE as _P2P_AVAILABLE
 
 from config import ConfigStore
+
+def _setup_file_logging() -> None:
+    """Best-effort file logging setup that never prevents module import."""
+    try:
+        log_path = Path.home() / "Documents" / "voxterm" / "voxterm.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        root_log = logging.getLogger()
+        if not any(
+            isinstance(h, logging.FileHandler)
+            and getattr(h, "baseFilename", "") == str(log_path)
+            for h in root_log.handlers
+        ):
+            file_handler = logging.FileHandler(log_path, mode="a")
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+            )
+            root_log.addHandler(file_handler)
+    except OSError as exc:
+        sys.stderr.write(f"Warning: could not enable file logging: {exc}\n")
+
+
+_setup_file_logging()
 
 log = logging.getLogger(__name__)
 
@@ -463,6 +494,7 @@ class VoxTerm(App):
         self.audio_capture = AudioCapture()
         self.system_capture = SystemCapture()
         self.audio_buffer = AudioBuffer()
+        self._local_audio_buffer = AudioBuffer()  # local-only audio for diarization
         self.vad = SileroVAD()
         self.transcriber = transcriber
         self.diarizer = DiarizationProxy()
@@ -497,6 +529,7 @@ class VoxTerm(App):
         # P2P party manager — owns all P2P state and logic
         self._party = PartyManager(self, _get_config())
         self._wire_party_callbacks()
+        self._recording_pulse: RecordingPulse | None = None
 
     def compose(self) -> ComposeResult:
         yield CyberHeader()
@@ -609,6 +642,8 @@ class VoxTerm(App):
         self._party.start_session_blocking(code, is_creator)
 
     def on_mount(self) -> None:
+        self._recording_pulse = RecordingPulse(self)
+
         # Open speaker profile store (fast — just SQLite + cache load)
         try:
             self.speaker_store.open()
@@ -630,6 +665,11 @@ class VoxTerm(App):
         # Start P2P peer discovery on launch (passive — just show who's nearby)
         if _P2P_AVAILABLE:
             self._party_start_passive_discovery_worker()
+
+    def on_screen_resume(self) -> None:
+        # Carry the recording border into modals that push on top of the main screen.
+        if self._recording_pulse is not None:
+            self._recording_pulse.reapply_to_active_screen()
 
     @property
     def _chunk_duration(self) -> float:
@@ -694,9 +734,17 @@ class VoxTerm(App):
         gc.collect()
 
         # Memory watchdog: warn at 4GB, crash-dump at 6GB
-        import resource as _resource
-        rss_bytes = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
-        rss_mb = rss_bytes / (1024 * 1024)
+        try:
+            import resource as _resource
+            rss_raw = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            if sys.platform == "darwin":
+                rss_bytes = rss_raw
+            else:
+                # Linux reports ru_maxrss in KiB
+                rss_bytes = rss_raw * 1024
+            rss_mb = rss_bytes / (1024 * 1024)
+        except ImportError:
+            return  # Windows — can't check memory, skip watchdog
         if rss_mb > 6000:
             self._write_crash_dump(f"memory_watchdog: {rss_mb:.0f}MB")
             self.query_one(TranscriptPanel).system_message(
@@ -784,7 +832,22 @@ class VoxTerm(App):
             waveform.tick()
             return
 
-        for chunk in chunks:
+        # Build a mic-only stream aligned 1:1 with `chunks` so the
+        # diarizer sees only the local microphone, never the system-audio
+        # mix. _mix_chunks emits: n=min(len(mic),len(sys)) summed entries,
+        # then any mic tail, then any sys tail. Pad sys-only tail with
+        # silence so indices line up with `chunks`.
+        if sys_chunks:
+            n = min(len(mic_chunks), len(sys_chunks))
+            mic_only_chunks: list[np.ndarray] = list(mic_chunks[:n])
+            mic_only_chunks.extend(mic_chunks[n:])
+            for sc in sys_chunks[n:]:
+                mic_only_chunks.append(np.zeros_like(sc))
+        else:
+            mic_only_chunks = list(chunks)
+
+        for idx, chunk in enumerate(chunks):
+            mic_only_chunk = mic_only_chunks[idx]
             waveform.push_samples(chunk)
 
             # Speech detection: Silero VAD (neural) with RMS fallback
@@ -808,12 +871,17 @@ class VoxTerm(App):
                 for mc in merged_chunks:
                     if self._had_speech or is_speech:
                         self.audio_buffer.append(mc)
+                # Diarizer sees raw mic only — never system audio or peer audio,
+                # both of which acoustically blend speakers into one cluster.
+                if self._had_speech or is_speech:
+                    self._local_audio_buffer.append(mic_only_chunk)
             else:
-                # No merger — original behavior
                 if is_speech:
                     self.audio_buffer.append(chunk)
+                    self._local_audio_buffer.append(mic_only_chunk)
                 elif self._had_speech:
                     self.audio_buffer.append(chunk)
+                    self._local_audio_buffer.append(mic_only_chunk)
 
         waveform.tick()
 
@@ -908,15 +976,25 @@ class VoxTerm(App):
         self._transcribe_started = time.time()
         self._silence_chunks = 0
         audio = self.audio_buffer.get_and_clear()
+        local_audio = self._local_audio_buffer.get_and_clear()
         if len(audio) < int(SAMPLE_RATE * MIN_BUFFER_SECONDS):
             self._transcribing.clear()
             return
 
         self._had_speech = False
-        self._transcribe_audio(audio)
+        self._transcribe_audio(audio, local_audio)
 
     @work(thread=True, group="transcription")
-    def _transcribe_audio(self, audio: np.ndarray):
+    def _transcribe_audio(self, audio: np.ndarray, local_audio: np.ndarray | None = None):
+        # Use local-only audio for diarization to avoid peer audio corrupting embeddings.
+        # If local_audio is unavailable (party mode with no local capture), we cannot
+        # diarize reliably — merged mono audio makes all speakers look identical.
+        has_local_audio = (
+            local_audio is not None
+            and len(local_audio) > 0
+            and float(np.sqrt(np.mean(local_audio ** 2))) >= 0.003
+        )
+        diarize_audio = local_audio if has_local_audio else audio
         try:
             if self._debug:
                 duration = len(audio) / SAMPLE_RATE
@@ -944,18 +1022,26 @@ class VoxTerm(App):
             is_overlap = False
             if text and self._diarizer_loaded:
                 try:
+                    # Skip diarization if we only have merged party audio —
+                    # mono blend makes all speakers look identical
+                    if not has_local_audio and local_audio is not None:
+                        speaker_label, speaker_id = "Speaker 1", 1
+                        segments = [("Speaker 1", 1, 0, len(diarize_audio))]
+                        is_overlap = False
                     # Use speaker-change detection for buffers >= 3s
-                    if len(audio) >= 48000:
+                    elif len(diarize_audio) >= 48000:
                         segments = self.diarizer.identify_segments(
-                            audio.copy()
+                            diarize_audio.copy()
                         )
                     else:
-                        lbl, sid = self.diarizer.identify(audio.copy())
-                        segments = [(lbl, sid, 0, len(audio))]
+                        lbl, sid = self.diarizer.identify(diarize_audio.copy())
+                        segments = [(lbl, sid, 0, len(diarize_audio))]
 
                     # Check overlap metadata from last identify() call
-                    meta = self.diarizer.get_last_identify_meta()
-                    is_overlap = meta.get("is_overlap", False)
+                    # (only when diarization actually ran — otherwise meta is stale)
+                    if has_local_audio or local_audio is None:
+                        meta = self.diarizer.get_last_identify_meta()
+                        is_overlap = meta.get("is_overlap", False)
 
                     # Use last segment as the "current" speaker for cross-session matching
                     speaker_label, speaker_id = segments[-1][0], segments[-1][1]
@@ -985,7 +1071,15 @@ class VoxTerm(App):
                         seen_sids.add(seg_sid)
                         self._try_cross_session_match(seg_sid)
 
-                except Exception:
+                except Exception as _diar_err:
+                    import traceback as _tb
+                    log.error("Diarizer exception: %s\n%s", _diar_err,
+                              "".join(_tb.format_exception(_diar_err)))
+                    if self._debug:
+                        self.call_from_thread(
+                            self.query_one(TranscriptPanel).system_message,
+                            f"[dbg] diarizer error: {_diar_err}",
+                        )
                     segments = [("", 0, 0, len(audio))]
 
             else:
@@ -1011,9 +1105,11 @@ class VoxTerm(App):
                     )
         except Exception as e:
             self._write_crash_dump("_transcribe_audio", e)
+            import traceback
+            tb = traceback.format_exc()
             self.call_from_thread(
                 self.query_one(TranscriptPanel).system_message,
-                f"transcription error: {e}"
+                f"transcription error: {e}\n{tb}"
             )
         finally:
             # ALWAYS unblock — even if worker is cancelled or crashes
@@ -1100,6 +1196,10 @@ class VoxTerm(App):
         self, text: str, speaker: str = "", speaker_id: int = 0,
         confidence: str = "", overlap: bool = False,
     ):
+        if not speaker:
+            import traceback
+            log.warning("Empty speaker label for text=%r, stack:\n%s",
+                        text[:80], "".join(traceback.format_stack()[-4:]))
         self.query_one(TranscriptPanel).add_transcript(
             text, speaker, speaker_id, confidence=confidence,
             overlap=overlap,
@@ -1231,25 +1331,26 @@ class VoxTerm(App):
                 # because multiprocessing.util.spawnv_passfds calls
                 # _posixsubprocess.fork_exec directly, bypassing Popen.
                 # Patch at the C-level entry point to sanitize fds_to_keep.
-                import _posixsubprocess
-                if not getattr(_posixsubprocess, '_vt_patched', False):
-                    _orig_fe = _posixsubprocess.fork_exec
-                    def _safe_fork_exec(*args):
-                        largs = list(args)
-                        fds = largs[3]  # fds_to_keep (sorted tuple of ints)
-                        if fds:
-                            clean = tuple(
-                                fd for fd in fds
-                                if isinstance(fd, int) and 0 <= fd <= 2**31
-                            )
-                            largs[3] = clean
-                        try:
-                            return _orig_fe(*largs)
-                        except ValueError:
-                            largs[3] = ()
-                            return _orig_fe(*largs)
-                    _posixsubprocess.fork_exec = _safe_fork_exec
-                    _posixsubprocess._vt_patched = True
+                if sys.platform != "win32":
+                    import _posixsubprocess
+                    if not getattr(_posixsubprocess, '_vt_patched', False):
+                        _orig_fe = _posixsubprocess.fork_exec
+                        def _safe_fork_exec(*args):
+                            largs = list(args)
+                            fds = largs[3]  # fds_to_keep (sorted tuple of ints)
+                            if fds:
+                                clean = tuple(
+                                    fd for fd in fds
+                                    if isinstance(fd, int) and 0 <= fd <= 2**31
+                                )
+                                largs[3] = clean
+                            try:
+                                return _orig_fe(*largs)
+                            except ValueError:
+                                largs[3] = ()
+                                return _orig_fe(*largs)
+                        _posixsubprocess.fork_exec = _safe_fork_exec
+                        _posixsubprocess._vt_patched = True
 
                 model_repo = AVAILABLE_MODELS[self._model_name]
                 if self._model_name in LLAMA_SERVER_MODELS:
@@ -1267,10 +1368,10 @@ class VoxTerm(App):
                 self.call_from_thread(self._on_model_loaded)
             except Exception as e:
                 import traceback
-                traceback.print_exc()
+                tb = traceback.format_exc()
                 self.call_from_thread(
                     self.query_one(TranscriptPanel).system_message,
-                    f"model load failed: {e}"
+                    f"model load failed: {e}\n{tb}"
                 )
         threading.Thread(target=_do_load, daemon=True, name="model-loader").start()
 
@@ -1348,6 +1449,8 @@ class VoxTerm(App):
             self.system_capture.stop()
             waveform.set_recording(False)
             header.set_recording(False)
+            if self._recording_pulse:
+                self._recording_pulse.stop()
             transcript.system_message("recording stopped", Log.REC, {"stopped": "#ff4466"})
         else:
             self._recording = True
@@ -1356,11 +1459,18 @@ class VoxTerm(App):
                 self.audio_capture.start()
                 waveform.set_recording(True)
                 header.set_recording(True)
+                if self._recording_pulse:
+                    self._recording_pulse.start()
+                mic_name = getattr(self.audio_capture, '_device_name', 'unknown')
                 transcript.system_message("recording started", Log.REC, {"started": "#00ff88"})
+                if self._debug:
+                    transcript.system_message(f"mic: {mic_name}", Log.SYS)
             except Exception as e:
                 self._recording = False
                 waveform.set_recording(False)
                 header.set_recording(False)
+                if self._recording_pulse:
+                    self._recording_pulse.stop()
                 transcript.system_message(
                     f"microphone error: {e} — grant Terminal mic access in System Settings > Privacy",
                     Log.REC,
@@ -1719,6 +1829,7 @@ class VoxTerm(App):
         transcript = self.query_one(TranscriptPanel)
         transcript.clear()
         self.audio_buffer.clear()
+        self._local_audio_buffer.clear()
         self._had_speech = False
         self._silence_chunks = 0
         self.vad.reset()
@@ -1854,6 +1965,7 @@ class VoxTerm(App):
         """Clear display only — live file stays on disk as the record."""
         self.query_one(TranscriptPanel).clear()
         self.audio_buffer.clear()
+        self._local_audio_buffer.clear()
         self._had_speech = False
         self._silence_chunks = 0
         self.vad.reset()
@@ -1888,7 +2000,8 @@ class VoxTerm(App):
             pid = getattr(_rt._resource_tracker, '_pid', None)
             if pid:
                 import signal
-                os.kill(pid, signal.SIGKILL)
+                sig = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
+                os.kill(pid, sig)
         except Exception:
             pass
         try:
@@ -1903,7 +2016,7 @@ class VoxTerm(App):
 
 
 
-if __name__ == "__main__":
+def main():
     import argparse
     import config as _config_mod
 
@@ -2052,8 +2165,6 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-
-
     # Prevent segfault: PortAudio/PyTorch/SpeechBrain C threads crash
     # during Python's shutdown when native objects are GC'd in random order.
     # atexit fires before finalizers; the finally block catches SystemExit.
@@ -2082,3 +2193,7 @@ if __name__ == "__main__":
         except Exception:
             pass
         os._exit(0)
+
+
+if __name__ == "__main__":
+    main()

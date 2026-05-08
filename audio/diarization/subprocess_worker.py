@@ -47,7 +47,8 @@ def _handle_sigterm(signum, frame):
 
 
 def main():
-    signal.signal(signal.SIGTERM, _handle_sigterm)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _handle_sigterm)
 
     # Use binary stdin/stdout for the IPC protocol
     stdin = sys.stdin.buffer

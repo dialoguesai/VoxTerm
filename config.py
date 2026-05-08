@@ -1,6 +1,6 @@
 # VOXTERM Configuration
 
-VERSION = "0.0.0"
+VERSION = "0.1.0"
 
 import sys
 
@@ -29,6 +29,24 @@ if sys.platform == "darwin":
     FASTER_WHISPER_MODELS: set[str] = set()
 elif sys.platform.startswith("linux"):
     # Linux: Qwen3-ASR (primary, via qwen-asr/PyTorch) + faster-whisper (fallback)
+    _HAS_QWEN_ASR = __import__("importlib.util", fromlist=["find_spec"]).find_spec("qwen_asr") is not None
+    AVAILABLE_MODELS = {
+        "fw-tiny":           "tiny",
+        "fw-base":           "base",
+        "fw-small":          "small",
+        "fw-medium":         "medium",
+        "fw-large-v3":       "large-v3",
+        "fw-distil-large-v3": "distil-large-v3",
+    }
+    FASTER_WHISPER_MODELS = set(AVAILABLE_MODELS)
+    if _HAS_QWEN_ASR:
+        AVAILABLE_MODELS["qwen3-0.6b"] = "Qwen/Qwen3-ASR-0.6B"
+        AVAILABLE_MODELS["qwen3-1.7b"] = "Qwen/Qwen3-ASR-1.7B"
+    QWEN3_MODELS = set(AVAILABLE_MODELS) - FASTER_WHISPER_MODELS
+    DEFAULT_MODEL = "qwen3-0.6b" if _HAS_QWEN_ASR else "fw-small"
+    WHISPER_MODEL = None
+elif sys.platform == "win32":
+    # Windows: Qwen3-ASR (primary, via qwen-asr/PyTorch) + faster-whisper (fallback)
     DEFAULT_MODEL = "qwen3-0.6b"
     AVAILABLE_MODELS = {
         "qwen3-0.6b":  "Qwen/Qwen3-ASR-0.6B",
@@ -96,6 +114,15 @@ elif sys.platform.startswith("linux"):
     BIN_DIR = DATA_DIR / ".bin"
     CRASH_DIR = DATA_DIR / ".crashes"
     STATE_FILE = CONFIG_DIR / "state.json"
+elif sys.platform == "win32":
+    # Windows — %LOCALAPPDATA%\voxterm
+    _appdata = _Path(_os.environ.get("LOCALAPPDATA", _home / "AppData" / "Local"))
+    DATA_DIR = _appdata / "voxterm"
+    SESSIONS_DIR = _home / "Documents" / "voxterm"
+    LIVE_DIR = SESSIONS_DIR / ".live"
+    BIN_DIR = DATA_DIR / "bin"
+    CRASH_DIR = DATA_DIR / "crashes"
+    STATE_FILE = DATA_DIR / "state.json"
 else:
     raise RuntimeError(f"Unsupported platform: {sys.platform}")
 
@@ -111,6 +138,7 @@ LLAMA_SERVER_MODELS: set[str] = set()  # populated at runtime from AVAILABLE_MOD
 
 # Diarizer subprocess
 DIARIZER_TIMEOUT = 5.0        # seconds to wait for subprocess response
+DIARIZER_STARTUP_TIMEOUT = 30.0  # seconds to wait for subprocess READY on startup
 DIARIZER_MAX_RESTARTS = 3     # max restarts before falling back to in-process
 DIARIZER_RESTART_WINDOW = 60  # seconds — restart counter resets after this
 
@@ -144,11 +172,42 @@ CRASH_LOG_MAX_COUNT = 50      # max crash logs to keep (rotated on startup)
 # Dictation mode
 DICTATION_HOTKEY_MACOS = ("cmd", "shift", "d")
 DICTATION_HOTKEY_LINUX = ("super", "shift", "d")
+DICTATION_HOTKEY_WINDOWS = ("ctrl", "shift", "d")
 DICTATION_INTER_KEY_DELAY_MS = 1
 
 # Waveform
 WAVEFORM_FPS = 15
 WAVEFORM_HEIGHT = 11
+
+# Online diarization thresholds
+MATCH_THRESHOLD = 0.55             # cosine sim above this → assign to existing speaker
+MATCH_THRESHOLD_DISCOVERY = 0.70   # stricter threshold during discovery phase
+NEW_SPEAKER_THRESHOLD = 0.45      # must be below this vs ALL centroids to create new speaker
+CONTINUITY_BONUS = 0.05           # small bias toward keeping the same speaker across short turns
+DIARIZATION_CONFLICT_MARGIN = 0.05  # if top-2 within this → prefer more established speaker
+MERGE_THRESHOLD = 0.65            # pairwise cosine sim above this → merge clusters
+QUALITY_RMS_THRESHOLD = 0.003     # min RMS energy for quality-gated centroid update
+MERGE_INTERVAL = 5                # check for cluster merges every N identify() calls
+RECLUSTER_INTERVAL = 8            # spectral re-clustering every N identify() calls
+RECLUSTER_MIN_SEGMENTS = 4        # min total segments before re-clustering kicks in
+LOOP_PROB = 0.99                  # VBx-style HMM self-transition probability
+WHITEN_MIN_SEGMENTS = 8           # min segments before PLDA-lite whitening kicks in
+SCD_CHANGE_THRESHOLD = 0.35       # cosine distance above this → speaker change detected
+SCD_WINDOW_SEC = 2.0              # sliding window duration for SCD embedding extraction
+SCD_HOP_SEC = 0.5                 # hop between consecutive SCD windows
+CENTROID_EMA_ALPHA = 0.3          # EMA weight for new embedding when updating centroids
+CENTROID_UPDATE_MIN_SIM = 0.50    # min cosine sim to centroid before updating it
+MAX_EMBEDDINGS_PER_SPEAKER = 20   # cap per-speaker embedding retention
+MAX_SEGMENT_ORDER = 200           # cap temporal segment history
+DISCOVERY_PHASE_CALLS = 30        # number of identify() calls for discovery phase
+
+# Cross-session speaker matching thresholds
+CROSS_SESSION_HIGH_BASE = 0.55    # base threshold for auto-assign
+CROSS_SESSION_MEDIUM = 0.35       # below this → unknown
+ADAPTIVE_BOOST = 0.15             # extra strictness for new profiles
+ADAPTIVE_DECAY_RATE = 10          # how fast the boost decays with samples
+CROSS_SESSION_CONFLICT_MARGIN = 0.05  # if top-2 profiles within this → treat as ambiguous
+COLD_START_MIN_CONFIRMED = 10     # min confirmed before auto-updates allowed
 
 # Colors
 BG_COLOR = "#0a0e14"

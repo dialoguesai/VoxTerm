@@ -19,6 +19,7 @@ import hmac
 import hashlib
 import logging
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -185,16 +186,17 @@ def _file_key_get() -> bytes | None:
     if not path.exists():
         return None
     try:
-        mode = path.stat().st_mode & 0o777
-        if mode != 0o600:
-            log.warning(
-                "Key file %s has permissions %04o (expected 0600) — "
-                "tightening permissions", path, mode,
-            )
-            try:
-                path.chmod(0o600)
-            except OSError:
-                log.warning("Could not fix key file permissions")
+        if sys.platform != "win32":
+            mode = path.stat().st_mode & 0o777
+            if mode != 0o600:
+                log.warning(
+                    "Key file %s has permissions %04o (expected 0600) — "
+                    "tightening permissions", path, mode,
+                )
+                try:
+                    path.chmod(0o600)
+                except OSError:
+                    log.warning("Could not fix key file permissions")
         key = path.read_bytes()
         return key if len(key) == _kCCKeySizeAES256 else None
     except Exception:
@@ -209,7 +211,8 @@ def _file_key_set(key: bytes) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".keyfile_tmp_")
         try:
-            os.fchmod(fd, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
             os.write(fd, key)
             os.fsync(fd)
         finally:

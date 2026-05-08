@@ -15,6 +15,16 @@ from __future__ import annotations
 import logging
 import numpy as np
 
+from config import (
+    MATCH_THRESHOLD, MATCH_THRESHOLD_DISCOVERY, NEW_SPEAKER_THRESHOLD,
+    CONTINUITY_BONUS, DIARIZATION_CONFLICT_MARGIN, MERGE_THRESHOLD,
+    QUALITY_RMS_THRESHOLD, MERGE_INTERVAL, RECLUSTER_INTERVAL,
+    RECLUSTER_MIN_SEGMENTS, LOOP_PROB, WHITEN_MIN_SEGMENTS,
+    SCD_CHANGE_THRESHOLD, SCD_WINDOW_SEC, SCD_HOP_SEC,
+    CENTROID_EMA_ALPHA, CENTROID_UPDATE_MIN_SIM, MAX_EMBEDDINGS_PER_SPEAKER,
+    MAX_SEGMENT_ORDER, DISCOVERY_PHASE_CALLS,
+)
+
 log = logging.getLogger(__name__)
 
 _MIN_SPEECH_SAMPLES = 16000   # 1.0 s at 16 kHz — shorter → unreliable embeddings
@@ -25,26 +35,27 @@ _SCD_MIN_SAMPLES = 48000     # 3.0 s at 16 kHz — minimum audio length for SCD
 class DiarizationEngine:
     """Online speaker identification using ECAPA-TDNN embeddings."""
 
-    MATCH_THRESHOLD = 0.55        # cosine sim above this → assign to existing speaker
-    MATCH_THRESHOLD_DISCOVERY = 0.70  # stricter threshold during discovery phase
-    NEW_SPEAKER_THRESHOLD = 0.45  # must be below this vs ALL centroids to create new speaker
-    CONTINUITY_BONUS = 0.05       # small bias toward keeping the same speaker across short turns
-    CONFLICT_MARGIN = 0.05        # if top-2 within this → prefer more established speaker
-    MERGE_THRESHOLD = 0.65        # pairwise cosine sim above this → merge clusters
-    QUALITY_RMS_THRESHOLD = 0.003 # min RMS energy for quality-gated centroid update
-    MERGE_INTERVAL = 5            # check for cluster merges every N identify() calls
-    RECLUSTER_INTERVAL = 8        # spectral re-clustering every N identify() calls
-    RECLUSTER_MIN_SEGMENTS = 4    # min total segments before re-clustering kicks in
-    LOOP_PROB = 0.99              # VBx-style HMM self-transition probability
-    WHITEN_MIN_SEGMENTS = 8       # min segments before PLDA-lite whitening kicks in
-    SCD_CHANGE_THRESHOLD = 0.35   # cosine distance above this → speaker change detected
-    SCD_WINDOW_SEC = 2.0          # sliding window duration for SCD embedding extraction
-    SCD_HOP_SEC = 0.5             # hop between consecutive SCD windows
-    CENTROID_EMA_ALPHA = 0.3      # EMA weight for new embedding when updating centroids
-    CENTROID_UPDATE_MIN_SIM = 0.50  # min cosine sim to centroid before updating it
-    MAX_EMBEDDINGS_PER_SPEAKER = 20  # cap per-speaker embedding retention
-    MAX_SEGMENT_ORDER = 200       # cap temporal segment history
-    DISCOVERY_PHASE_CALLS = 30    # number of identify() calls for discovery phase
+    # Expose config thresholds as class attributes for backward compatibility
+    MATCH_THRESHOLD = MATCH_THRESHOLD
+    MATCH_THRESHOLD_DISCOVERY = MATCH_THRESHOLD_DISCOVERY
+    NEW_SPEAKER_THRESHOLD = NEW_SPEAKER_THRESHOLD
+    CONTINUITY_BONUS = CONTINUITY_BONUS
+    CONFLICT_MARGIN = DIARIZATION_CONFLICT_MARGIN
+    MERGE_THRESHOLD = MERGE_THRESHOLD
+    QUALITY_RMS_THRESHOLD = QUALITY_RMS_THRESHOLD
+    MERGE_INTERVAL = MERGE_INTERVAL
+    RECLUSTER_INTERVAL = RECLUSTER_INTERVAL
+    RECLUSTER_MIN_SEGMENTS = RECLUSTER_MIN_SEGMENTS
+    LOOP_PROB = LOOP_PROB
+    WHITEN_MIN_SEGMENTS = WHITEN_MIN_SEGMENTS
+    SCD_CHANGE_THRESHOLD = SCD_CHANGE_THRESHOLD
+    SCD_WINDOW_SEC = SCD_WINDOW_SEC
+    SCD_HOP_SEC = SCD_HOP_SEC
+    CENTROID_EMA_ALPHA = CENTROID_EMA_ALPHA
+    CENTROID_UPDATE_MIN_SIM = CENTROID_UPDATE_MIN_SIM
+    MAX_EMBEDDINGS_PER_SPEAKER = MAX_EMBEDDINGS_PER_SPEAKER
+    MAX_SEGMENT_ORDER = MAX_SEGMENT_ORDER
+    DISCOVERY_PHASE_CALLS = DISCOVERY_PHASE_CALLS
 
     def __init__(self):
         self._model = None
@@ -126,12 +137,28 @@ class DiarizationEngine:
         self._loaded = True
 
     def _load_onnx(self) -> None:
-        """Load 3D-Speaker model via ONNX Runtime (no PyTorch)."""
+        """Load 3D-Speaker model via ONNX Runtime (no PyTorch).
+
+        Falls back to the vendored PyTorch CAM++ path if the ONNX
+        model is missing or unloadable. The published GitHub release
+        for eres2net_large ships only the graph half (.onnx) without
+        the external-weights sidecar (.onnx.data), so onnxruntime
+        raises on session init for any fresh install.
+        """
         from config import SPEAKER_MODEL_NAME
         from .onnx_embedder import OnnxSpeakerEmbedder
 
         self._onnx_embedder = OnnxSpeakerEmbedder(model_name=SPEAKER_MODEL_NAME)
-        self._onnx_embedder.load()
+        try:
+            self._onnx_embedder.load()
+        except Exception as e:
+            log.warning(
+                "ONNX embedder load failed (%s) — falling back to vendored "
+                "PyTorch CAM++ legacy backend.", e,
+            )
+            self._onnx_embedder = None
+            self._load_pytorch()
+            return
         self._backend = "onnx"
         log.info("Diarization engine using ONNX backend (%s)", SPEAKER_MODEL_NAME)
 
@@ -227,10 +254,13 @@ class DiarizationEngine:
             speaker_id – integer key (1-based)
         """
         if not self._loaded:
+            log.warning("identify() called but diarization model not loaded — returning Speaker 1")
             return "Speaker 1", 1
         if self._backend == "pytorch" and self._model is None:
+            log.warning("identify() called but PyTorch model is None — returning Speaker 1")
             return "Speaker 1", 1
         if self._backend == "onnx" and self._onnx_embedder is None:
+            log.warning("identify() called but ONNX embedder is None — returning Speaker 1")
             return "Speaker 1", 1
 
         # Ensure mono float32
@@ -251,8 +281,15 @@ class DiarizationEngine:
         is_high_quality = rms >= self.QUALITY_RMS_THRESHOLD
 
         # Overlap-aware embedding: use segmentation to weight frames
-        # so overlapping speech doesn't contaminate the embedding
-        if self._segmentation is not None and len(audio) >= _MIN_SPEECH_SAMPLES:
+        # so overlapping speech doesn't contaminate the embedding.
+        # Skip this path for all PyTorch backends. The segmentation
+        # model is only used with the non-PyTorch embedding flow here;
+        # in particular, CAM++ produced unstable embeddings when paired
+        # with segmentation (cosine scores ~0.2-0.5 for same-speaker
+        # instead of expected 0.7-0.9).
+        if (self._segmentation is not None
+                and self._backend != "pytorch"
+                and len(audio) >= _MIN_SPEECH_SAMPLES):
             # Check if segmentation detects any active speaker at all
             activation = self._segmentation.segment(audio)
             active_speakers = self._segmentation.get_active_speakers(activation)
@@ -290,6 +327,13 @@ class DiarizationEngine:
 
         best_score = scores[0][0] if scores else -1.0
         best_id = scores[0][1] if scores else None
+
+        # Per-identify logging for debugging speaker assignments
+        if scores and log.isEnabledFor(logging.DEBUG):
+            top3 = [(f"{s:.3f}", sid) for s, sid in scores[:3]]
+            dur = len(audio) / sample_rate
+            log.debug("identify: best=%.3f id=%s n_centroids=%d rms=%.4f dur=%.1fs top3=%s",
+                      best_score, best_id, len(self._speaker_centroids), rms, dur, top3)
 
         # Populate debug info for UI
         self._last_debug = {
@@ -463,7 +507,8 @@ class DiarizationEngine:
 
         import torch
         feats_t = torch.tensor(feats, dtype=torch.float32).unsqueeze(0)
-        embedding = self._model(feats_t).squeeze().cpu().numpy()
+        with torch.no_grad():
+            embedding = self._model(feats_t).squeeze().cpu().detach().numpy()
         return embedding
 
     def _compute_fbank(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray | None:
@@ -526,7 +571,8 @@ class DiarizationEngine:
 
         import torch
         feats_t = torch.tensor(feats, dtype=torch.float32).unsqueeze(0)
-        embedding = self._model(feats_t).squeeze().cpu().numpy()
+        with torch.no_grad():
+            embedding = self._model(feats_t).squeeze().cpu().detach().numpy()
         return embedding
 
     def _extract_overlap_aware(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray | None:
@@ -598,6 +644,7 @@ class DiarizationEngine:
         Falls back to single identify() when audio is too short for SCD.
         """
         if not self._loaded:
+            log.warning("identify_segments() called but model not loaded — returning Speaker 1")
             return [("Speaker 1", 1, 0, len(audio))]
 
         # Ensure mono float32
