@@ -133,33 +133,31 @@ Press `D` in the TUI to toggle debug mode. Shows in the transcript panel:
 
 ## How to run
 
-The project uses a venv at `.venv/`. The `./voxterm` launcher script handles this automatically.
+Dependencies are declared in `pyproject.toml` (hatchling). There is no `requirements.txt`. The `./voxterm` script in the repo root is the **end-user launcher** installed by `install.sh` to `~/.local/share/voxterm/.venv` — it does NOT auto-create a workspace venv. For development you must set up `.venv/` manually.
 
-### Quick start (preferred)
-```bash
-./voxterm                         # launcher script — uses .venv automatically
-./voxterm -m qwen3-1.7b           # larger model
-./voxterm -l ja                   # Japanese
-./voxterm --dictate               # dictation mode
-```
-
-### Development setup
+### Development setup (first time, in repo root)
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate         # zsh/bash
-pip install -r requirements.txt
-pip install -r dev/requirements-dev.txt  # optional: dev/test deps
+source .venv/bin/activate                  # zsh/bash
+pip install --upgrade pip
+pip install -e .                           # installs deps from pyproject.toml
+pip install -r dev/requirements-dev.txt    # optional: test deps
 ```
 
-### Running manually (inside activated venv)
+### Running (inside activated venv)
 ```bash
-python3 tui/app.py                # default: qwen3-0.6b, English
-python3 tui/app.py -m qwen3-1.7b # larger model
-python3 tui/app.py -l ja          # Japanese
-python3 tui/app.py --list-models  # show all available models
+python -m tui.app                  # default: qwen3-0.6b, English
+python -m tui.app -m qwen3-1.7b   # larger model
+python -m tui.app -l ja            # Japanese
+python -m tui.app --list-models    # show all available models
+python -m dictation.app            # dictation mode
 ```
 
-> **Important**: The entry point is `tui/app.py`, NOT `app.py` (there is no `app.py` at the repo root). The `./voxterm` launcher wraps this. Always verify the venv exists (`.venv/bin/python3`) before giving run commands. If it doesn't exist, create it first with the setup steps above.
+> **Important**:
+> - Run as a module (`python -m tui.app`), NOT as a script (`python tui/app.py`) — the package uses relative imports.
+> - The `[project.scripts]` entry in `pyproject.toml` also exposes a `voxterm` console script after `pip install -e .`, so `voxterm` (from inside the venv) works too.
+> - There is no `app.py` at the repo root; the entry point is the `tui` package's `app:main`.
+> - Always verify `.venv/bin/python` exists before running. If it doesn't, run the dev setup above.
 
 **Keybindings**: R(record) T(tag speakers) P(profiles) M(model) L(language) S(save) C(clear) D(debug) ?(help) Q(quit)
 
