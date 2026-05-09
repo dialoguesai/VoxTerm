@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -37,6 +38,7 @@ class DictationLoop:
         transcriber,
         injector: KeyboardInjector,
         on_state_change: callable | None = None,
+        mlx_executor: ThreadPoolExecutor | None = None,
     ):
         self.capture = AudioCapture()
         self.vad = SileroVAD()
@@ -44,6 +46,11 @@ class DictationLoop:
         self.transcriber = transcriber
         self.injector = injector
         self._on_state_change = on_state_change or (lambda s: None)
+        # All MLX work must run on a single thread (see tui/app.py for context).
+        # If no executor is provided, fall back to a private one.
+        self._mlx_executor = mlx_executor or ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mlx-dictate",
+        )
 
         self._active = False
         self._transcribing = threading.Event()
@@ -158,7 +165,7 @@ class DictationLoop:
     def _transcribe_worker(self, audio: np.ndarray) -> None:
         """Transcribe audio and inject text into focused app."""
         try:
-            result = self.transcriber.transcribe(audio)
+            result = self._mlx_executor.submit(self.transcriber.transcribe, audio).result()
             text = result.get("text", "").strip()
             if text:
                 # Capitalize first letter of each segment

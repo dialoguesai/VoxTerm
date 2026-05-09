@@ -18,6 +18,7 @@ import os
 import signal
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Only needed when running as a script, not when installed as a package
 if __package__ is None:
@@ -87,8 +88,12 @@ def _check_linux_tools() -> bool:
     return False
 
 
-def _load_transcriber(model_name: str, model_repo: str, language: str):
-    """Load the transcription model (same logic as app.py __main__)."""
+def _load_transcriber(model_name: str, model_repo: str, language: str, mlx_executor: ThreadPoolExecutor):
+    """Load the transcription model (same logic as app.py __main__).
+
+    Loads on `mlx_executor` so the same thread owns the MLX state used for
+    inference. MLX 0.31+ binds arrays to per-thread streams.
+    """
     from audio.transcriber import (
         FasterWhisperTranscriber,
         Qwen3Transcriber,
@@ -105,7 +110,7 @@ def _load_transcriber(model_name: str, model_repo: str, language: str):
     else:
         transcriber = WhisperTranscriber(model=model_repo)
 
-    transcriber.load()
+    mlx_executor.submit(transcriber.load).result()
     print("Model ready.\n")
     return transcriber
 
@@ -175,8 +180,11 @@ def main() -> None:
         sys.exit(1)
 
     # ---- Load model ----
+    # Single-thread executor shared between load + every transcribe call so
+    # MLX per-thread streams stay valid (see audio/transcriber.py + tui/app.py).
+    mlx_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
     model_repo = AVAILABLE_MODELS[args.model]
-    transcriber = _load_transcriber(args.model, model_repo, args.language)
+    transcriber = _load_transcriber(args.model, model_repo, args.language, mlx_executor)
 
     # ---- Create components ----
     from dictation.injector import get_injector
@@ -196,6 +204,7 @@ def main() -> None:
         transcriber=transcriber,
         injector=injector,
         on_state_change=indicator.set_state,
+        mlx_executor=mlx_executor,
     )
 
     def toggle_dictation():
