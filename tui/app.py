@@ -512,6 +512,7 @@ class VoxTerm(App):
         # per-thread streams — model load and inference must happen on the same
         # thread or `mx.argmax(...).item()` raises "no Stream(gpu, N) in current thread".
         self._mlx_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
+        self._cache_clear_future = None  # tracks pending mx.clear_cache to avoid pile-up
         self._transcribe_started: float = 0.0
         self._debug = False
         self._last_dbg: float = 0.0
@@ -738,12 +739,17 @@ class VoxTerm(App):
         """Prevent memory fragmentation during long sessions + memory watchdog."""
         gc.collect()
         if sys.platform == "darwin":
-            try:
-                import mlx.core as mx
-                # Free MLX's GPU cache on the same thread that owns it.
-                self._mlx_executor.submit(mx.clear_cache).result(timeout=5)
-            except Exception:
-                pass
+            # Free MLX's GPU cache on the same thread that owns it. Fire-and-forget
+            # — _periodic_gc runs on the Textual event loop, so we must not block.
+            # Skip if a previous clear_cache is still pending (MLX thread is busy
+            # with a transcription) to avoid queue pile-up.
+            prev = self._cache_clear_future
+            if prev is None or prev.done():
+                try:
+                    import mlx.core as mx
+                    self._cache_clear_future = self._mlx_executor.submit(mx.clear_cache)
+                except Exception:
+                    pass
 
         # Memory watchdog: warn at 4GB, crash-dump at 6GB
         try:
@@ -2002,6 +2008,10 @@ class VoxTerm(App):
         self._record_session_stats()
         try:
             self.speaker_store.close()
+        except Exception:
+            pass
+        try:
+            self._mlx_executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
 

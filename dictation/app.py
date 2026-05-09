@@ -220,6 +220,7 @@ def main() -> None:
         loop.stop()
         hotkey.stop()
         indicator.stop()
+        mlx_executor.shutdown(wait=False, cancel_futures=True)
 
     indicator._on_quit = quit_all
 
