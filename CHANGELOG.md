@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Hivemind mode (one-way transcript publish to a swf-node sink) — issue #105
+- Press `H` to scan the LAN for swf-node peers advertising
+  `_shape-rotator-hivemind._tcp.local.`. Pick a sink from the live picker
+  modal — no CLI flag, no manual config.
+- Sink choice persists across launches (pinned by the convent box's
+  Ed25519 pubkey from the mDNS TXT record). On launch, VoxTerm
+  re-attaches as soon as the saved sink reappears on the LAN.
+- Transcripts batch + POST to `/hivemind/transcripts` per spec §4.3:
+  every ~60 seconds, every 30 segments, or on EOF / record-stop /
+  save-export / quit. One-way push — VoxTerm never reads.
+- Header shows a `⬢ HIVEMIND` chip when configured, switches to
+  high-contrast `⬢ PUBLISHING` while recording.
+- New `HIVE` log category: per-batch `✓ batch N · M segs → <sink>`
+  confirmations, and `✗ batch N failed: <reason>` lines on failure.
+- v4 `device_id` UUID generated on first launch (persisted to
+  `<DATA_DIR>/device_id`, separate from `state.json`) and sent as
+  `origin_device` provenance metadata on every batch.
+- Sink unreachable → log + keep going; local files still save. No
+  retry, no backup-sink — explicit non-goal in #105.
+
 ## [0.1.0] - 2026-04-15
 
 First public release. VoxTerm is a local, offline voice transcription TUI for

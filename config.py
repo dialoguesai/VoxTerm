@@ -223,6 +223,15 @@ _DEFAULTS: dict[str, Any] = {
     "summarization_model": "",
     "summarization_strength": "medium",
     "p2p_display_name": "",
+    # Hivemind (issue #105). Once a sink is picked via H, these stay set so
+    # subsequent launches auto-rejoin the same sink without re-prompting.
+    # The pubkey is the stable pin; host/port are cached for the case where
+    # mDNS is slow on cold start (we'll still re-verify the pubkey).
+    "hivemind_enabled": False,
+    "hivemind_sink_pubkey": "",
+    "hivemind_sink_name": "",
+    "hivemind_sink_host": "",
+    "hivemind_sink_port": 0,
 }
 
 # Expected types per key (for validation)
@@ -234,6 +243,11 @@ _TYPES: dict[str, type] = {
     "summarization_model": str,
     "summarization_strength": str,
     "p2p_display_name": str,
+    "hivemind_enabled": bool,
+    "hivemind_sink_pubkey": str,
+    "hivemind_sink_name": str,
+    "hivemind_sink_host": str,
+    "hivemind_sink_port": int,
 }
 
 
@@ -310,3 +324,39 @@ class ConfigStore:
         """Return a snapshot of all config data."""
         with self._lock:
             return dict(self._data)
+
+
+# ── device_id (hivemind, issue #105) ─────────────────────────
+#
+# Stored in its own file (not state.json) so a state-file reset doesn't
+# rotate the device's identity. Voxterm clients carry this UUID as
+# `origin_device` provenance metadata in every transcript batch — opaque,
+# forgeable, NOT authentication. The convent-box sink resigns the bundle
+# regardless; alchemists can map UUIDs to humans manually if they care.
+
+DEVICE_ID_PATH = DATA_DIR / "device_id"
+
+
+def get_or_create_device_id() -> str:
+    """Return the persistent v4 UUID for this voxterm install. Creates one
+    on first call and writes it to DATA_DIR/device_id."""
+    import uuid
+
+    try:
+        existing = DEVICE_ID_PATH.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+    new_id = str(uuid.uuid4())
+    try:
+        DEVICE_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = DEVICE_ID_PATH.with_suffix(".tmp")
+        tmp.write_text(new_id, encoding="utf-8")
+        _os.replace(tmp, DEVICE_ID_PATH)
+    except OSError:
+        pass
+    return new_id

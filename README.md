@@ -50,12 +50,15 @@ python3 -m tui.app
 | Key | Action |
 |-----|--------|
 | `R` | Start/pause recording |
-| `N` | Party mode — join or leave P2P sessions |
 | `T` | Tag/name speakers |
-| `P` | Speaker profiles |
+| `E` | Browse saved transcripts |
+| `S` | Save/export transcript |
 | `M` | Switch transcription model |
 | `L` | Switch language |
-| `S` | Save/export transcript |
+| `P` | Party mode — join or leave LAN sessions |
+| `H` | Hivemind — pick a transcript sink |
+| `O` | Speaker profiles |
+| `V` | Toggle merged transcript view (party mode) |
 | `C` | Clear transcript |
 | `D` | Toggle debug mode |
 | `?` | Help |
@@ -65,7 +68,7 @@ python3 -m tui.app
 
 Multiple people in the same room can share transcripts over the local network. Each laptop captures its closest speaker best — the combined result is better than any single mic.
 
-**Press N** to join the party. Press N again to leave. No codes, no configuration.
+**Press P** to join the party. Press P again to leave. No codes, no configuration.
 
 - Auto-discovers nearby VoxTerm peers via mDNS
 - Auto-joins the nearest party, or hosts one if none found
@@ -74,6 +77,20 @@ Multiple people in the same room can share transcripts over the local network. E
 - Everyone sees who joins and leaves — no silent surveillance
 
 See [docs/party-mode-design.md](docs/party-mode-design.md) for the full design.
+
+## Hivemind Mode
+
+Push your live transcripts to a [swf-node](https://github.com/dmarzzz/searxng-wth-frnds) running on your LAN — the Shape Rotator program's "convent box". Once configured, batches go out every ~60 seconds (or every 30 segments). Local transcript files keep saving as before; hivemind is purely additive.
+
+**Press H** to scan the LAN. Pick a sink from the list and that's it — VoxTerm remembers it across launches.
+
+- Auto-discovers swf-node sinks via mDNS (`_shape-rotator-hivemind._tcp.local.`)
+- One-way push only — VoxTerm never reads from the network
+- No client-side signing or encryption; the convent-box sink resigns the bundle
+- Sink unreachable? Logs `✗ batch failed`, keeps recording locally, retries when the sink reappears
+- A v4 `device_id` UUID is generated on first launch (in `~/Library/Application Support/voxterm/device_id`) and tagged onto every batch as opaque provenance
+
+See [`SHAPE-ROTATOR-OS-SPEC.md` §4.3](https://github.com/dmarzzz/searxng-wth-frnds) for the wire protocol.
 
 ## Voice Tagging
 

@@ -64,6 +64,14 @@ from tui.widgets.transcript import TranscriptPanel, Log
 from tui.widgets.tag_screen import SpeakerTagScreen
 from tui.widgets.profile_screen import SpeakerProfileScreen
 from tui.widgets.transcript_explorer import TranscriptExplorerScreen
+from tui.widgets.hivemind_screen import HivemindScreen
+from network.hivemind import (
+    HivemindBrowser,
+    HivemindClient,
+    PublishResult,
+    Sink,
+    make_record_id,
+)
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
 from audio.system_capture import SystemCapture
@@ -385,6 +393,7 @@ class HelpScreen(ModalScreen):
                 "[bold #00e5ff]M[/]       [#c0c0c0]Switch transcription model[/]\n"
                 "[bold #00e5ff]L[/]       [#c0c0c0]Switch language[/]\n"
                 "[bold #00e5ff]P[/]       [#c0c0c0]Party mode — join / leave[/]\n"
+                "[bold #00e5ff]H[/]       [#c0c0c0]Hivemind — pick a transcript sink[/]\n"
                 "[bold #00e5ff]O[/]       [#c0c0c0]Speaker profiles[/]\n"
                 "[bold #00e5ff]V[/]       [#c0c0c0]Toggle merged transcript view[/]\n"
                 "[bold #00e5ff]C[/]       [#c0c0c0]Clear transcript[/]\n"
@@ -478,6 +487,7 @@ class VoxTerm(App):
         Binding("c", "clear_transcript", "Clear"),
         Binding("e", "explore_transcripts", "History"),
         Binding("p", "toggle_party", "Party"),
+        Binding("h", "hivemind_setup", "Hivemind"),
         Binding("v", "toggle_merged_view", "View"),
         Binding("?", "show_help", "Help", key_display="?"),
         Binding("q", "quit", "Quit"),
@@ -529,6 +539,18 @@ class VoxTerm(App):
         self._party = PartyManager(self, _get_config())
         self._wire_party_callbacks()
 
+        # Hivemind (issue #105): one-way push of transcripts to a
+        # swf-node sink discovered over mDNS. The browser stays up for
+        # the life of the app when hivemind is enabled, so we re-pin
+        # the saved sink as soon as it appears on the LAN. The client
+        # is only instantiated when a matching sink is actually live.
+        from config import get_or_create_device_id
+        self._device_id = get_or_create_device_id()
+        self._hivemind_browser: HivemindBrowser | None = None
+        self._hivemind_client: HivemindClient | None = None
+        self._record_started_at: float | None = None
+        self._record_id: str | None = None
+
     def compose(self) -> ComposeResult:
         yield CyberHeader()
         with Vertical(id="main-container"):
@@ -544,6 +566,7 @@ class VoxTerm(App):
             "[bold #00e5ff]\\[T][/][#607080] Tag  [/]"
             "[bold #00e5ff]\\[E][/][#607080] Transcripts  [/]"
             "[bold #00e5ff]\\[P][/][#607080] Party  [/]"
+            "[bold #00e5ff]\\[H][/][#607080] Hivemind  [/]"
             "[bold #00e5ff]\\[V][/][#607080] Merged  [/]"
             "[bold #00e5ff]\\[?][/][#607080] Help[/]",
             id="footer-bar",
@@ -661,6 +684,11 @@ class VoxTerm(App):
         # Start P2P peer discovery on launch (passive — just show who's nearby)
         if _P2P_AVAILABLE:
             self._party_start_passive_discovery_worker()
+
+        # Hivemind: re-pin the previously-configured sink if hivemind is
+        # enabled. Browser stays up so a sink that comes online mid-
+        # session gets picked up automatically.
+        self._hivemind_init_from_config()
 
     @property
     def _chunk_duration(self) -> float:
@@ -1196,6 +1224,7 @@ class VoxTerm(App):
             overlap=overlap,
         )
         self._append_live_transcript(text, speaker, speaker_id)
+        self._hivemind_publish_segment(speaker, text)
         self._update_telemetry()
 
         # Broadcast to P2P peers if in a session (via bounded queue, not per-call threads)
@@ -1440,6 +1469,7 @@ class VoxTerm(App):
             self.system_capture.stop()
             waveform.set_recording(False)
             header.set_recording(False)
+            self._hivemind_end_record()
             transcript.system_message("recording stopped", Log.REC, {"stopped": "#ff4466"})
         else:
             self._recording = True
@@ -1448,6 +1478,7 @@ class VoxTerm(App):
                 self.audio_capture.start()
                 waveform.set_recording(True)
                 header.set_recording(True)
+                self._hivemind_begin_record()
                 mic_name = getattr(self.audio_capture, '_device_name', 'unknown')
                 transcript.system_message("recording started", Log.REC, {"started": "#00ff88"})
                 if self._debug:
@@ -1747,6 +1778,12 @@ class VoxTerm(App):
             transcript.system_message("nothing to export", Log.REC)
             return
 
+        # Flush any pending hivemind segments before the user finalizes
+        # the local file — otherwise a save-then-quit-quickly sequence
+        # could lose the tail of a batch on the sink side.
+        if self._hivemind_client is not None:
+            self._hivemind_client.flush()
+
         def on_export_selected(destination):
             if destination is None:
                 return
@@ -1849,6 +1886,245 @@ class VoxTerm(App):
     def action_toggle_party(self):
         """Toggle party mode: N to join the party, N again to leave."""
         self._party.toggle()
+
+    # ── Hivemind (issue #105) ─────────────────────────────────────────
+
+    def action_hivemind_setup(self) -> None:
+        """Open the hivemind sink picker. ENTER selects, D disables,
+        ESC cancels."""
+        cfg = _get_config()
+        screen = HivemindScreen(
+            current_pubkey=cfg.get("hivemind_sink_pubkey") or "",
+            current_name=cfg.get("hivemind_sink_name") or "",
+        )
+
+        def _on_picker_result(result):
+            if not result:
+                return
+            action = result.get("action")
+            if action == "select":
+                self._hivemind_apply_sink(result["sink"])
+            elif action == "disable":
+                self._hivemind_disable()
+
+        self.push_screen(screen, _on_picker_result)
+
+    def _hivemind_init_from_config(self) -> None:
+        """If config says hivemind is enabled, start a long-lived browser
+        and re-pin the saved sink as soon as it appears on the LAN."""
+        cfg = _get_config()
+        if not cfg.get("hivemind_enabled"):
+            return
+        pubkey = cfg.get("hivemind_sink_pubkey") or ""
+        name = cfg.get("hivemind_sink_name") or ""
+        if not pubkey:
+            # Enabled but no pin — treat as disabled and wait for the
+            # user to reconfigure via H.
+            return
+
+        # Show the indicator immediately so the user knows the mode is
+        # configured, even before the sink is reachable.
+        try:
+            self.query_one(CyberHeader).set_hivemind(True, name)
+        except Exception:
+            pass
+
+        self.query_one(TranscriptPanel).system_message(
+            f"scanning network for sink: {name} (saved)", Log.HIVE,
+        )
+        self._hivemind_browser = HivemindBrowser(
+            on_change=self._hivemind_on_browser_change,
+        )
+        self._hivemind_browser.start()
+
+    def _hivemind_on_browser_change(self, sinks: list[Sink]) -> None:
+        """Background browser callback (zeroconf thread). Marshal onto
+        the Textual loop and try to match the saved pubkey."""
+        try:
+            self.call_from_thread(self._hivemind_match_saved_sink, sinks)
+        except Exception:
+            pass
+
+    def _hivemind_match_saved_sink(self, sinks: list[Sink]) -> None:
+        """Find the saved sink in the discovered list. If matched and we
+        don't already have a client, instantiate one. If the saved sink
+        disappeared, drop the client."""
+        cfg = _get_config()
+        target_pubkey = cfg.get("hivemind_sink_pubkey") or ""
+        if not target_pubkey:
+            return
+
+        match = next(
+            (s for s in sinks if s.pubkey and s.pubkey == target_pubkey),
+            None,
+        )
+
+        if match is not None and self._hivemind_client is None:
+            self._hivemind_apply_sink(match, _persist=False, _notify="found")
+        elif match is None and self._hivemind_client is not None:
+            # Saved sink dropped off the LAN. Close the client; keep the
+            # browser running so we re-attach when it returns.
+            self._hivemind_client.close()
+            self._hivemind_client = None
+            self.query_one(TranscriptPanel).system_message(
+                "sink dropped off the LAN — local files still saving",
+                Log.HIVE,
+            )
+
+    def _hivemind_apply_sink(
+        self,
+        sink: Sink,
+        *,
+        _persist: bool = True,
+        _notify: str = "configured",
+    ) -> None:
+        """Make `sink` the active target. Persists config (unless we got
+        here via auto-rejoin) and replaces any existing client."""
+        old = self._hivemind_client
+        self._hivemind_client = HivemindClient(
+            sink=sink,
+            device_id=self._device_id,
+            on_publish=self._hivemind_on_publish_thread,
+        )
+        if self._recording:
+            # User reconfigured mid-session. Start a fresh meeting on
+            # the new sink rather than mixing.
+            self._hivemind_begin_record()
+
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+
+        if _persist:
+            cfg = _get_config()
+            cfg.update({
+                "hivemind_enabled": True,
+                "hivemind_sink_pubkey": sink.pubkey,
+                "hivemind_sink_name": sink.name,
+                "hivemind_sink_host": sink.host,
+                "hivemind_sink_port": int(sink.port),
+            })
+            # Spin up the long-lived browser if the user enabled
+            # hivemind for the first time this session.
+            if self._hivemind_browser is None:
+                self._hivemind_browser = HivemindBrowser(
+                    on_change=self._hivemind_on_browser_change,
+                )
+                self._hivemind_browser.start()
+
+        try:
+            self.query_one(CyberHeader).set_hivemind(True, sink.name)
+        except Exception:
+            pass
+
+        if _notify == "found":
+            msg = f"connected to sink: {sink.name}"
+        else:
+            msg = f"{_notify} sink: {sink.name}"
+        self.query_one(TranscriptPanel).system_message(msg, Log.HIVE)
+
+    def _hivemind_disable(self) -> None:
+        """Turn hivemind off. Flushes + closes the client and clears
+        config so future launches are local-only."""
+        if self._hivemind_client is not None:
+            try:
+                self._hivemind_client.close()
+            except Exception:
+                pass
+            self._hivemind_client = None
+        if self._hivemind_browser is not None:
+            self._hivemind_browser.stop()
+            self._hivemind_browser = None
+
+        cfg = _get_config()
+        cfg.update({
+            "hivemind_enabled": False,
+            "hivemind_sink_pubkey": "",
+            "hivemind_sink_name": "",
+            "hivemind_sink_host": "",
+            "hivemind_sink_port": 0,
+        })
+
+        try:
+            self.query_one(CyberHeader).set_hivemind(False)
+        except Exception:
+            pass
+        self.query_one(TranscriptPanel).system_message(
+            "disabled — local files only", Log.HIVE,
+        )
+
+    def _hivemind_begin_record(self) -> None:
+        """Called from action_toggle_recording when recording starts."""
+        self._record_started_at = time.time()
+        self._record_id = make_record_id(
+            device_id=self._device_id,
+            started_at=self._record_started_at,
+        )
+        if self._hivemind_client is not None:
+            self._hivemind_client.begin_record(self._record_id)
+
+    def _hivemind_end_record(self) -> None:
+        """Called from action_toggle_recording when recording stops.
+        Flushes any pending segments under the current record_id."""
+        if self._hivemind_client is not None:
+            self._hivemind_client.flush()
+
+    def _hivemind_publish_segment(self, speaker: str, text: str) -> None:
+        """Hand a transcribed segment to the hivemind client. Called
+        from `_on_transcription`. No-op if hivemind isn't configured or
+        we're not currently in a record."""
+        client = self._hivemind_client
+        if client is None or self._record_started_at is None:
+            return
+        t = max(0.0, time.time() - self._record_started_at)
+        client.add_segment(t, speaker or "unknown", text)
+
+    def _hivemind_shutdown(self) -> None:
+        """App-quit hook: flush + close everything. The .close() call on
+        the client triggers one final flush() — anything still in the
+        batch buffer goes out before we tear down."""
+        try:
+            if self._hivemind_client is not None:
+                self._hivemind_client.close()
+                self._hivemind_client = None
+        except Exception:
+            pass
+        try:
+            if self._hivemind_browser is not None:
+                self._hivemind_browser.stop()
+                self._hivemind_browser = None
+        except Exception:
+            pass
+
+    def _hivemind_on_publish_thread(self, result: PublishResult) -> None:
+        """Marshal publish results from the publishing thread (timer or
+        worker) back onto the Textual loop so we can render a HIVE log
+        line. Always called — both success and failure."""
+        try:
+            self.call_from_thread(self._hivemind_log_publish_result, result)
+        except Exception:
+            pass
+
+    def _hivemind_log_publish_result(self, result: PublishResult) -> None:
+        """Render one HIVE log line per batch attempt. Tight format —
+        the user explicitly wanted confirmation that pushes are
+        happening, so we surface every batch. At ~1/min cadence this is
+        roughly as noisy as the REC stop/start lines."""
+        tp = self.query_one(TranscriptPanel)
+        n = result.segment_count
+        plural = "s" if n != 1 else ""
+        if result.ok:
+            tp.system_message(
+                f"✓ batch {result.batch_index} · {n} seg{plural} → {result.sink_name}",
+                Log.HIVE,
+            )
+        else:
+            tp.system_message(
+                f"✗ batch {result.batch_index} failed: {result.error}",
+                Log.HIVE,
+            )
 
     def _apply_party_color(self, color: str | None = None) -> None:
         """Set panel borders to the party color. Stays until you leave."""
@@ -1977,6 +2253,7 @@ class VoxTerm(App):
             self.speaker_store.close()
         except Exception:
             pass
+        self._hivemind_shutdown()
 
         # Kill the resource tracker process if it somehow spawned —
         # prevents leaked-semaphore warning printed to terminal after exit.
