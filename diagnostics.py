@@ -243,7 +243,7 @@ def _write_app_crash_dump(app, context: str, exc: BaseException | None = None):
         state = {
             "uptime_sec": (datetime.now() - app._session_start).total_seconds(),
             "recording": app._recording,
-            "is_transcribing": app._transcribing.is_set(),
+            "is_transcribing": app._transcribe_busy.locked(),
             "transcribe_count": app._transcribe_count,
             "model": app._model_name,
             "model_loaded": app._model_loaded,

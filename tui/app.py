@@ -507,8 +507,15 @@ class VoxTerm(App):
         self._recording = False
         self._had_speech = False
         self._silence_chunks = 0
-        self._transcribing = threading.Event()  # set = busy, clear = idle
-        self._transcribe_lock = threading.Lock()  # serialize MLX GPU access
+        # Held while a transcription worker is active. Acts as the busy gate:
+        # the audio loop tries acquire(blocking=False) to decide whether to
+        # spawn a worker, and the worker releases in finally. Replaces a prior
+        # Event-based gate that the watchdog could clear from outside while the
+        # worker was still mid-MLX-eval, allowing a second worker to start and
+        # crash Metal command buffers via concurrent submission.
+        self._transcribe_busy = threading.Lock()
+        # Serializes Metal GPU access against concurrent submissions.
+        self._transcribe_lock = threading.Lock()
         # Single-thread executor for all MLX work. MLX 0.31+ binds arrays to
         # per-thread streams — model load and inference must happen on the same
         # thread or `mx.argmax(...).item()` raises "no Stream(gpu, N) in current thread".
@@ -521,6 +528,10 @@ class VoxTerm(App):
         self._model_loaded = transcriber is not None and getattr(transcriber, 'is_loaded', False)
         self._diarizer_loaded = False
         self._system_audio_notified = False
+        # One-shot UI flags for audio device errors during a recording session
+        # (reset on each start/stop so re-recording can surface a new error).
+        self._mic_error_shown = False
+        self._sck_death_shown = False
         self._last_saved_at: float | None = None
         self._save_confirmed = False  # True after first "autosaved" shown
         self._session_start = datetime.now()
@@ -786,7 +797,7 @@ class VoxTerm(App):
             state = {
                 "uptime_sec": (datetime.now() - self._session_start).total_seconds(),
                 "recording": self._recording,
-                "is_transcribing": self._transcribing.is_set(),
+                "is_transcribing": self._transcribe_busy.locked(),
                 "transcribe_count": self._transcribe_count,
                 "model": self._model_name,
                 "model_loaded": self._model_loaded,
@@ -833,6 +844,21 @@ class VoxTerm(App):
 
         mic_chunks = self.audio_capture.drain()
         sys_chunks = self.system_capture.drain()
+
+        # Surface audio device errors (mic disconnect, permission revoke,
+        # SCK helper death) once per recording session. Otherwise these
+        # fail silently and the user just sees no transcripts.
+        mic_err = self.audio_capture.device_error
+        if mic_err and not self._mic_error_shown:
+            self.query_one(TranscriptPanel).system_message(
+                f"mic warning: {mic_err}", Log.SYS,
+            )
+            self._mic_error_shown = True
+        if self.system_capture.died_during_recording and not self._sck_death_shown:
+            self.query_one(TranscriptPanel).system_message(
+                "system audio capture stopped unexpectedly", Log.SYS,
+            )
+            self._sck_death_shown = True
 
         # Send raw mic audio to peers via UDP (before mixing with system)
         if mic_chunks and self._party.audio_streamer and self._party.session_mgr:
@@ -930,22 +956,24 @@ class VoxTerm(App):
         silence_duration = self._silence_chunks * self._chunk_duration
         buffer_duration = self.audio_buffer.duration
 
-        if self._transcribing.is_set():
-            # Graduated watchdog: warn → force-reset → disable
+        if self._transcribe_busy.locked():
+            # Graduated watchdog: warn but do NOT force-clear the gate.
+            # The lock is the gate; the worker releases it in finally.
+            # Forcibly clearing it from outside (the prior Event-based design)
+            # let a second worker start while the first was still mid-MLX-eval,
+            # which is what crashed Metal command buffers in the first place.
             elapsed = time.time() - self._transcribe_started if self._transcribe_started else 0
-            if elapsed > 30:
-                # Critical: transcriber appears hung — force-reset and warn
-                self._transcribing.clear()
+            if elapsed > 30 and not getattr(self, '_watchdog_critical_warned', False):
                 self._write_crash_dump(f"transcription_hung_{elapsed:.0f}s")
                 self.query_one(TranscriptPanel).system_message(
                     f"transcription timed out ({elapsed:.0f}s) — try a smaller model [M]", Log.SYS
                 )
-            elif elapsed > 15:
-                # Force-reset and log
-                self._transcribing.clear()
+                self._watchdog_critical_warned = True
+            elif 15 < elapsed <= 30 and not getattr(self, '_watchdog_warned', False):
                 self.query_one(TranscriptPanel).system_message(
-                    f"[watchdog] reset after {elapsed:.0f}s", Log.SYS
+                    f"[watchdog] transcription slow ({elapsed:.0f}s)", Log.SYS
                 )
+                self._watchdog_warned = True
             elif elapsed > 8 and self._debug:
                 self.query_one(TranscriptPanel).system_message(
                     f"[dbg] transcription slow: {elapsed:.0f}s", Log.SYS
@@ -991,13 +1019,19 @@ class VoxTerm(App):
 
     def _trigger_transcription(self):
         """Send accumulated audio to transcription worker."""
-        self._transcribing.set()
-        self._transcribe_started = time.time()
+        if not self._transcribe_busy.acquire(blocking=False):
+            return  # previous worker still running
+        # Defer starting the watchdog timer until GPU work actually begins
+        # (set inside _transcribe_lock in _transcribe_audio). 0 means "not
+        # yet running"; the watchdog treats elapsed==0 as not-yet-started.
+        self._transcribe_started = 0.0
+        self._watchdog_warned = False
+        self._watchdog_critical_warned = False
         self._silence_chunks = 0
         audio = self.audio_buffer.get_and_clear()
         local_audio = self._local_audio_buffer.get_and_clear()
         if len(audio) < int(SAMPLE_RATE * MIN_BUFFER_SECONDS):
-            self._transcribing.clear()
+            self._transcribe_busy.release()
             return
 
         self._had_speech = False
@@ -1023,9 +1057,13 @@ class VoxTerm(App):
                 )
             # 1. Transcribe (Qwen3: ~100ms, Whisper: ~2-4s)
             # MLX Metal command buffers are NOT thread-safe — concurrent GPU
-            # submissions from multiple Textual workers cause segfaults.
-            # Serialize with a lock.
+            # submissions from multiple Textual workers (or transcribe vs.
+            # model-load) cause segfaults. Serialize with a lock.
             with self._transcribe_lock:
+                # Start the watchdog timer when GPU work actually begins so a
+                # transcription queued behind a model swap isn't flagged hung
+                # for the time it spent waiting on the lock or in the executor.
+                self._transcribe_started = time.time()
                 result = self._mlx_executor.submit(self.transcriber.transcribe, audio).result()
 
             # Periodic GC to prevent MLX memory buildup
@@ -1131,8 +1169,15 @@ class VoxTerm(App):
                 f"transcription error: {e}\n{tb}"
             )
         finally:
-            # ALWAYS unblock — even if worker is cancelled or crashes
-            self._transcribing.clear()
+            # The lock is the concurrency gate. Acquire happens exactly once
+            # in _trigger_transcription, release happens exactly once here.
+            # An unexpected RuntimeError means the gate is corrupt and
+            # concurrent transcriptions could re-occur — surface it rather
+            # than silently continuing.
+            try:
+                self._transcribe_busy.release()
+            except RuntimeError as e:
+                self._write_crash_dump(f"transcribe_busy_release_failed: {e}", e)
 
     def _try_cross_session_match(self, speaker_id: int) -> None:
         """Attempt cross-session matching for a speaker (worker thread)."""
@@ -1480,6 +1525,8 @@ class VoxTerm(App):
             transcript.system_message("recording stopped", Log.REC, {"stopped": "#ff4466"})
         else:
             self._recording = True
+            self._mic_error_shown = False
+            self._sck_death_shown = False
             self.vad.reset()
             try:
                 self.audio_capture.start()
@@ -1515,7 +1562,7 @@ class VoxTerm(App):
         self._update_telemetry()
 
     def action_switch_model(self):
-        if self._transcribing.is_set():
+        if self._transcribe_busy.locked():
             self.query_one(TranscriptPanel).system_message("wait for transcription to finish...", Log.REC)
             return
         was_recording = self._recording
@@ -1737,8 +1784,10 @@ class VoxTerm(App):
         self._model_loaded = False
         self._model_name = model_key
         self._update_telemetry()
-        # Free old model memory before loading the new one
-        self.transcriber._model = None
+        # Don't null the old model here — a transcription worker may still be
+        # using it. _do_swap acquires _transcribe_lock for the load, which
+        # waits for any active MLX work to finish before constructing the new
+        # model. The old model is replaced atomically in _on_swap_done.
         self.query_one(TranscriptPanel).system_message(
             f"switching to {model_key} (may take a minute)...", Log.SYS, {model_key: "rainbow"}
         )
@@ -1754,7 +1803,12 @@ class VoxTerm(App):
                 new_transcriber = FasterWhisperTranscriber(model=repo, language=self._language)
             else:
                 new_transcriber = WhisperTranscriber(model=repo)
-            self._mlx_executor.submit(new_transcriber.load).result()
+            # Serialize Metal access against active transcription: the
+            # _transcribe_lock blocks transcribe submissions for the duration
+            # of the load; the executor guarantees the load runs on the same
+            # MLX thread so per-thread stream bindings stay consistent.
+            with self._transcribe_lock:
+                self._mlx_executor.submit(new_transcriber.load).result()
             self.call_from_thread(self._on_swap_done, new_transcriber, model_key)
         except Exception as e:
             self.call_from_thread(
@@ -2043,6 +2097,15 @@ class VoxTerm(App):
         def _hard_exit():
             os._exit(0)
         threading.Timer(0.5, _hard_exit).start()
+        # Backstop: if a C extension is holding the GIL during teardown, the
+        # Timer thread can't run. SIGALRM is delivered by the kernel and the
+        # default disposition terminates the process — this fires only if the
+        # Timer didn't (terminates with status 142, but we're already exiting).
+        try:
+            import signal as _signal
+            _signal.alarm(2)
+        except (OSError, AttributeError, ValueError):
+            pass  # platform without alarm (e.g. Windows) — Timer is the only path
         self.exit()
 
 

@@ -39,12 +39,16 @@ class SystemCapture:
         self._unavailable = False
         self._status_message = ""
         self._bt_multi_output_active = False  # True if we created a multi-output device
+        # Set by the reader loop if the helper subprocess exits while we
+        # were actively recording — surfaces silent system-audio failures.
+        self._died_during_recording = False
 
     # ── public API (matches AudioCapture) ────────────────────
 
     def start(self) -> None:
         if self._active:
             return
+        self._died_during_recording = False
         if CURRENT_PLATFORM == Platform.LINUX:
             self._start_linux()
             return
@@ -174,6 +178,11 @@ class SystemCapture:
     def status_message(self) -> str:
         return self._status_message
 
+    @property
+    def died_during_recording(self) -> bool:
+        """True if the capture helper exited while we were actively recording."""
+        return self._died_during_recording
+
     # ── private ──────────────────────────────────────────────
 
     @staticmethod
@@ -271,7 +280,11 @@ class SystemCapture:
         except (OSError, ValueError):
             pass
         finally:
+            was_active = self._active
             self._active = False
+            if was_active:
+                # Helper exited while we expected it to be streaming.
+                self._died_during_recording = True
             # Check exit code for permission errors (macOS-specific)
             if proc.poll() == 1 and CURRENT_PLATFORM == Platform.MACOS:
                 self._status_message = (
