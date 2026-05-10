@@ -39,6 +39,7 @@ class DictationLoop:
         injector: KeyboardInjector,
         on_state_change: callable | None = None,
         mlx_executor: ThreadPoolExecutor | None = None,
+        hivemind_client=None,
     ):
         self.capture = AudioCapture()
         self.vad = SileroVAD()
@@ -51,6 +52,9 @@ class DictationLoop:
         self._mlx_executor = mlx_executor or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="mlx-dictate",
         )
+        # Optional hivemind sink — segments mirrored on every transcribe.
+        self._hivemind = hivemind_client
+        self._session_start = time.time()
 
         self._active = False
         self._transcribing = threading.Event()
@@ -172,6 +176,15 @@ class DictationLoop:
                 text = text[0].upper() + text[1:] if len(text) > 1 else text.upper()
                 self.injector.type_text(text + " ")
                 log.info("injected: %s", text[:60])
+                # Mirror to hivemind sink if configured. Dictation has
+                # no diarization so speaker is the literal "user".
+                if self._hivemind is not None:
+                    try:
+                        self._hivemind.add_segment(
+                            time.time() - self._session_start, "user", text,
+                        )
+                    except Exception:
+                        log.warning("hivemind add_segment failed", exc_info=True)
         except Exception as e:
             log.error("transcription error: %s", e)
         finally:
