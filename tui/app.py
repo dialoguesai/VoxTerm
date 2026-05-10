@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -486,11 +487,15 @@ class VoxTerm(App):
     ]
 
     def __init__(self, transcriber=None, model_name="qwen3-0.6b", language="en",
-                 p2p_name=None, p2p_create=False, p2p_join_code=None):
+                 p2p_name=None, p2p_create=False, p2p_join_code=None,
+                 hivemind_client=None):
         super().__init__()
         self._p2p_auto_name = p2p_name
         self._p2p_auto_create = p2p_create
         self._p2p_auto_join_code = p2p_join_code
+        # Hivemind transcript sink (None when --hivemind=off or no sink).
+        # All segments produced in _on_transcription are mirrored to it.
+        self._hivemind = hivemind_client
         self.audio_capture = AudioCapture()
         self.system_capture = SystemCapture()
         self.audio_buffer = AudioBuffer()
@@ -512,9 +517,13 @@ class VoxTerm(App):
         # worker was still mid-MLX-eval, allowing a second worker to start and
         # crash Metal command buffers via concurrent submission.
         self._transcribe_busy = threading.Lock()
-        # Serializes Metal GPU access (transcribe + model load). MLX releases
-        # the GIL during eval, so the GIL alone does not prevent races.
+        # Serializes Metal GPU access against concurrent submissions.
         self._transcribe_lock = threading.Lock()
+        # Single-thread executor for all MLX work. MLX 0.31+ binds arrays to
+        # per-thread streams — model load and inference must happen on the same
+        # thread or `mx.argmax(...).item()` raises "no Stream(gpu, N) in current thread".
+        self._mlx_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
+        self._cache_clear_future = None  # tracks pending mx.clear_cache to avoid pile-up
         self._transcribe_started: float = 0.0
         self._debug = False
         self._last_dbg: float = 0.0
@@ -744,6 +753,18 @@ class VoxTerm(App):
     def _periodic_gc(self):
         """Prevent memory fragmentation during long sessions + memory watchdog."""
         gc.collect()
+        if sys.platform == "darwin":
+            # Free MLX's GPU cache on the same thread that owns it. Fire-and-forget
+            # — _periodic_gc runs on the Textual event loop, so we must not block.
+            # Skip if a previous clear_cache is still pending (MLX thread is busy
+            # with a transcription) to avoid queue pile-up.
+            prev = self._cache_clear_future
+            if prev is None or prev.done():
+                try:
+                    import mlx.core as mx
+                    self._cache_clear_future = self._mlx_executor.submit(mx.clear_cache)
+                except Exception:
+                    pass
 
         # Memory watchdog: warn at 4GB, crash-dump at 6GB
         try:
@@ -1042,11 +1063,11 @@ class VoxTerm(App):
             # submissions from multiple Textual workers (or transcribe vs.
             # model-load) cause segfaults. Serialize with a lock.
             with self._transcribe_lock:
-                # Reset watchdog timer to when GPU work actually starts so a
+                # Start the watchdog timer when GPU work actually begins so a
                 # transcription queued behind a model swap isn't flagged hung
-                # for the time it spent waiting on the lock.
+                # for the time it spent waiting on the lock or in the executor.
                 self._transcribe_started = time.time()
-                result = self.transcriber.transcribe(audio)
+                result = self._mlx_executor.submit(self.transcriber.transcribe, audio).result()
 
             # Periodic GC to prevent MLX memory buildup
             self._transcribe_count += 1
@@ -1251,6 +1272,18 @@ class VoxTerm(App):
             overlap=overlap,
         )
         self._append_live_transcript(text, speaker, speaker_id)
+
+        # Mirror to hivemind sink (no-op if --hivemind=off or no sink).
+        # Timestamp `t` is seconds since session start so the sink can
+        # reconstruct ordering without needing wall-clock alignment.
+        if self._hivemind is not None:
+            try:
+                t = (datetime.now() - self._session_start).total_seconds()
+                self._hivemind.add_segment(t, speaker or "?", text)
+            except Exception:
+                # Never let hivemind errors break the dictation loop.
+                log.warning("hivemind add_segment failed", exc_info=True)
+
         self._update_telemetry()
 
         # Broadcast to P2P peers if in a session (via bounded queue, not per-call threads)
@@ -1410,7 +1443,7 @@ class VoxTerm(App):
                     self.transcriber = FasterWhisperTranscriber(model=model_repo, language=self._language)
                 else:
                     self.transcriber = WhisperTranscriber(model=model_repo)
-                self.transcriber.load()
+                self._mlx_executor.submit(self.transcriber.load).result()
                 self.call_from_thread(self._on_model_loaded)
             except Exception as e:
                 import traceback
@@ -1784,11 +1817,12 @@ class VoxTerm(App):
                 new_transcriber = FasterWhisperTranscriber(model=repo, language=self._language)
             else:
                 new_transcriber = WhisperTranscriber(model=repo)
-            # Serialize Metal access: model load mustn't run alongside an
-            # active transcription, or both will submit command buffers
-            # concurrently and crash.
+            # Serialize Metal access against active transcription: the
+            # _transcribe_lock blocks transcribe submissions for the duration
+            # of the load; the executor guarantees the load runs on the same
+            # MLX thread so per-thread stream bindings stay consistent.
             with self._transcribe_lock:
-                new_transcriber.load()
+                self._mlx_executor.submit(new_transcriber.load).result()
             self.call_from_thread(self._on_swap_done, new_transcriber, model_key)
         except Exception as e:
             self.call_from_thread(
@@ -2046,6 +2080,17 @@ class VoxTerm(App):
             self.speaker_store.close()
         except Exception:
             pass
+        try:
+            self._mlx_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+        # Flush any pending hivemind batch on EOF (spec §4.3 cadence).
+        if self._hivemind is not None:
+            try:
+                self._hivemind.close()
+            except Exception:
+                log.warning("hivemind close failed", exc_info=True)
 
         # Kill the resource tracker process if it somehow spawned —
         # prevents leaked-semaphore warning printed to terminal after exit.
@@ -2138,6 +2183,32 @@ def main():
         default=None,
         metavar="CODE",
         help="Join a P2P session on launch (e.g. --session-join bacon-horse-galaxy)",
+    )
+    parser.add_argument(
+        "--hivemind",
+        choices=["auto", "on", "off"],
+        default=_cfg.get("hivemind_mode") or "auto",
+        help=(
+            "Hivemind transcript-sink mode (default: auto). "
+            "auto = mDNS-discover; on = require a sink; off = never POST."
+        ),
+    )
+    parser.add_argument(
+        "--hivemind-sink-url",
+        type=str,
+        default=_cfg.get("hivemind_sink_url") or None,
+        metavar="URL",
+        help=(
+            "Override mDNS discovery and POST directly to this swf-node "
+            "hivemind sink (e.g. http://convent.local:7777)."
+        ),
+    )
+    parser.add_argument(
+        "--hivemind-location",
+        type=str,
+        default=_cfg.get("hivemind_location") or "",
+        metavar="LABEL",
+        help="Optional location tag attached to every transcript batch.",
     )
     args = parser.parse_args()
 
@@ -2237,12 +2308,49 @@ def main():
     # Restore terminal on segfault so the shell doesn't get stuck in raw mode
     diagnostics.setup_signal_handlers()
 
+    # Configure hivemind transcript-sink (spec §4.3). Failures here
+    # never prevent voxterm from starting unless mode=on and discovery
+    # comes up empty — that's the contract.
+    hivemind_client = None
+    try:
+        from network.hivemind import HivemindMode, configure as _hivemind_configure
+        hivemind_client = _hivemind_configure(
+            mode=HivemindMode.parse(args.hivemind),
+            sink_url=args.hivemind_sink_url,
+            location=args.hivemind_location,
+        )
+        if hivemind_client is not None:
+            sink = hivemind_client.active_sink()
+            if sink is not None:
+                print(f"VOXTERM // hivemind sink: {sink.transcripts_url}")
+            else:
+                print("VOXTERM // hivemind: no sink yet (auto-discovery in progress)")
+    except RuntimeError as exc:
+        # mode=on with no sink discovered — fail loudly per task spec.
+        print(f"VOXTERM // hivemind error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except Exception:
+        log.warning("hivemind configure failed", exc_info=True)
+        hivemind_client = None
+
+    # Persist hivemind preferences (mode + URL) so a CLI flag becomes
+    # the new default without forcing the user to retype it.
+    try:
+        _cfg.update({
+            "hivemind_mode": args.hivemind,
+            "hivemind_sink_url": args.hivemind_sink_url or "",
+            "hivemind_location": args.hivemind_location or "",
+        })
+    except Exception:
+        pass
+
     # Launch TUI immediately — model loads in the background
     app = VoxTerm(
         transcriber=None, model_name=model_name, language=language,
         p2p_name=args.name,
         p2p_create=args.session_create,
         p2p_join_code=args.session_join,
+        hivemind_client=hivemind_client,
     )
 
     # Global exception hooks — dump diagnostics on any uncaught crash

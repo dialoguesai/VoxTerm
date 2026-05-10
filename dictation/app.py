@@ -18,6 +18,7 @@ import os
 import signal
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Only needed when running as a script, not when installed as a package
 if __package__ is None:
@@ -87,8 +88,12 @@ def _check_linux_tools() -> bool:
     return False
 
 
-def _load_transcriber(model_name: str, model_repo: str, language: str):
-    """Load the transcription model (same logic as app.py __main__)."""
+def _load_transcriber(model_name: str, model_repo: str, language: str, mlx_executor: ThreadPoolExecutor):
+    """Load the transcription model (same logic as app.py __main__).
+
+    Loads on `mlx_executor` so the same thread owns the MLX state used for
+    inference. MLX 0.31+ binds arrays to per-thread streams.
+    """
     from audio.transcriber import (
         FasterWhisperTranscriber,
         Qwen3Transcriber,
@@ -105,7 +110,7 @@ def _load_transcriber(model_name: str, model_repo: str, language: str):
     else:
         transcriber = WhisperTranscriber(model=model_repo)
 
-    transcriber.load()
+    mlx_executor.submit(transcriber.load).result()
     print("Model ready.\n")
     return transcriber
 
@@ -154,6 +159,26 @@ def main() -> None:
         action="store_true",
         help="List available models and exit",
     )
+    parser.add_argument(
+        "--hivemind",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="Hivemind transcript-sink mode (default: auto).",
+    )
+    parser.add_argument(
+        "--hivemind-sink-url",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="Skip mDNS discovery and POST to this swf-node hivemind sink.",
+    )
+    parser.add_argument(
+        "--hivemind-location",
+        type=str,
+        default="",
+        metavar="LABEL",
+        help="Optional location tag attached to every transcript batch.",
+    )
     args = parser.parse_args()
 
     if args.list_models:
@@ -175,8 +200,11 @@ def main() -> None:
         sys.exit(1)
 
     # ---- Load model ----
+    # Single-thread executor shared between load + every transcribe call so
+    # MLX per-thread streams stay valid (see audio/transcriber.py + tui/app.py).
+    mlx_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
     model_repo = AVAILABLE_MODELS[args.model]
-    transcriber = _load_transcriber(args.model, model_repo, args.language)
+    transcriber = _load_transcriber(args.model, model_repo, args.language, mlx_executor)
 
     # ---- Create components ----
     from dictation.injector import get_injector
@@ -192,10 +220,34 @@ def main() -> None:
         language=args.language,
     )
 
+    # Configure hivemind transcript sink (spec §4.3 in
+    # SHAPE-ROTATOR-OS-SPEC.md). Returns None when --hivemind=off or
+    # when AUTO mode finds no sink; the dictation loop handles None.
+    hivemind_client = None
+    try:
+        from network.hivemind import HivemindMode, configure as _hivemind_configure
+        hivemind_client = _hivemind_configure(
+            mode=HivemindMode.parse(args.hivemind),
+            sink_url=args.hivemind_sink_url,
+            location=args.hivemind_location,
+        )
+        if hivemind_client is not None:
+            sink = hivemind_client.active_sink()
+            if sink is not None:
+                log.info("hivemind sink: %s", sink.transcripts_url)
+    except RuntimeError as exc:
+        # mode=on with nothing discovered — fail loudly.
+        print(f"VOXTERM DICTATION // hivemind error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except Exception:
+        log.warning("hivemind configure failed", exc_info=True)
+
     loop = DictationLoop(
         transcriber=transcriber,
         injector=injector,
         on_state_change=indicator.set_state,
+        mlx_executor=mlx_executor,
+        hivemind_client=hivemind_client,
     )
 
     def toggle_dictation():
@@ -211,6 +263,12 @@ def main() -> None:
         loop.stop()
         hotkey.stop()
         indicator.stop()
+        mlx_executor.shutdown(wait=False, cancel_futures=True)
+        if hivemind_client is not None:
+            try:
+                hivemind_client.close()
+            except Exception:
+                log.warning("hivemind close failed", exc_info=True)
 
     indicator._on_quit = quit_all
 

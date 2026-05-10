@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -37,6 +38,8 @@ class DictationLoop:
         transcriber,
         injector: KeyboardInjector,
         on_state_change: callable | None = None,
+        mlx_executor: ThreadPoolExecutor | None = None,
+        hivemind_client=None,
     ):
         self.capture = AudioCapture()
         self.vad = SileroVAD()
@@ -44,6 +47,14 @@ class DictationLoop:
         self.transcriber = transcriber
         self.injector = injector
         self._on_state_change = on_state_change or (lambda s: None)
+        # All MLX work must run on a single thread (see tui/app.py for context).
+        # If no executor is provided, fall back to a private one.
+        self._mlx_executor = mlx_executor or ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mlx-dictate",
+        )
+        # Optional hivemind sink — segments mirrored on every transcribe.
+        self._hivemind = hivemind_client
+        self._session_start = time.time()
 
         self._active = False
         self._transcribing = threading.Event()
@@ -158,13 +169,22 @@ class DictationLoop:
     def _transcribe_worker(self, audio: np.ndarray) -> None:
         """Transcribe audio and inject text into focused app."""
         try:
-            result = self.transcriber.transcribe(audio)
+            result = self._mlx_executor.submit(self.transcriber.transcribe, audio).result()
             text = result.get("text", "").strip()
             if text:
                 # Capitalize first letter of each segment
                 text = text[0].upper() + text[1:] if len(text) > 1 else text.upper()
                 self.injector.type_text(text + " ")
                 log.info("injected: %s", text[:60])
+                # Mirror to hivemind sink if configured. Dictation has
+                # no diarization so speaker is the literal "user".
+                if self._hivemind is not None:
+                    try:
+                        self._hivemind.add_segment(
+                            time.time() - self._session_start, "user", text,
+                        )
+                    except Exception:
+                        log.warning("hivemind add_segment failed", exc_info=True)
         except Exception as e:
             log.error("transcription error: %s", e)
         finally:
