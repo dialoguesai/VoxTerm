@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -511,6 +512,11 @@ class VoxTerm(App):
         self._silence_chunks = 0
         self._transcribing = threading.Event()  # set = busy, clear = idle
         self._transcribe_lock = threading.Lock()  # serialize MLX GPU access
+        # Single-thread executor for all MLX work. MLX 0.31+ binds arrays to
+        # per-thread streams — model load and inference must happen on the same
+        # thread or `mx.argmax(...).item()` raises "no Stream(gpu, N) in current thread".
+        self._mlx_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
+        self._cache_clear_future = None  # tracks pending mx.clear_cache to avoid pile-up
         self._transcribe_started: float = 0.0
         self._debug = False
         self._last_dbg: float = 0.0
@@ -736,6 +742,18 @@ class VoxTerm(App):
     def _periodic_gc(self):
         """Prevent memory fragmentation during long sessions + memory watchdog."""
         gc.collect()
+        if sys.platform == "darwin":
+            # Free MLX's GPU cache on the same thread that owns it. Fire-and-forget
+            # — _periodic_gc runs on the Textual event loop, so we must not block.
+            # Skip if a previous clear_cache is still pending (MLX thread is busy
+            # with a transcription) to avoid queue pile-up.
+            prev = self._cache_clear_future
+            if prev is None or prev.done():
+                try:
+                    import mlx.core as mx
+                    self._cache_clear_future = self._mlx_executor.submit(mx.clear_cache)
+                except Exception:
+                    pass
 
         # Memory watchdog: warn at 4GB, crash-dump at 6GB
         try:
@@ -1011,7 +1029,7 @@ class VoxTerm(App):
             # submissions from multiple Textual workers cause segfaults.
             # Serialize with a lock.
             with self._transcribe_lock:
-                result = self.transcriber.transcribe(audio)
+                result = self._mlx_executor.submit(self.transcriber.transcribe, audio).result()
 
             # Periodic GC to prevent MLX memory buildup
             self._transcribe_count += 1
@@ -1380,7 +1398,7 @@ class VoxTerm(App):
                     self.transcriber = FasterWhisperTranscriber(model=model_repo, language=self._language)
                 else:
                     self.transcriber = WhisperTranscriber(model=model_repo)
-                self.transcriber.load()
+                self._mlx_executor.submit(self.transcriber.load).result()
                 self.call_from_thread(self._on_model_loaded)
             except Exception as e:
                 import traceback
@@ -1750,7 +1768,7 @@ class VoxTerm(App):
                 new_transcriber = FasterWhisperTranscriber(model=repo, language=self._language)
             else:
                 new_transcriber = WhisperTranscriber(model=repo)
-            new_transcriber.load()
+            self._mlx_executor.submit(new_transcriber.load).result()
             self.call_from_thread(self._on_swap_done, new_transcriber, model_key)
         except Exception as e:
             self.call_from_thread(
@@ -2006,6 +2024,10 @@ class VoxTerm(App):
         self._record_session_stats()
         try:
             self.speaker_store.close()
+        except Exception:
+            pass
+        try:
+            self._mlx_executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
 
