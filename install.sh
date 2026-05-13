@@ -155,7 +155,22 @@ done_ "downloaded"
 info "installing dependencies..."
 dim "this may take a minute on first install"
 
-if [ ! -d "$VENV_DIR" ]; then
+# Recreate the venv if it's missing or its interpreter is below Python 3.12
+# (a preserved venv from a prior install may be on an older Python).
+RECREATE_VENV=true
+if [ -x "$VENV_DIR/bin/python" ]; then
+    venv_version=$("$VENV_DIR/bin/python" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+    venv_major=$(echo "$venv_version" | cut -d. -f1)
+    venv_minor=$(echo "$venv_version" | cut -d. -f2)
+    if [ "$venv_major" -ge 3 ] && [ "$venv_minor" -ge 12 ]; then
+        RECREATE_VENV=false
+    else
+        dim "existing venv uses Python $venv_version; recreating with $PYTHON"
+    fi
+fi
+
+if $RECREATE_VENV; then
+    rm -rf "$VENV_DIR"
     "$PYTHON" -m venv "$VENV_DIR"
 fi
 
