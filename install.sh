@@ -102,12 +102,12 @@ fi
 info "checking python..."
 
 PYTHON=""
-for cmd in python3.12 python3.11 python3.10 python3.9 python3; do
+for cmd in python3.13 python3.12 python3; do
     if command -v "$cmd" &>/dev/null; then
         version=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
         major=$(echo "$version" | cut -d. -f1)
         minor=$(echo "$version" | cut -d. -f2)
-        if [ "$major" -ge 3 ] && [ "$minor" -ge 9 ]; then
+        if [ "$major" -ge 3 ] && [ "$minor" -ge 12 ]; then
             PYTHON="$cmd"
             break
         fi
@@ -115,7 +115,7 @@ for cmd in python3.12 python3.11 python3.10 python3.9 python3; do
 done
 
 if [ -z "$PYTHON" ]; then
-    err "Python 3.9+ required but not found."
+    err "Python 3.12+ required but not found."
     echo ""
     echo "   Install it with:"
     echo "     brew install python@3.12    (macOS)"
@@ -160,7 +160,7 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip 2>/dev/null
-"$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+"$VENV_DIR/bin/pip" install --quiet "$INSTALL_DIR"
 
 done_ "dependencies installed"
 
