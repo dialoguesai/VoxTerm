@@ -248,6 +248,8 @@ _DEFAULTS: dict[str, Any] = {
     "export_format": "markdown",
     "summarization_model": "",
     "summarization_strength": "medium",
+    "summarization_template": "tldr",
+    "summarization_custom_prompt": "",
     "p2p_display_name": "",
     # Hivemind transcript-sink (spec §4.3 of SHAPE-ROTATOR-OS-SPEC.md).
     # `hivemind_mode` is one of "auto" | "on" | "off"; when set on the
@@ -265,6 +267,8 @@ _TYPES: dict[str, type] = {
     "export_format": str,
     "summarization_model": str,
     "summarization_strength": str,
+    "summarization_template": str,
+    "summarization_custom_prompt": str,
     "p2p_display_name": str,
     "hivemind_mode": str,
     "hivemind_sink_url": str,
