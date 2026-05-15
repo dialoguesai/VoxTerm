@@ -23,6 +23,8 @@ class TestDefaults:
         assert cs.get("export_format") == "markdown"
         assert cs.get("summarization_model") == ""
         assert cs.get("summarization_strength") == "medium"
+        assert cs.get("summarization_template") == "tldr"
+        assert cs.get("summarization_custom_prompt") == ""
 
     def test_unknown_key_returns_none(self, tmp_path_file):
         cs = ConfigStore(tmp_path_file)
@@ -67,6 +69,32 @@ class TestPersistence:
         assert cs2.get("last_model") == "turbo"
         assert cs2.get("summarization_strength") == "high"
         assert cs2.get("export_format") == "markdown"  # default
+
+
+class TestSummarizationSettings:
+    def test_template_persists(self, tmp_path_file):
+        cs1 = ConfigStore(tmp_path_file)
+        cs1.set("summarization_template", "meeting_notes")
+        cs1.set("summarization_custom_prompt", "be terse")
+
+        cs2 = ConfigStore(tmp_path_file)
+        assert cs2.get("summarization_template") == "meeting_notes"
+        assert cs2.get("summarization_custom_prompt") == "be terse"
+
+    def test_template_wrong_type_rejected_on_set(self, tmp_path_file):
+        cs = ConfigStore(tmp_path_file)
+        with pytest.raises(TypeError, match="expected str"):
+            cs.set("summarization_template", 1)
+
+    def test_custom_prompt_wrong_type_rejected_on_update(self, tmp_path_file):
+        cs = ConfigStore(tmp_path_file)
+        with pytest.raises(TypeError, match="expected str"):
+            cs.update({"summarization_custom_prompt": ["bad"]})
+
+    def test_wrong_type_rejected_on_load(self, tmp_path_file):
+        tmp_path_file.write_text(json.dumps({"summarization_template": 42}))
+        cs = ConfigStore(tmp_path_file)
+        assert cs.get("summarization_template") == "tldr"  # default, not 42
 
 
 class TestBackwardCompat:

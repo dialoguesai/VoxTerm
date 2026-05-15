@@ -1887,14 +1887,30 @@ class VoxTerm(App):
                 return
             template_id = result["template_id"]
             custom_prompt = result["custom_prompt"]
-            cfg.update({
-                "summarization_template": template_id,
-                "summarization_custom_prompt": custom_prompt,
-            })
+            # Persist the chosen template. Only overwrite the saved custom
+            # prompt when the custom template was actually used — otherwise
+            # picking TL;DR/Meeting Notes/etc. would wipe a previously
+            # saved custom prompt.
+            updates = {"summarization_template": template_id}
+            if template_id == "custom":
+                updates["summarization_custom_prompt"] = custom_prompt
+            cfg.update(updates)
+            # Snapshot the transcript BEFORE logging the progress message,
+            # so the system message isn't fed to the LLM or written into
+            # the exported file, and so a later worker can't race ongoing
+            # transcription. The exact snapshot flows through to the write.
+            body = transcript.get_markdown(
+                self._model_name,
+                session_start=self._session_start,
+                language=self._language or "",
+            )
+            entry_count = len(transcript.get_entries())
             transcript.system_message(
                 "summarizing transcript (local LLM)…", Log.REC
             )
-            self._run_summarize_and_export(template_id, custom_prompt)
+            self._run_summarize_and_export(
+                template_id, custom_prompt, body, entry_count
+            )
 
         self.push_screen(
             SummaryScreen(
@@ -1905,19 +1921,33 @@ class VoxTerm(App):
         )
 
     @work(thread=True, exclusive=True, group="summarization")
-    def _run_summarize_and_export(self, template_id: str, custom_prompt: str):
-        """Worker: load LLM if needed, run summary, write final markdown."""
+    def _run_summarize_and_export(
+        self,
+        template_id: str,
+        custom_prompt: str,
+        body: str,
+        entry_count: int,
+    ):
+        """Worker: load LLM if needed, run summary, write final markdown.
+
+        `body`/`entry_count` are the snapshot taken on the main thread before
+        this worker started, so the exported file matches exactly what was
+        summarized even if recording continues meanwhile.
+        """
         transcript = self.query_one(TranscriptPanel)
         try:
             template = resolve_template(template_id)
             model_name = _get_config().get("summarization_model") or ""
             summarizer = get_summarizer(model_name=model_name)
-            body = transcript.get_markdown(
-                self._model_name,
-                session_start=self._session_start,
-                language=self._language or "",
-            )
-            summary = summarizer.summarize(body, template, custom_prompt)
+            # MLX binds arrays to per-thread streams and Metal command
+            # buffers are not safe under concurrent submission. Route the
+            # model load + generation through the same single-thread
+            # executor and GPU lock that serialize transcription, so a
+            # summary can't overlap a transcribe/model-load on the GPU.
+            with self._transcribe_lock:
+                summary = self._mlx_executor.submit(
+                    summarizer.summarize, body, template, custom_prompt
+                ).result()
         except SummarizerError as e:
             self.call_from_thread(
                 lambda: transcript.system_message(
@@ -1933,10 +1963,22 @@ class VoxTerm(App):
             )
             return
 
-        self.call_from_thread(self._write_summary_export, template.label, summary)
+        self.call_from_thread(
+            self._write_summary_export,
+            template.label,
+            summary,
+            body,
+            entry_count,
+        )
 
-    def _write_summary_export(self, template_label: str, summary: str) -> None:
-        """Write transcript + summary header to a .md file (main-thread)."""
+    def _write_summary_export(
+        self,
+        template_label: str,
+        summary: str,
+        body: str,
+        entry_count: int,
+    ) -> None:
+        """Write the summarized snapshot + summary header to a .md file (main-thread)."""
         transcript = self.query_one(TranscriptPanel)
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         filename = (
@@ -1944,11 +1986,6 @@ class VoxTerm(App):
         )
         filepath = SESSIONS_DIR / filename
 
-        body = transcript.get_markdown(
-            self._model_name,
-            session_start=self._session_start,
-            language=self._language or "",
-        )
         # Splice the summary in just after the first `---` divider so the
         # session header stays at the top.
         marker = "\n---\n"
@@ -1968,7 +2005,6 @@ class VoxTerm(App):
         if self._live_file and self._live_file.exists():
             self._live_file.unlink()
 
-        entry_count = len(transcript.get_entries())
         self._start_new_session()
         transcript.system_message(
             f"exported {entry_count} entries + summary → {filepath}", Log.REC
