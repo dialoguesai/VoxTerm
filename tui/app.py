@@ -111,6 +111,10 @@ def _setup_file_logging() -> None:
         log_path = Path.home() / "Documents" / "voxterm" / "voxterm.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         root_log = logging.getLogger()
+        # Default WARNING; set VOXTERM_LOG_LEVEL=DEBUG to see the quit/
+        # shutdown breadcrumbs and other debug logs in voxterm.log.
+        level_name = os.environ.get("VOXTERM_LOG_LEVEL", "WARNING").upper()
+        root_log.setLevel(getattr(logging, level_name, logging.WARNING))
         if not any(
             isinstance(h, logging.FileHandler)
             and getattr(h, "baseFilename", "") == str(log_path)
