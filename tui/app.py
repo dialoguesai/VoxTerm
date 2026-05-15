@@ -2072,18 +2072,23 @@ class VoxTerm(App):
         #  - diarizer.shutdown() sends MSG_SHUTDOWN to the PyTorch worker;
         #    it early-returns in ONNX "direct"/"inprocess" mode, so it is
         #    always safe to call.
+        log.debug("quit: stopping child processes")
         try:
             self.audio_capture.stop()
+            log.debug("quit: audio_capture stopped")
         except Exception:
-            pass
+            log.warning("quit: audio_capture.stop() failed", exc_info=True)
         try:
             self.system_capture.stop()
+            log.debug("quit: system_capture stopped")
         except Exception:
-            pass
+            log.warning("quit: system_capture.stop() failed", exc_info=True)
         try:
             self.diarizer.shutdown()
+            log.debug("quit: diarizer shut down")
         except Exception:
-            pass
+            log.warning("quit: diarizer.shutdown() failed", exc_info=True)
+        log.debug("quit: child processes stopped, proceeding to hard exit")
 
         try:
             self.speaker_store.close()
