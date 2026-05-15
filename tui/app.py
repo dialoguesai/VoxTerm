@@ -111,6 +111,10 @@ def _setup_file_logging() -> None:
         log_path = Path.home() / "Documents" / "voxterm" / "voxterm.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         root_log = logging.getLogger()
+        # Default WARNING; set VOXTERM_LOG_LEVEL=DEBUG to see the quit/
+        # shutdown breadcrumbs and other debug logs in voxterm.log.
+        level_name = os.environ.get("VOXTERM_LOG_LEVEL", "WARNING").upper()
+        root_log.setLevel(getattr(logging, level_name, logging.WARNING))
         if not any(
             isinstance(h, logging.FileHandler)
             and getattr(h, "baseFilename", "") == str(log_path)
@@ -2062,6 +2066,34 @@ class VoxTerm(App):
     def _do_quit(self):
         # Record stats while we still can (fast, synchronous)
         self._record_session_stats()
+
+        # Terminate child processes BEFORE arming the hard-exit timer.
+        # os._exit() (timer/SIGALRM backstop below) skips atexit handlers
+        # and finalizers, so any subprocess not signaled here is orphaned:
+        #  - system_capture.stop() is the ONLY path that SIGTERMs the Swift
+        #    sck-helper (so it stops the SCStream / releases the CoreAudio
+        #    tap) and tears down the BlackHole multi-output device.
+        #  - diarizer.shutdown() sends MSG_SHUTDOWN to the PyTorch worker;
+        #    it early-returns in ONNX "direct"/"inprocess" mode, so it is
+        #    always safe to call.
+        log.debug("quit: stopping child processes")
+        try:
+            self.audio_capture.stop()
+            log.debug("quit: audio_capture stopped")
+        except Exception:
+            log.warning("quit: audio_capture.stop() failed", exc_info=True)
+        try:
+            self.system_capture.stop()
+            log.debug("quit: system_capture stopped")
+        except Exception:
+            log.warning("quit: system_capture.stop() failed", exc_info=True)
+        try:
+            self.diarizer.shutdown()
+            log.debug("quit: diarizer shut down")
+        except Exception:
+            log.warning("quit: diarizer.shutdown() failed", exc_info=True)
+        log.debug("quit: child processes stopped, proceeding to hard exit")
+
         try:
             self.speaker_store.close()
         except Exception:
