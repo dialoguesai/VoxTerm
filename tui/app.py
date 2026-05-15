@@ -2062,6 +2062,29 @@ class VoxTerm(App):
     def _do_quit(self):
         # Record stats while we still can (fast, synchronous)
         self._record_session_stats()
+
+        # Terminate child processes BEFORE arming the hard-exit timer.
+        # os._exit() (timer/SIGALRM backstop below) skips atexit handlers
+        # and finalizers, so any subprocess not signaled here is orphaned:
+        #  - system_capture.stop() is the ONLY path that SIGTERMs the Swift
+        #    sck-helper (so it stops the SCStream / releases the CoreAudio
+        #    tap) and tears down the BlackHole multi-output device.
+        #  - diarizer.shutdown() sends MSG_SHUTDOWN to the PyTorch worker;
+        #    it early-returns in ONNX "direct"/"inprocess" mode, so it is
+        #    always safe to call.
+        try:
+            self.audio_capture.stop()
+        except Exception:
+            pass
+        try:
+            self.system_capture.stop()
+        except Exception:
+            pass
+        try:
+            self.diarizer.shutdown()
+        except Exception:
+            pass
+
         try:
             self.speaker_store.close()
         except Exception:
