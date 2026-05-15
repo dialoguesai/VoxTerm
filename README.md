@@ -29,7 +29,7 @@ Then run:
 voxterm
 ```
 
-Requires macOS with Apple Silicon (M1+) and Python 3.9+. Models download automatically on first use.
+Requires macOS with Apple Silicon (M1+) and Python 3.12+. Models download automatically on first use.
 
 <details>
 <summary>Manual setup (for developers)</summary>
