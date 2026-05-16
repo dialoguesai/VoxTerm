@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-16
+
+### Fixed
+
+- `voxterm update` returned `curl 404` against v0.2.0 because the
+  release workflow didn't auto-attach `install.sh`. The release
+  workflow now uploads `install.sh` as a release asset on every
+  tag push, and the rendered release body links to the release-asset
+  install URL directly (#129).
+- Pressing `h` and selecting a sink had no visible in-TUI confirmation
+  (the only signal was a hidden INFO line in `voxterm.log`). The
+  hivemind menu now fires a textual toast and a SYS message in the
+  transcript panel on connect / disconnect so the state change is
+  immediately visible (#130).
+
 ## [0.2.0] - 2026-05-16
 
 ### Added

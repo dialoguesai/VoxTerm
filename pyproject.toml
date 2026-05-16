@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voxterm"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local real-time voice transcription TUI with speaker diarization"
 readme = "README.md"
 license = "MIT"
