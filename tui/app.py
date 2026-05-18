@@ -73,6 +73,7 @@ from audio.buffer import AudioBuffer
 from audio.system_capture import SystemCapture
 from audio.transcriber import (
     Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber,
+    configure_mlx_memory,
 )
 from audio.diarization.proxy import DiarizationProxy
 from audio.speakers.store import SpeakerStore
@@ -113,6 +114,10 @@ def _setup_file_logging() -> None:
         log_path = Path.home() / "Documents" / "voxterm" / "voxterm.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         root_log = logging.getLogger()
+        # Default WARNING; set VOXTERM_LOG_LEVEL=DEBUG to see the quit/
+        # shutdown breadcrumbs and other debug logs in voxterm.log.
+        level_name = os.environ.get("VOXTERM_LOG_LEVEL", "WARNING").upper()
+        root_log.setLevel(getattr(logging, level_name, logging.WARNING))
         if not any(
             isinstance(h, logging.FileHandler)
             and getattr(h, "baseFilename", "") == str(log_path)
@@ -482,6 +487,7 @@ class VoxTerm(App):
         Binding("e", "explore_transcripts", "History"),
         Binding("p", "toggle_party", "Party"),
         Binding("v", "toggle_merged_view", "View"),
+        Binding("h", "show_hivemind", "Hivemind"),
         Binding("?", "show_help", "Help", key_display="?"),
         Binding("q", "quit", "Quit"),
         Binding("escape", "quit", show=False),
@@ -525,6 +531,11 @@ class VoxTerm(App):
         # thread or `mx.argmax(...).item()` raises "no Stream(gpu, N) in current thread".
         self._mlx_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
         self._cache_clear_future = None  # tracks pending mx.clear_cache to avoid pile-up
+        # Highest RSS already handled by the memory watchdog. ru_maxrss is a
+        # high-water mark (never decreases), so without this the >6GB branch
+        # would re-dump/flush/warn every timer tick forever; only re-act when
+        # memory climbs meaningfully past what we already handled.
+        self._mem_watchdog_handled_mb = 0.0
         self._transcribe_started: float = 0.0
         self._debug = False
         self._last_dbg: float = 0.0
@@ -779,11 +790,34 @@ class VoxTerm(App):
             rss_mb = rss_bytes / (1024 * 1024)
         except ImportError:
             return  # Windows — can't check memory, skip watchdog
-        if rss_mb > 6000:
+        # rss_mb is a peak/high-water value (ru_maxrss never decreases), so
+        # only act the first time we cross 6GB and again only if it climbs
+        # another 500MB — otherwise this fires every timer tick forever.
+        if rss_mb > 6000 and rss_mb > self._mem_watchdog_handled_mb + 500:
+            self._mem_watchdog_handled_mb = rss_mb
             self._write_crash_dump(f"memory_watchdog: {rss_mb:.0f}MB")
-            self.query_one(TranscriptPanel).system_message(
-                f"high memory usage ({rss_mb:.0f}MB) — consider saving and restarting", Log.SYS
-            )
+            # Actively reclaim instead of only warning.
+            gc.collect()
+            if sys.platform == "darwin":
+                # Force a Metal cache flush on the MLX thread, ungated by the
+                # usual skip-if-busy check (under this much pressure we want
+                # it to run even if it has to queue behind a transcription).
+                try:
+                    import mlx.core as mx
+                    self._cache_clear_future = self._mlx_executor.submit(mx.clear_cache)
+                except Exception:
+                    pass
+                msg = (
+                    f"high memory usage ({rss_mb:.0f}MB) — flushing GPU "
+                    f"cache; save and restart if it persists"
+                )
+            else:
+                # No GPU cache to flush off macOS — don't claim otherwise.
+                msg = (
+                    f"high memory usage ({rss_mb:.0f}MB) — consider saving "
+                    f"and restarting"
+                )
+            self.query_one(TranscriptPanel).system_message(msg, Log.SYS)
         elif rss_mb > 4000 and self._debug:
             self.query_one(TranscriptPanel).system_message(
                 f"[dbg] memory: {rss_mb:.0f}MB", Log.SYS
@@ -1070,8 +1104,26 @@ class VoxTerm(App):
                 self._transcribe_started = time.time()
                 result = self._mlx_executor.submit(self.transcriber.transcribe, audio).result()
 
-            # Periodic GC to prevent MLX memory buildup
-            self._transcribe_count += 1
+                # Reclaim the MLX buffer cache on the cadence of actual
+                # transcription (the 60s _periodic_gc timer is skipped while
+                # the executor is busy, so it can be starved under load).
+                # Enqueue it while STILL holding _transcribe_lock so a model
+                # swap (which also takes _transcribe_lock before queuing a
+                # long load) can't slip a load between the transcribe and the
+                # clear; and do NOT .result() it — blocking the worker here
+                # would stall it behind that load while the hung-transcription
+                # watchdog state is stale.
+                self._transcribe_count += 1
+                if self._transcribe_count % 20 == 0 and sys.platform == "darwin":
+                    prev = self._cache_clear_future
+                    if prev is None or prev.done():
+                        try:
+                            import mlx.core as mx
+                            self._cache_clear_future = self._mlx_executor.submit(mx.clear_cache)
+                        except Exception:
+                            pass
+
+            # Periodic Python GC (off the MLX lock — doesn't touch the GPU).
             if self._transcribe_count % 20 == 0:
                 gc.collect()
 
@@ -1820,10 +1872,45 @@ class VoxTerm(App):
             )
 
     def _on_swap_done(self, transcriber, model_key):
+        old_transcriber = self.transcriber
         self.transcriber = transcriber
         self._model_name = model_key
         self._is_qwen3 = model_key in QWEN3_MODELS
         self._model_loaded = True
+        # Drop the previous model and flush Metal so a swap doesn't strand
+        # a whole model (~0.6–1.5GB) in the GPU cache. Done as two serialized
+        # tasks on the single MLX thread: _unload releases the old model
+        # (passed positionally, so its only reference is gone once the task
+        # returns), then _flush runs gc + clear_cache with NO live reference
+        # to the old model so its buffers can actually be reclaimed.
+        # Fire-and-forget so the event loop isn't blocked.
+        if old_transcriber is not None and old_transcriber is not transcriber:
+            def _unload(old):
+                try:
+                    unload = getattr(old, "unload", None)
+                    if callable(unload):
+                        unload()
+                except Exception:
+                    pass
+                # `old` is this task's only reference; it is released when
+                # the task returns, before _flush (queued next) runs.
+
+            def _flush():
+                gc.collect()
+                if sys.platform == "darwin":
+                    try:
+                        import mlx.core as mx
+                        mx.clear_cache()
+                    except Exception:
+                        pass
+            try:
+                self._mlx_executor.submit(_unload, old_transcriber)
+                self._cache_clear_future = self._mlx_executor.submit(_flush)
+            except Exception:
+                pass
+        # Drop this frame's reference too, so nothing here keeps the old
+        # model alive until _flush runs on the MLX thread.
+        del old_transcriber
         _get_config().update({"last_model": model_key, "last_language": self._language})
         self.query_one(TranscriptPanel).system_message(f"model loaded: {model_key}", Log.SYS, {model_key: "rainbow"})
         self._update_telemetry()
@@ -2137,6 +2224,14 @@ class VoxTerm(App):
     def action_show_help(self):
         self.push_screen(HelpScreen())
 
+    def action_show_hivemind(self):
+        """Open the hivemind discovery + opt-in menu."""
+        try:
+            from tui.widgets.hivemind_screen import HivemindScreen
+            self.push_screen(HivemindScreen(self._hivemind))
+        except Exception:
+            log.warning("could not open hivemind screen", exc_info=True)
+
     def action_toggle_debug(self):
         self._debug = not self._debug
         state = "ON" if self._debug else "OFF"
@@ -2205,6 +2300,34 @@ class VoxTerm(App):
     def _do_quit(self):
         # Record stats while we still can (fast, synchronous)
         self._record_session_stats()
+
+        # Terminate child processes BEFORE arming the hard-exit timer.
+        # os._exit() (timer/SIGALRM backstop below) skips atexit handlers
+        # and finalizers, so any subprocess not signaled here is orphaned:
+        #  - system_capture.stop() is the ONLY path that SIGTERMs the Swift
+        #    sck-helper (so it stops the SCStream / releases the CoreAudio
+        #    tap) and tears down the BlackHole multi-output device.
+        #  - diarizer.shutdown() sends MSG_SHUTDOWN to the PyTorch worker;
+        #    it early-returns in ONNX "direct"/"inprocess" mode, so it is
+        #    always safe to call.
+        log.debug("quit: stopping child processes")
+        try:
+            self.audio_capture.stop()
+            log.debug("quit: audio_capture stopped")
+        except Exception:
+            log.warning("quit: audio_capture.stop() failed", exc_info=True)
+        try:
+            self.system_capture.stop()
+            log.debug("quit: system_capture stopped")
+        except Exception:
+            log.warning("quit: system_capture.stop() failed", exc_info=True)
+        try:
+            self.diarizer.shutdown()
+            log.debug("quit: diarizer shut down")
+        except Exception:
+            log.warning("quit: diarizer.shutdown() failed", exc_info=True)
+        log.debug("quit: child processes stopped, proceeding to hard exit")
+
         try:
             self.speaker_store.close()
         except Exception:
@@ -2388,20 +2511,61 @@ def main():
     # comes up empty — that's the contract.
     hivemind_client = None
     try:
-        from network.hivemind import HivemindMode, configure as _hivemind_configure
+        from network.hivemind import (
+            HivemindMode,
+            HIVEMIND_SERVICE_TYPE,
+            configure as _hivemind_configure,
+        )
+        _hm_mode = HivemindMode.parse(args.hivemind)
+        if _hm_mode != HivemindMode.OFF and not args.hivemind_sink_url:
+            print(
+                f"VOXTERM // hivemind: searching for sink on "
+                f"{HIVEMIND_SERVICE_TYPE} (mDNS, mode={_hm_mode.value})..."
+            )
+
+        # Read the user's persisted opt-in state. configure() folds
+        # this in so a returning user gets push enabled automatically
+        # without having to re-toggle every launch.
+        _persisted_push_enabled = bool(_cfg.get("hivemind_push_enabled") or False)
+        _persisted_pinned_pubkey = str(_cfg.get("hivemind_pinned_sink_pubkey") or "")
+
+        def _on_hivemind_state_change(enabled: bool, pubkey: str) -> None:
+            """Save the user's `h`-menu toggle to ConfigStore."""
+            try:
+                _cfg.update({
+                    "hivemind_push_enabled": bool(enabled),
+                    "hivemind_pinned_sink_pubkey": str(pubkey or ""),
+                })
+            except Exception:
+                log.warning("hivemind state persist failed", exc_info=True)
+
         hivemind_client = _hivemind_configure(
-            mode=HivemindMode.parse(args.hivemind),
+            mode=_hm_mode,
             sink_url=args.hivemind_sink_url,
             location=args.hivemind_location,
+            push_enabled=_persisted_push_enabled,
+            pinned_sink_pubkey=_persisted_pinned_pubkey,
+            on_state_change=_on_hivemind_state_change,
         )
         if hivemind_client is not None:
             sink = hivemind_client.active_sink()
+            push_on = hivemind_client.push_enabled
+            push_state = (
+                "[pushing]" if push_on else "[not pushing — press 'h' to enable]"
+            )
             if sink is not None:
-                print(f"VOXTERM // hivemind sink: {sink.transcripts_url}")
+                print(
+                    f"VOXTERM // hivemind sink: {sink.transcripts_url} "
+                    f"{push_state}"
+                )
             else:
-                print("VOXTERM // hivemind: no sink yet (auto-discovery in progress)")
+                print(
+                    "VOXTERM // hivemind: no sink yet (auto-discovery still "
+                    "running; tail ~/Documents/voxterm/voxterm.log with "
+                    "VOXTERM_LOG_LEVEL=INFO to see when one appears)"
+                )
     except RuntimeError as exc:
-        # mode=on with no sink discovered — fail loudly per task spec.
+        # mode=on with no sink discovered; fail loudly per task spec.
         print(f"VOXTERM // hivemind error: {exc}", file=sys.stderr)
         sys.exit(2)
     except Exception:
@@ -2418,6 +2582,10 @@ def main():
         })
     except Exception:
         pass
+
+    # Bound the MLX GPU cache before any model loads (root-cause fix for
+    # unbounded RSS growth during long sessions).
+    configure_mlx_memory()
 
     # Launch TUI immediately — model loads in the background
     app = VoxTerm(

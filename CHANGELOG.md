@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-16
+
+### Fixed
+
+- `voxterm update` returned `curl 404` against v0.2.0 because the
+  release workflow didn't auto-attach `install.sh`. The release
+  workflow now uploads `install.sh` as a release asset on every
+  tag push, and the rendered release body links to the release-asset
+  install URL directly (#129).
+- Pressing `h` and selecting a sink had no visible in-TUI confirmation
+  (the only signal was a hidden INFO line in `voxterm.log`). The
+  hivemind menu now fires a textual toast and a SYS message in the
+  transcript panel on connect / disconnect so the state change is
+  immediately visible (#130).
+
+## [0.2.0] - 2026-05-16
+
+### Added
+
+#### Hivemind transcript-sink integration
+- New `h` keybinding opens a hivemind menu listing mDNS-discovered
+  swf-node sinks on the LAN. ENTER on a sink toggles transcript push
+  on/off for that sink. The choice persists to ConfigStore, so a
+  returning user gets push re-enabled automatically without re-toggling.
+- Push is gated by user opt-in by default: `voxterm` always runs the
+  mDNS browser, but transcripts are buffered (not POSTed) until the
+  user presses `h` and enables a sink. `--hivemind on` keeps the old
+  always-push behavior for scripted/headless use.
+- Pinning by sink pubkey: once a sink is enabled, a different sink
+  showing up on the LAN won't get our transcripts by accident.
+- Visible logging at every stage. Startup banner reports searching
+  / found / pushing state; `voxterm.log` (with `VOXTERM_LOG_LEVEL=INFO`)
+  shows discovery events, the first batch posted, and a heartbeat
+  every Nth batch so a tail confirms ongoing health.
+
+### Changed
+
+- macOS default transcription model switched from `qwen3-1.7b` to
+  `qwen3-0.6b` to match Linux/Windows. Smaller first-run download
+  and lower memory footprint. The 1.7B variant is still available
+  via `voxterm -m qwen3-1.7b`.
+
 ## [0.1.0] - 2026-04-15
 
 First public release. VoxTerm is a local, offline voice transcription TUI for

@@ -1,14 +1,25 @@
 #!/bin/bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # ── VoxTerm Installer ──────────────────────────────────────
 #
-# Install:    curl -fsSL https://raw.githubusercontent.com/dmarzzz/VoxTerm/main/install.sh | bash
-# Specific:   curl ... | bash -s -- --version v0.1.0
-# Uninstall:  curl ... | bash -s -- --uninstall
+#   Install:    curl -fsSL https://github.com/dmarzzz/VoxTerm/releases/latest/download/install.sh | bash
+#   Specific:   curl ... | bash -s -- --version v0.1.0
+#   Uninstall:  curl ... | bash -s -- --uninstall
+#
+# This URL is served with `Cache-Control: no-cache` at every hop, so it
+# always resolves to the latest release's install.sh — no CDN/proxy
+# staleness, no manual cache-busting needed. The old raw.githubusercontent
+# URL still works but can be cached by intermediaries (corp/school proxies,
+# some ISPs), which has bitten us in the wild.
+
+# Installer revision — bump on every edit to this file. Printed at startup
+# so users can confirm they aren't running a stale copy.
+INSTALLER_REV="2026-05-16.3"
 
 REPO="dmarzzz/VoxTerm"
 REPO_URL="https://github.com/$REPO"
+INSTALL_URL="https://github.com/$REPO/releases/latest/download/install.sh"
 INSTALL_DIR="$HOME/.local/share/voxterm"
 BIN_DIR="$HOME/.local/bin"
 VENV_DIR="$INSTALL_DIR/.venv"
@@ -18,6 +29,7 @@ VERSION_FILE="$INSTALL_DIR/.installed-version"
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 RED='\033[0;31m'
+YELLOW='\033[0;33m'
 DIM='\033[2m'
 BOLD='\033[1m'
 RESET='\033[0m'
@@ -25,7 +37,30 @@ RESET='\033[0m'
 info()  { echo -e "${CYAN}▸${RESET} $1"; }
 done_() { echo -e "${GREEN}✓${RESET} $1"; }
 dim()   { echo -e "${DIM}  $1${RESET}"; }
+warn()  { echo -e "${YELLOW}!${RESET} $1"; }
 err()   { echo -e "${RED}✗${RESET} $1"; }
+
+# Failure trap — fires on any unhandled non-zero exit thanks to `set -Eeuo`.
+on_err() {
+    local exit_code=$? line=$1 cmd=${2:-?}
+    err "installer failed (exit $exit_code) at line $line"
+    dim "command:       $cmd"
+    dim "installer rev: $INSTALLER_REV"
+    dim "install dir:   $INSTALL_DIR"
+    dim "report this with the full output: $REPO_URL/issues"
+}
+trap 'on_err $LINENO "$BASH_COMMAND"' ERR
+
+# Hardened curl: retry transient network failures.
+fetch() { curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused "$@"; }
+
+# Returns 0 if $1 is a Python >= 3.12.
+py_meets_req() {
+    local v ma mi
+    v=$("$1" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+    ma=${v%%.*}; mi=${v#*.}
+    [ "$ma" -gt 3 ] || { [ "$ma" -eq 3 ] && [ "$mi" -ge 12 ]; }
+}
 
 # ── Parse args ────────────────────────────────────────────
 REQUESTED_VERSION=""
@@ -37,7 +72,7 @@ while [[ $# -gt 0 ]]; do
         --version=*) REQUESTED_VERSION="${1#*=}"; shift ;;
         --uninstall) UNINSTALL=true; shift ;;
         --help|-h)
-            echo "VoxTerm installer"
+            echo "VoxTerm installer (rev $INSTALLER_REV)"
             echo ""
             echo "Usage: curl -fsSL .../install.sh | bash [-s -- OPTIONS]"
             echo ""
@@ -47,7 +82,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --help              Show this help"
             exit 0
             ;;
-        *) echo "Unknown option: $1"; exit 1 ;;
+        *) err "unknown option: $1"; exit 1 ;;
     esac
 done
 
@@ -70,13 +105,14 @@ fi
 echo ""
 echo -e "${BOLD}VOXTERM${RESET} — local voice transcription"
 echo -e "${DIM}everything runs on your machine, nothing leaves${RESET}"
+echo -e "${DIM}installer rev: $INSTALLER_REV${RESET}"
 echo ""
 
 # ── Resolve version ───────────────────────────────────────
 if [ -z "$REQUESTED_VERSION" ]; then
     info "checking latest release..."
     # Only look for v* tags (skip utility releases like onnx-models)
-    REQUESTED_VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases" 2>/dev/null \
+    REQUESTED_VERSION=$(fetch "https://api.github.com/repos/$REPO/releases" 2>/dev/null \
         | grep '"tag_name"' | grep '"v' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || echo "")
 
     if [ -z "$REQUESTED_VERSION" ]; then
@@ -102,20 +138,15 @@ fi
 info "checking python..."
 
 PYTHON=""
-for cmd in python3.12 python3.11 python3.10 python3.9 python3; do
-    if command -v "$cmd" &>/dev/null; then
-        version=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
-        major=$(echo "$version" | cut -d. -f1)
-        minor=$(echo "$version" | cut -d. -f2)
-        if [ "$major" -ge 3 ] && [ "$minor" -ge 9 ]; then
-            PYTHON="$cmd"
-            break
-        fi
+for cmd in python3.14 python3.13 python3.12 python3; do
+    if command -v "$cmd" &>/dev/null && py_meets_req "$cmd"; then
+        PYTHON="$cmd"
+        break
     fi
 done
 
 if [ -z "$PYTHON" ]; then
-    err "Python 3.9+ required but not found."
+    err "Python 3.12+ required but not found."
     echo ""
     echo "   Install it with:"
     echo "     brew install python@3.12    (macOS)"
@@ -134,18 +165,33 @@ else
     ARCHIVE_URL="$REPO_URL/archive/refs/tags/$REQUESTED_VERSION.tar.gz"
 fi
 
-# Download and extract to a temp dir, then swap
+# Download and extract to a temp dir, then swap.
+# Single-quoted trap so $TMPDIR_DL is expanded at fire-time (still safe under
+# set -u since TMPDIR_DL is set right above).
 TMPDIR_DL=$(mktemp -d)
-trap "rm -rf $TMPDIR_DL" EXIT
+trap 'rm -rf "$TMPDIR_DL"' EXIT
 
-curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$TMPDIR_DL" --strip-components=1
+fetch "$ARCHIVE_URL" | tar -xz -C "$TMPDIR_DL" --strip-components=1
+
+# Validate the archive actually delivered the package — guards against
+# a 200 with truncated/wrong payload silently breaking the install.
+if [ ! -f "$TMPDIR_DL/pyproject.toml" ] && [ ! -f "$TMPDIR_DL/requirements.txt" ]; then
+    err "downloaded archive looks incomplete"
+    dim "url:      $ARCHIVE_URL"
+    dim "contents:"
+    ls -la "$TMPDIR_DL" 2>&1 | sed 's/^/    /'
+    exit 1
+fi
 
 # Preserve venv if it exists (avoid re-downloading all deps)
 if [ -d "$VENV_DIR" ]; then
     mv "$VENV_DIR" "$TMPDIR_DL/.venv"
 fi
 
-# Preserve voice data symlinks or local state
+# Swap into place. mkdir parent first — on a fresh machine, ~/.local/share/
+# may not exist yet, and `mv` into a missing parent fails with
+# "No such file or directory".
+mkdir -p "$(dirname "$INSTALL_DIR")"
 rm -rf "$INSTALL_DIR"
 mv "$TMPDIR_DL" "$INSTALL_DIR"
 
@@ -155,16 +201,40 @@ done_ "downloaded"
 info "installing dependencies..."
 dim "this may take a minute on first install"
 
-if [ ! -d "$VENV_DIR" ]; then
+# Recreate the venv if it's missing or its interpreter is below Python 3.12.
+# A venv preserved from a prior install may be on an older Python, which would
+# fail `pip install -e` against a pyproject with requires-python >=3.12.
+RECREATE_VENV=true
+if [ -x "$VENV_DIR/bin/python" ]; then
+    venv_version=$("$VENV_DIR/bin/python" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+    venv_major=$(echo "$venv_version" | cut -d. -f1)
+    venv_minor=$(echo "$venv_version" | cut -d. -f2)
+    if [ "$venv_major" -gt 3 ] || { [ "$venv_major" -eq 3 ] && [ "$venv_minor" -ge 12 ]; }; then
+        RECREATE_VENV=false
+    else
+        dim "existing venv uses Python $venv_version; recreating with $PYTHON"
+    fi
+fi
+
+if $RECREATE_VENV; then
+    rm -rf "$VENV_DIR"
     "$PYTHON" -m venv "$VENV_DIR"
 fi
 
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip 2>/dev/null
-"$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+if [ -f "$INSTALL_DIR/pyproject.toml" ]; then
+    "$VENV_DIR/bin/pip" install --quiet -e "$INSTALL_DIR"
+elif [ -f "$INSTALL_DIR/requirements.txt" ]; then
+    "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+else
+    err "neither pyproject.toml nor requirements.txt found in $INSTALL_DIR"
+    exit 1
+fi
 
 done_ "dependencies installed"
 
 # ── Record installed version ──────────────────────────────
+mkdir -p "$INSTALL_DIR"
 echo "$REQUESTED_VERSION" > "$VERSION_FILE"
 
 # ── Create launcher ───────────────────────────────────────
@@ -174,6 +244,33 @@ mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/voxterm" << 'LAUNCHER'
 #!/bin/bash
 INSTALL_DIR="$HOME/.local/share/voxterm"
+# Release-asset URL: served Cache-Control: no-cache end-to-end and
+# resolves to the latest release's install.sh — no CDN/proxy staleness.
+INSTALL_URL="https://github.com/dmarzzz/VoxTerm/releases/latest/download/install.sh"
+
+case "${1:-}" in
+    update)
+        shift
+        if [ $# -gt 0 ]; then
+            # voxterm update <version>  → pin to a specific tag
+            exec bash -c "curl -fsSL --retry 3 --retry-delay 2 '$INSTALL_URL' | bash -s -- --version '$1'"
+        else
+            exec bash -c "curl -fsSL --retry 3 --retry-delay 2 '$INSTALL_URL' | bash"
+        fi
+        ;;
+    uninstall)
+        exec bash -c "curl -fsSL --retry 3 --retry-delay 2 '$INSTALL_URL' | bash -s -- --uninstall"
+        ;;
+    version|-V)
+        if [ -f "$INSTALL_DIR/.installed-version" ]; then
+            cat "$INSTALL_DIR/.installed-version"
+        else
+            echo "unknown"
+        fi
+        exit 0
+        ;;
+esac
+
 cd "$INSTALL_DIR"
 export PYTHONWARNINGS="ignore::UserWarning"
 "$INSTALL_DIR/.venv/bin/python" -m tui.app "$@"
@@ -184,24 +281,78 @@ chmod +x "$BIN_DIR/voxterm"
 done_ "installed to $BIN_DIR/voxterm"
 
 # ── Check PATH ────────────────────────────────────────────
-if ! echo "$PATH" | tr ':' '\n' | grep -q "$BIN_DIR"; then
-    echo ""
-    echo -e "${CYAN}▸${RESET} add this to your shell profile (~/.zshrc or ~/.bashrc):"
-    echo ""
-    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
-    echo "  then restart your terminal, or run:"
-    echo ""
-    echo "    source ~/.zshrc"
-    echo ""
-fi
+# case-glob instead of grep avoids partial-path false positives
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+        # Detect the user's login shell and give shell-specific advice.
+        # $SHELL is the login shell (set by the OS at session start) and
+        # survives the curl|bash sub-invocation, so it's the right signal
+        # for what the user actually uses interactively.
+        shell_name=$(basename "${SHELL:-sh}")
+        echo ""
+        echo -e "${CYAN}▸${RESET} add $BIN_DIR to your PATH"
+        echo ""
+        case "$shell_name" in
+            zsh)
+                echo "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+                echo "    source ~/.zshrc"
+                ;;
+            bash)
+                # macOS login bash sources ~/.bash_profile; most Linux distros
+                # use ~/.bashrc for interactive shells.
+                if [ "$(uname -s)" = "Darwin" ]; then
+                    rc_file="~/.bash_profile"
+                else
+                    rc_file="~/.bashrc"
+                fi
+                echo "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> $rc_file"
+                echo "    source $rc_file"
+                ;;
+            fish)
+                # fish_add_path writes to a universal variable — persists
+                # across all future fish sessions, no config edit needed.
+                echo "    fish_add_path \$HOME/.local/bin"
+                echo ""
+                echo -e "  ${DIM}(persists automatically — no restart or sourcing needed)${RESET}"
+                ;;
+            ksh|mksh|pdksh|ksh93)
+                echo "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.kshrc"
+                echo "    . ~/.kshrc"
+                ;;
+            dash|ash|sh)
+                echo "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile"
+                echo "    . ~/.profile"
+                ;;
+            tcsh|csh)
+                echo "    echo 'setenv PATH \$HOME/.local/bin:\$PATH' >> ~/.${shell_name}rc"
+                echo "    source ~/.${shell_name}rc"
+                ;;
+            nu)
+                echo "    use std/util 'path add'; path add \$env.HOME/.local/bin"
+                echo ""
+                echo -e "  ${DIM}for persistence, add the same line to ~/.config/nushell/config.nu${RESET}"
+                ;;
+            *)
+                # Unknown shell — print POSIX form and a hint.
+                echo -e "  ${DIM}shell detected: $shell_name (no preset — using POSIX form)${RESET}"
+                echo ""
+                echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+                echo ""
+                echo -e "  ${DIM}add the above (or your shell's equivalent) to your shell's startup file${RESET}"
+                ;;
+        esac
+        echo ""
+        ;;
+esac
 
 # ── Done ──────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}${BOLD}voxterm $REQUESTED_VERSION installed!${RESET}"
 echo ""
-echo "  run it:      voxterm"
-echo "  update:      curl -fsSL $REPO_URL/raw/main/install.sh | bash"
-echo "  uninstall:   curl -fsSL $REPO_URL/raw/main/install.sh | bash -s -- --uninstall"
-echo "  pin version: curl -fsSL $REPO_URL/raw/main/install.sh | bash -s -- --version v0.1.0"
+echo "  run it:       voxterm"
+echo "  update:       voxterm update"
+echo "  uninstall:    voxterm uninstall"
+echo "  pin version:  voxterm update v0.1.0"
+echo "  show version: voxterm version"
 echo ""

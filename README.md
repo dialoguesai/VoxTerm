@@ -20,7 +20,7 @@ VoxTerm is **local first and private by default**. Everything runs on your machi
 One command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dmarzzz/VoxTerm/main/install.sh | bash
+curl -fsSL https://github.com/dmarzzz/VoxTerm/releases/latest/download/install.sh | bash
 ```
 
 Then run:
@@ -29,7 +29,7 @@ Then run:
 voxterm
 ```
 
-Requires macOS with Apple Silicon (M1+) and Python 3.9+. Models download automatically on first use.
+Requires macOS with Apple Silicon (M1+) and Python 3.12+. Models download automatically on first use.
 
 <details>
 <summary>Manual setup (for developers)</summary>

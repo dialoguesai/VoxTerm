@@ -64,6 +64,17 @@ MAX_BATCH_BYTES = 1 * 1024 * 1024
 #: failing to start. Per task spec.
 DISCOVERY_TIMEOUT_SECONDS = 5.0
 
+#: ``HivemindMode.AUTO`` waits briefly for an initial sync discovery
+#: so the startup banner has something to print. If no sink lands in
+#: this window the browser keeps running async; async discoveries are
+#: logged when they fire so users tailing voxterm.log see them.
+AUTO_INITIAL_DISCOVERY_WAIT_SECONDS = 2.0
+
+#: Heartbeat cadence: log an INFO summary every Nth successful batch
+#: so a user tailing voxterm.log sees ongoing health without being
+#: drowned in per-batch lines. Per-batch detail moves to DEBUG.
+HEARTBEAT_EVERY_N_BATCHES = 5
+
 
 class HivemindMode(str, Enum):
     """``--hivemind=auto|on|off``.
@@ -423,6 +434,9 @@ class HivemindClient:
         mode: HivemindMode = HivemindMode.AUTO,
         flush_seconds: float = FLUSH_SECONDS_DEFAULT,
         flush_segments: int = FLUSH_SEGMENTS_DEFAULT,
+        push_enabled: bool = False,
+        pinned_sink_pubkey: str = "",
+        on_state_change: Callable[[bool, str], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         poster: Callable[[Sink, dict], dict] | None = None,
@@ -435,6 +449,16 @@ class HivemindClient:
         self._mode = mode
         self._flush_seconds = flush_seconds
         self._flush_segments = flush_segments
+        # Push gate: even when a sink is discovered, batches only POST
+        # if the user has enabled push (via `h` menu) or mode=on
+        # overrides. Pinning by pubkey means a different sink showing
+        # up on the LAN won't get our transcripts by accident.
+        self._push_enabled = push_enabled
+        self._pinned_sink_pubkey = pinned_sink_pubkey
+        # Called whenever (push_enabled, pinned_pubkey) changes so the
+        # TUI can persist the choice to ConfigStore without this
+        # module depending on the store.
+        self._on_state_change = on_state_change
         self._clock = clock
         self._wall_clock = wall_clock
         self._poster = poster or (lambda s, b: post_batch(s, b))
@@ -449,6 +473,12 @@ class HivemindClient:
         self._batches_sent = 0
         self._batches_dropped = 0
         self._last_error: BaseException | None = None
+        # Logging breadcrumbs (so per-batch lines stay at DEBUG and we
+        # only emit INFO at meaningful transitions or every Nth batch).
+        self._first_batch_logged = False
+        self._no_sink_warning_logged = False
+        self._push_disabled_drop_logged = False
+        self._wrong_pubkey_drop_logged = False
 
     # ── public API ─────────────────────────────────────────────────
 
@@ -472,6 +502,66 @@ class HivemindClient:
     def pending_segments(self) -> int:
         with self._lock:
             return len(self._segments)
+
+    @property
+    def push_enabled(self) -> bool:
+        """Whether the user has opted in to actually POST batches.
+
+        Discovery is independent: the mDNS browser runs regardless of
+        this flag, so the UI can show "sink available; press ENTER to
+        enable" without anything being sent yet.
+        """
+        return self._push_enabled
+
+    @property
+    def pinned_sink_pubkey(self) -> str:
+        return self._pinned_sink_pubkey
+
+    def enable_push(self, sink_pubkey: str = "") -> None:
+        """User said yes to a sink. Pin to its pubkey and start POSTing.
+
+        Idempotent. Fires the on_state_change callback so the TUI can
+        persist the choice to ConfigStore.
+        """
+        already = self._push_enabled and self._pinned_sink_pubkey == sink_pubkey
+        self._push_enabled = True
+        self._pinned_sink_pubkey = sink_pubkey
+        # Reset drop-rate-limiters so the next flush logs cleanly.
+        self._push_disabled_drop_logged = False
+        self._wrong_pubkey_drop_logged = False
+        if not already:
+            log.info(
+                "hivemind: push enabled by user (pinned pubkey=%s)",
+                (sink_pubkey[:12] + "...") if sink_pubkey else "(any)",
+            )
+            if self._on_state_change is not None:
+                try:
+                    self._on_state_change(True, sink_pubkey)
+                except Exception:
+                    log.warning("hivemind on_state_change raised", exc_info=True)
+
+    def disable_push(self) -> None:
+        """User backed out. Stop POSTing; keep discovery + buffer."""
+        if not self._push_enabled:
+            return
+        self._push_enabled = False
+        # Keep _pinned_sink_pubkey so re-enabling without a fresh
+        # selection still targets the same sink. The TUI can clear it
+        # explicitly if it wants "forget the choice entirely".
+        log.info("hivemind: push disabled by user")
+        if self._on_state_change is not None:
+            try:
+                self._on_state_change(False, self._pinned_sink_pubkey)
+            except Exception:
+                log.warning("hivemind on_state_change raised", exc_info=True)
+
+    def discovered_sinks(self) -> list[Sink]:
+        """All currently-known sinks (the `h` menu calls this)."""
+        if self._explicit_sink is not None:
+            return [self._explicit_sink]
+        if self._browser is not None:
+            return self._browser.sinks()
+        return []
 
     def active_sink(self) -> Sink | None:
         if self._explicit_sink is not None:
@@ -525,27 +615,98 @@ class HivemindClient:
             self._batch_started_mono = None
             self._batch_index += 1
 
-        sink = self.active_sink()
-        if sink is None:
-            log.info(
-                "hivemind: no sink known; dropping batch (%d segs)",
-                len(payload["segments"]),
-            )
+        # Push gate. User hasn't opted in via the `h` menu yet (or has
+        # explicitly disabled) → drop the batch silently. Local file
+        # logging continues; the buffer just doesn't get POSTed.
+        if not self._push_enabled:
+            if not self._push_disabled_drop_logged:
+                log.info(
+                    "hivemind: push not enabled; %d segs buffered but not POSTed "
+                    "(press 'h' in the TUI to enable)",
+                    len(payload["segments"]),
+                )
+                self._push_disabled_drop_logged = True
+            else:
+                log.debug(
+                    "hivemind: push disabled; dropping batch (%d segs)",
+                    len(payload["segments"]),
+                )
             self._batches_dropped += 1
             return False
+        self._push_disabled_drop_logged = False
+
+        sink = self.active_sink()
+        # Pubkey pinning: if the user enabled push against a specific
+        # sink (e.g. their convent box), don't accidentally start
+        # POSTing to a different sink that happened to appear on the
+        # LAN. An empty pinned_pubkey means "any discovered sink is
+        # fine" — that's the just-after-enable transient before we
+        # save the pubkey, or the explicit-sink-url path.
+        if sink is not None and self._pinned_sink_pubkey:
+            if sink.pubkey != self._pinned_sink_pubkey:
+                if not self._wrong_pubkey_drop_logged:
+                    log.warning(
+                        "hivemind: discovered sink %s has pubkey %s but pinned "
+                        "is %s; dropping batch",
+                        sink.transcripts_url,
+                        sink.pubkey[:12] + "..." if sink.pubkey else "(none)",
+                        self._pinned_sink_pubkey[:12] + "...",
+                    )
+                    self._wrong_pubkey_drop_logged = True
+                self._batches_dropped += 1
+                return False
+            self._wrong_pubkey_drop_logged = False
+
+        if sink is None:
+            # Rate-limit the "no sink" log: WARNING once on entering the
+            # no-sink state, DEBUG thereafter until a sink is found.
+            # Without this we'd spam one WARNING per flush while no sink
+            # is discovered (every 60s in the no-content path).
+            if not self._no_sink_warning_logged:
+                log.warning(
+                    "hivemind: no sink discovered yet; dropping batch (%d segs). "
+                    "mDNS browser still running in the background.",
+                    len(payload["segments"]),
+                )
+                self._no_sink_warning_logged = True
+            else:
+                log.debug(
+                    "hivemind: still no sink; dropping batch (%d segs)",
+                    len(payload["segments"]),
+                )
+            self._batches_dropped += 1
+            return False
+
+        # We had a sink; reset the no-sink breadcrumb so a future
+        # discovery-loss re-triggers a single WARNING.
+        self._no_sink_warning_logged = False
 
         try:
             self._poster(sink, payload)
             self._batches_sent += 1
-            log.info(
-                "hivemind: posted batch %d (%d segs) → %s",
+            # Per-batch detail is DEBUG; INFO is reserved for state
+            # transitions (first batch, every Nth heartbeat) so a user
+            # tailing voxterm.log doesn't drown.
+            log.debug(
+                "hivemind: posted batch %d (%d segs) -> %s",
                 payload["batch_index"], len(payload["segments"]), sink.transcripts_url,
             )
+            if not self._first_batch_logged:
+                log.info(
+                    "hivemind: first batch posted to %s (sent=%d dropped=%d)",
+                    sink.transcripts_url, self._batches_sent, self._batches_dropped,
+                )
+                self._first_batch_logged = True
+            elif self._batches_sent % HEARTBEAT_EVERY_N_BATCHES == 0:
+                log.info(
+                    "hivemind: still posting OK -> %s (sent=%d dropped=%d)",
+                    sink.transcripts_url, self._batches_sent, self._batches_dropped,
+                )
             return True
         except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
             self._last_error = exc
             self._batches_dropped += 1
-            log.warning("hivemind: POST failed (%s) — dropped batch", exc)
+            log.warning("hivemind: POST failed (%s); dropped batch", exc)
             return False
 
     def close(self) -> bool:
@@ -612,6 +773,9 @@ def configure(
     record_id: str | None = None,
     device_id_path: Path | None = None,
     discovery_timeout: float = DISCOVERY_TIMEOUT_SECONDS,
+    push_enabled: bool = False,
+    pinned_sink_pubkey: str = "",
+    on_state_change: Callable[[bool, str], None] | None = None,
 ) -> HivemindClient | None:
     """Build a configured ``HivemindClient`` for this voxterm session.
 
@@ -619,7 +783,15 @@ def configure(
     and no sink can be located (neither ``sink_url`` nor mDNS within
     ``discovery_timeout``), raises ``RuntimeError``.
 
-    The browser, if started, is owned by the returned client — call
+    Push gating (mode=auto default behavior): discovery runs but
+    transcripts are buffered, not POSTed, until ``push_enabled=True``
+    (the user opted in via the `h` menu and the TUI saved the choice
+    to ConfigStore). ``mode=on`` overrides and always pushes — that's
+    the scripted/headless path. ``pinned_sink_pubkey`` (when non-empty)
+    constrains POSTs to a specific sink identity so a different sink
+    showing up on the LAN doesn't get our transcripts by accident.
+
+    The browser, if started, is owned by the returned client. Call
     ``client.close()`` to flush the last batch; the browser keeps
     running for the rest of the process lifetime (mDNS is cheap, and
     closing it from the dictation loop teardown is fiddly).
@@ -628,7 +800,7 @@ def configure(
         mode = HivemindMode.parse(mode)
 
     if mode == HivemindMode.OFF:
-        log.info("hivemind: mode=off — never posting")
+        log.info("hivemind: mode=off; never posting")
         return None
 
     device_id = get_or_create_device_id(device_id_path)
@@ -640,8 +812,27 @@ def configure(
         sink = Sink.from_url(sink_url)
         log.info("hivemind: using explicit sink %s", sink.transcripts_url)
     else:
-        browser = HivemindBrowser()
+        # Async discovery: when a sink shows up later (after configure
+        # returns), log INFO once so a user tailing voxterm.log sees
+        # the transition without us having to poll.
+        _discovery_logged = {"done": False}
+
+        def _on_change(sinks: list[Sink]) -> None:
+            if _discovery_logged["done"] or not sinks:
+                return
+            _discovery_logged["done"] = True
+            log.info(
+                "hivemind: sink discovered via mDNS -> %s",
+                sinks[-1].transcripts_url,
+            )
+
+        log.info(
+            "hivemind: searching for sink on %s (mDNS, mode=%s)",
+            HIVEMIND_SERVICE_TYPE, mode.value,
+        )
+        browser = HivemindBrowser(on_change=_on_change)
         browser.start()
+
         if mode == HivemindMode.ON:
             sink = browser.wait_for_sink(discovery_timeout)
             if sink is None:
@@ -650,7 +841,41 @@ def configure(
                     f"hivemind: mode=on but no sink discovered "
                     f"in {discovery_timeout:.1f}s on {HIVEMIND_SERVICE_TYPE}"
                 )
-            log.info("hivemind: discovered sink %s", sink.transcripts_url)
+            if not _discovery_logged["done"]:
+                log.info("hivemind: discovered sink %s", sink.transcripts_url)
+                _discovery_logged["done"] = True
+        else:
+            # AUTO: brief synchronous wait so the startup banner has
+            # something to print. If the sink lands later, the on_change
+            # callback logs it; we don't block voxterm boot.
+            sink = browser.wait_for_sink(AUTO_INITIAL_DISCOVERY_WAIT_SECONDS)
+            if sink is not None:
+                if not _discovery_logged["done"]:
+                    log.info("hivemind: discovered sink %s", sink.transcripts_url)
+                    _discovery_logged["done"] = True
+            else:
+                log.info(
+                    "hivemind: no sink yet; mDNS browser keeps searching "
+                    "in the background (will log when a sink appears)"
+                )
+
+    # mode=on is the legacy "force push" behavior; mode=auto respects
+    # the user's persisted opt-in. Either way, an explicit sink_url
+    # implicitly opts in (you typed the URL on the command line, so
+    # you clearly want it pushed).
+    effective_push_enabled = (
+        push_enabled
+        or mode == HivemindMode.ON
+        or sink_url is not None
+    )
+    if effective_push_enabled and not push_enabled:
+        # Log once at startup when we're auto-enabling push for a
+        # reason other than the persisted opt-in.
+        log.info(
+            "hivemind: push enabled at launch (mode=%s%s)",
+            mode.value,
+            ", explicit sink_url" if sink_url else "",
+        )
 
     return HivemindClient(
         device_id=device_id,
@@ -659,4 +884,7 @@ def configure(
         sink=sink,
         browser=browser,
         mode=mode,
+        push_enabled=effective_push_enabled,
+        pinned_sink_pubkey=pinned_sink_pubkey,
+        on_state_change=on_state_change,
     )

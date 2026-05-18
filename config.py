@@ -1,6 +1,6 @@
 # VOXTERM Configuration
 
-VERSION = "0.1.0"
+VERSION = "0.2.1"
 
 import sys
 
@@ -13,7 +13,7 @@ DTYPE = "float32"
 # Transcription — platform-aware model registry
 if sys.platform == "darwin":
     # macOS: Qwen3-ASR (primary, MLX) + mlx-whisper (fallback)
-    DEFAULT_MODEL = "qwen3-1.7b"
+    DEFAULT_MODEL = "qwen3-0.6b"
     AVAILABLE_MODELS = {
         "qwen3-0.6b":  "Qwen/Qwen3-ASR-0.6B",
         "qwen3-1.7b":  "Qwen/Qwen3-ASR-1.7B",
@@ -257,6 +257,16 @@ _DEFAULTS: dict[str, Any] = {
     "hivemind_mode": "auto",
     "hivemind_sink_url": "",
     "hivemind_location": "",
+    # User opt-in to actually push transcripts to a discovered sink.
+    # Default False: voxterm always discovers but never pushes until
+    # the user enables it from the `h` hivemind menu. Once enabled,
+    # this flips to True and persists so subsequent launches push
+    # silently. `--hivemind on` overrides this (force push regardless).
+    "hivemind_push_enabled": False,
+    # When push is enabled, we pin the choice to a specific sink
+    # pubkey so a different sink showing up on the LAN doesn't get
+    # transcripts by accident. Empty string = "any discovered sink".
+    "hivemind_pinned_sink_pubkey": "",
 }
 
 # Expected types per key (for validation)
@@ -273,6 +283,8 @@ _TYPES: dict[str, type] = {
     "hivemind_mode": str,
     "hivemind_sink_url": str,
     "hivemind_location": str,
+    "hivemind_push_enabled": bool,
+    "hivemind_pinned_sink_pubkey": str,
 }
 
 
