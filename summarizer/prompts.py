@@ -62,9 +62,29 @@ TEMPLATES: tuple[Template, ...] = (
         description="Bulleted highlights and notable quotes",
         system=_SYSTEM,
         user=(
-            "List the key points from this transcript as a markdown bullet "
-            "list. Include 1-2 notable verbatim quotes (with speaker "
-            "attribution) under a `## Quotes` heading at the end.\n\n"
+            "Summarize this transcript as a SHORT markdown bullet list of "
+            "the key points — the main ideas, decisions, and takeaways.\n\n"
+            "Rules:\n"
+            "- Synthesize and condense. Each bullet must abstract over "
+            "multiple lines of the transcript; combine related statements "
+            "into a single point.\n"
+            "- Do NOT reproduce the transcript line by line. Do NOT include "
+            "timestamps. Do NOT prefix bullets with speaker labels like "
+            "'Speaker 1:'.\n"
+            "- Aim for 5-10 bullets total regardless of transcript length. "
+            "Fewer, denser bullets are better than many redundant ones.\n"
+            "- Write each bullet as a complete, self-contained statement of "
+            "an idea, not a quoted utterance.\n\n"
+            "Example of the desired style (note: synthesized, no timestamps, "
+            "no speaker prefixes):\n"
+            "- The services can't reach each other because they're bound to "
+            "a loopback (127.0.0.1) address instead of an external IP.\n"
+            "- The VPS network configuration is unknown and needs "
+            "investigation; this is non-blocking for the rest of the work.\n"
+            "- Gas costs for the run still need to be tallied to estimate "
+            "total spend.\n\n"
+            "After the bullets, add a `## Quotes` heading with 1-2 short, "
+            "notable verbatim quotes (with speaker attribution).\n\n"
             "---\n{transcript}"
         ),
     ),
