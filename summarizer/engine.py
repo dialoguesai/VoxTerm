@@ -1,7 +1,13 @@
 """Pluggable local-LLM summarizer.
 
-Backends:
-  - ``mlx``  : on-device MLX chat model via ``mlx-lm`` (default on macOS)
+Backends (selected by the ``summarization_model`` string):
+  - ``mlx``    : on-device MLX chat model via ``mlx-lm`` (macOS default).
+                 Used when the model name has no recognized backend prefix.
+  - ``ollama`` : a local/remote Ollama server. Selected with an
+                 ``ollama:`` prefix, e.g. ``ollama:qwen3:0.6b`` or
+                 ``ollama:llama3.2@http://192.168.1.5:11434``. Works on any
+                 platform (it's just HTTP), so it's also the escape hatch
+                 for Linux/Windows where MLX is unavailable.
 
 The factory ``get_summarizer()`` reads ConfigStore for the active model.
 Backends are loaded lazily — importing this module does not load any LLM.
@@ -9,8 +15,12 @@ Backends are loaded lazily — importing this module does not load any LLM.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import threading
+import urllib.error
+import urllib.request
 from typing import Protocol
 
 from .prompts import Template
@@ -125,6 +135,101 @@ class MLXSummarizer:
 
 
 # ---------------------------------------------------------------------------
+# Ollama backend
+# ---------------------------------------------------------------------------
+
+class OllamaSummarizer:
+    """Summarizer backed by an Ollama server (``/api/chat``).
+
+    No SDK dependency — talks to Ollama over its HTTP API with stdlib
+    ``urllib``. The model is whatever you've ``ollama pull``-ed; the host
+    defaults to ``$OLLAMA_HOST`` or ``http://localhost:11434``.
+
+    Model-string forms accepted (the ``ollama:`` prefix is stripped by the
+    factory before construction):
+      - ``qwen3:0.6b``                      → default host
+      - ``llama3.2@http://host:11434``      → explicit host after ``@``
+    """
+
+    DEFAULT_HOST = "http://localhost:11434"
+    DEFAULT_MAX_INPUT_CHARS = MLXSummarizer.DEFAULT_MAX_INPUT_CHARS
+
+    def __init__(
+        self,
+        model_name: str,
+        max_tokens: int = 800,
+        max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
+        timeout: float = 300.0,
+    ):
+        model, _, host = model_name.partition("@")
+        self._model = model.strip()
+        self._host = (
+            host.strip()
+            or os.environ.get("OLLAMA_HOST")
+            or self.DEFAULT_HOST
+        ).rstrip("/")
+        if "://" not in self._host:  # bare host:port from $OLLAMA_HOST
+            self._host = "http://" + self._host
+        self._max_tokens = max_tokens
+        self._max_input_chars = max_input_chars
+        self._timeout = timeout
+        if not self._model:
+            raise SummarizerError("Ollama model name is empty")
+
+    @property
+    def model_name(self) -> str:
+        return f"ollama:{self._model}@{self._host}"
+
+    def _post(self, path: str, payload: dict) -> dict:
+        url = f"{self._host}{path}"
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")[:300]
+            raise SummarizerError(
+                f"Ollama HTTP {e.code} from {url}: {body}"
+            ) from e
+        except urllib.error.URLError as e:
+            raise SummarizerError(
+                f"Cannot reach Ollama at {self._host} ({e.reason}). "
+                f"Is it running? Try: ollama serve"
+            ) from e
+        except (TimeoutError, json.JSONDecodeError) as e:
+            raise SummarizerError(f"Ollama request failed: {e}") from e
+
+    def summarize(
+        self, transcript: str, template: Template, custom_prompt: str = ""
+    ) -> str:
+        transcript = _truncate_for_context(transcript, self._max_input_chars)
+        user_msg = template.user.format(
+            transcript=transcript, custom=custom_prompt or ""
+        )
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": template.system},
+                {"role": "user", "content": user_msg},
+            ],
+            "stream": False,
+            "think": False,
+            "options": {"num_predict": self._max_tokens},
+        }
+        result = self._post("/api/chat", payload)
+        text = (result.get("message") or {}).get("content", "")
+        if not text.strip():
+            raise SummarizerError(
+                f"Ollama returned an empty summary (model '{self._model}'). "
+                f"Is the model pulled? Try: ollama pull {self._model}"
+            )
+        return text.strip()
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -132,26 +237,40 @@ _cache_lock = threading.Lock()
 _cache: dict[str, Summarizer] = {}
 
 
+OLLAMA_PREFIX = "ollama:"
+
+
 def get_summarizer(model_name: str = "") -> Summarizer:
-    """Return a (cached) Summarizer for the current platform.
+    """Return a (cached) Summarizer for the requested model.
 
-    Instances are cached by model name so the loaded weights survive across
-    repeated invocations — pressing the summarize key again reuses the
-    already-loaded model instead of reloading from scratch.
+    Instances are cached by model name so loaded weights / connections
+    survive across repeated invocations — pressing the summarize key again
+    reuses the already-loaded backend instead of rebuilding from scratch.
 
-    Currently only MLX is supported (macOS). Future: HTTP backend for
-    ollama / llama.cpp servers, controlled by a backend prefix in
-    ``model_name`` (e.g. ``http://localhost:11434/...``).
+    Backend dispatch is by prefix on ``model_name``:
+      - ``ollama:<model>[@host]`` → Ollama HTTP backend (any platform).
+      - anything else             → MLX backend (macOS only).
+
+    An empty string selects the MLX default model on macOS.
     """
-    if sys.platform != "darwin":
-        raise SummarizerError(
-            "Summarization is currently only supported on macOS (MLX). "
-            "Linux/Windows backends are not yet implemented."
-        )
     key = model_name or MLXSummarizer.DEFAULT_MODEL
     with _cache_lock:
         cached = _cache.get(key)
-        if cached is None:
-            cached = MLXSummarizer(model_name=model_name)
-            _cache[key] = cached
-        return cached
+        if cached is not None:
+            return cached
+
+        if model_name.startswith(OLLAMA_PREFIX):
+            backend: Summarizer = OllamaSummarizer(
+                model_name=model_name[len(OLLAMA_PREFIX):]
+            )
+        elif sys.platform != "darwin":
+            raise SummarizerError(
+                "MLX summarization is only supported on macOS. On "
+                "Linux/Windows, run a local Ollama server and set the "
+                "summarization model to e.g. 'ollama:qwen3:0.6b'."
+            )
+        else:
+            backend = MLXSummarizer(model_name=model_name)
+
+        _cache[key] = backend
+        return backend
