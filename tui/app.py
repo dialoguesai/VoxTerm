@@ -64,7 +64,7 @@ from tui.widgets.waveform import WaveformWidget, _make_style
 from tui.widgets.transcript import TranscriptPanel, Log
 from tui.widgets.tag_screen import SpeakerTagScreen
 from tui.widgets.profile_screen import SpeakerProfileScreen
-from tui.widgets.summary_screen import SummaryScreen
+from tui.widgets.summary_screen import SummaryScreen, SummaryResultScreen
 from summarizer import SummarizerError, get_summarizer, resolve_template
 from tui.widgets.transcript_explorer import TranscriptExplorerScreen
 from tui.widgets.recording_pulse import RecordingPulse
@@ -2095,6 +2095,15 @@ class VoxTerm(App):
         self._start_new_session()
         transcript.system_message(
             f"exported {entry_count} entries + summary → {filepath}", Log.REC
+        )
+        # Surface the summary immediately so it's reachable (copy/open)
+        # without digging through the transcripts folder.
+        self.push_screen(
+            SummaryResultScreen(
+                summary=summary,
+                path=str(filepath),
+                template_label=template_label,
+            )
         )
 
     def _export_to_clipboard(self):
