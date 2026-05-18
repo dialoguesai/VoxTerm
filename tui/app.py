@@ -1968,17 +1968,24 @@ class VoxTerm(App):
         cfg = _get_config()
         default_template = cfg.get("summarization_template") or "tldr"
         default_custom = cfg.get("summarization_custom_prompt") or ""
+        default_model = cfg.get("summarization_model") or ""
 
         def on_template_selected(result):
             if not result:
                 return
             template_id = result["template_id"]
             custom_prompt = result["custom_prompt"]
-            # Persist the chosen template. Only overwrite the saved custom
-            # prompt when the custom template was actually used — otherwise
-            # picking TL;DR/Meeting Notes/etc. would wipe a previously
-            # saved custom prompt.
-            updates = {"summarization_template": template_id}
+            summary_model = result.get("summary_model", "")
+            # Persist the chosen template + model. Only overwrite the saved
+            # custom prompt when the custom template was actually used —
+            # otherwise picking TL;DR/Meeting Notes/etc. would wipe a
+            # previously saved custom prompt. The model is always persisted
+            # (blank is a valid, intentional choice = on-device MLX), so the
+            # picker doubles as the place to set it — no JSON editing.
+            updates = {
+                "summarization_template": template_id,
+                "summarization_model": summary_model,
+            }
             if template_id == "custom":
                 updates["summarization_custom_prompt"] = custom_prompt
             cfg.update(updates)
@@ -1996,13 +2003,14 @@ class VoxTerm(App):
                 "summarizing transcript (local LLM)…", Log.REC
             )
             self._run_summarize_and_export(
-                template_id, custom_prompt, body, entry_count
+                template_id, custom_prompt, body, entry_count, summary_model
             )
 
         self.push_screen(
             SummaryScreen(
                 default_template_id=default_template,
                 default_custom_prompt=default_custom,
+                default_summary_model=default_model,
             ),
             on_template_selected,
         )
@@ -2014,18 +2022,20 @@ class VoxTerm(App):
         custom_prompt: str,
         body: str,
         entry_count: int,
+        summary_model: str,
     ):
         """Worker: load LLM if needed, run summary, write final markdown.
 
-        `body`/`entry_count` are the snapshot taken on the main thread before
-        this worker started, so the exported file matches exactly what was
-        summarized even if recording continues meanwhile.
+        `body`/`entry_count`/`summary_model` are the snapshot taken on the
+        main thread before this worker started, so the exported file matches
+        exactly what was summarized — and the model is the one the user just
+        picked, not whatever the config happens to hold now (the running app
+        rewrites the config file, so re-reading it here would race).
         """
         transcript = self.query_one(TranscriptPanel)
         try:
             template = resolve_template(template_id)
-            model_name = _get_config().get("summarization_model") or ""
-            summarizer = get_summarizer(model_name=model_name)
+            summarizer = get_summarizer(model_name=summary_model)
             # MLX binds arrays to per-thread streams and Metal command
             # buffers are not safe under concurrent submission. Route the
             # model load + generation through the same single-thread
@@ -2394,6 +2404,7 @@ def main():
     _saved_lang = _cfg.get("last_language")
     _default_model = _saved_model if _saved_model in AVAILABLE_MODELS else DEFAULT_MODEL
     _default_lang = _saved_lang if _saved_lang in AVAILABLE_LANGUAGES else DEFAULT_LANGUAGE
+    _saved_summary_model = _cfg.get("summarization_model") or ""
 
     parser = argparse.ArgumentParser(description="VOXTERM — Local Voice Transcription TUI")
     parser.add_argument(
@@ -2406,6 +2417,18 @@ def main():
         choices=list(AVAILABLE_LANGUAGES.keys()),
         default=_default_lang,
         help=f"Transcription language (default: {_default_lang})",
+    )
+    parser.add_argument(
+        "--summary-model",
+        type=str,
+        default=None,
+        metavar="MODEL",
+        help=(
+            "Model for transcript summaries (U key). Blank = on-device "
+            "MLX; or 'ollama:<model>[@host]' e.g. ollama:qwen3.5:35b. "
+            "Persisted, so you only need to set it once "
+            f"(current: {_saved_summary_model or 'on-device MLX'})."
+        ),
     )
     parser.add_argument(
         "--list-models",
@@ -2457,6 +2480,12 @@ def main():
         help="Optional location tag attached to every transcript batch.",
     )
     args = parser.parse_args()
+
+    # --summary-model is sticky: persist it once so the user never has to
+    # hand-edit the (triple-hidden) state JSON. None = flag not passed
+    # (leave the saved value alone); "" = explicitly reset to on-device MLX.
+    if args.summary_model is not None:
+        _cfg.set("summarization_model", args.summary_model.strip())
 
     # Validate model choice
     if args.model not in AVAILABLE_MODELS:

@@ -42,8 +42,10 @@ class SummaryScreen(ModalScreen):
     """Pick a summarization template and (optionally) supply a custom prompt.
 
     Dismisses with a dict or None:
-        {"template_id": str, "custom_prompt": str}  — proceed
-        None                                          — cancelled
+        {"template_id": str, "custom_prompt": str, "summary_model": str}
+            — proceed ("summary_model": blank = on-device MLX, or
+              an "ollama:<model>[@host]" string)
+        None — cancelled
     """
 
     DEFAULT_CSS = """
@@ -87,6 +89,20 @@ class SummaryScreen(ModalScreen):
     #summary-custom:focus {
         border: tall #00e5ff;
     }
+    #summary-model-label {
+        height: 1;
+        color: #607080;
+        margin-top: 1;
+    }
+    #summary-model {
+        width: 100%;
+        background: #111822;
+        color: #00ffcc;
+        border: tall #003344;
+    }
+    #summary-model:focus {
+        border: tall #00e5ff;
+    }
     #summary-hint {
         height: 1;
         color: #607080;
@@ -102,10 +118,12 @@ class SummaryScreen(ModalScreen):
         self,
         default_template_id: str = "tldr",
         default_custom_prompt: str = "",
+        default_summary_model: str = "",
     ):
         super().__init__()
         self._default_id = default_template_id
         self._default_custom = default_custom_prompt
+        self._default_model = default_summary_model
         self._selected_id: str = default_template_id
 
     def compose(self) -> ComposeResult:
@@ -129,6 +147,20 @@ class SummaryScreen(ModalScreen):
                     id="summary-custom",
                     value=self._default_custom,
                 )
+
+            yield Static(
+                "[#607080]summary model[/] "
+                "[#405060](blank = on-device MLX, or "
+                "ollama:model or ollama:model@host)[/]",
+                id="summary-model-label",
+                markup=True,
+            )
+            yield Input(
+                placeholder="blank = on-device MLX  ·  e.g. "
+                "ollama:qwen3.5:35b",
+                id="summary-model",
+                value=self._default_model,
+            )
 
             yield Static(
                 " [#607080]ENTER[/] summarize  [#607080]ESC[/] cancel",
@@ -170,7 +202,14 @@ class SummaryScreen(ModalScreen):
             custom = self.query_one("#summary-custom", Input).value.strip()
             if not custom:
                 return  # require a prompt for custom
-        self.dismiss({"template_id": self._selected_id, "custom_prompt": custom})
+        model = self.query_one("#summary-model", Input).value.strip()
+        self.dismiss(
+            {
+                "template_id": self._selected_id,
+                "custom_prompt": custom,
+                "summary_model": model,
+            }
+        )
 
     def action_cancel(self) -> None:
         self.dismiss(None)
