@@ -60,6 +60,16 @@ def test_invalid_env_falls_back_to_default(monkeypatch):
     assert len(_pad_to_shape_bucket(audio)) == 2 * _ASR_SR
 
 
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf", "-1"])
+def test_non_finite_or_negative_env_disables_without_crashing(monkeypatch, bad):
+    # float("nan"/"inf") parses without ValueError; round(nan*sr) / int(inf)
+    # would crash mid-transcription, so these must short-circuit to no-op.
+    monkeypatch.setenv("VOXTERM_ASR_PAD_SECONDS", bad)
+    audio = np.ones(int(1.4 * _ASR_SR), dtype=np.float32)
+    out = _pad_to_shape_bucket(audio)
+    assert out is audio
+
+
 def test_empty_audio_unchanged():
     audio = np.zeros(0, dtype=np.float32)
     out = _pad_to_shape_bucket(audio)
