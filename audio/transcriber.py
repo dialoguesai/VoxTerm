@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -41,6 +42,48 @@ def configure_mlx_memory() -> None:
     except Exception:
         # Older/newer MLX without set_cache_limit — non-fatal.
         pass
+
+
+_ASR_SR = 16000  # Qwen3-ASR fixed input rate
+
+
+def _pad_to_shape_bucket(audio: np.ndarray) -> np.ndarray:
+    """Snap an audio buffer's length up to a fixed grid by zero-padding.
+
+    Real-time capture triggers transcription on silence *or* at the buffer
+    cap, so the sample count differs on essentially every call (16k–48k).
+    MLX allocates GPU tensors sized to the input, so a unique length each
+    call means a unique allocation each call — the Metal allocator fragments
+    and RSS climbs monotonically (~10 MB/transcription observed) even though
+    the buffer cache is bounded and cleared. The ASR library documents the
+    same failure mode for long audio; we reintroduce it *across* calls via
+    variable chunk lengths.
+
+    Rounding the length up to a coarse grid collapses thousands of distinct
+    shapes down to a handful (e.g. {1s, 2s, 3s}), so MLX reuses the same
+    buffer slabs every call and RSS stays flat. Trailing silence is safe:
+    Qwen3-ASR tolerates it, and the caller's RMS energy gate runs on the
+    original (unpadded) audio before this is called. Tunable via
+    VOXTERM_ASR_PAD_SECONDS (0 disables).
+    """
+    try:
+        grid_sec = float(os.environ.get("VOXTERM_ASR_PAD_SECONDS", "1.0"))
+    except ValueError:
+        grid_sec = 1.0
+    # Reject non-positive and non-finite (nan/inf) tunables — otherwise
+    # round(grid_sec * _ASR_SR) below raises mid-transcription.
+    if not math.isfinite(grid_sec) or grid_sec <= 0:
+        return audio
+    n = len(audio)
+    if n == 0:
+        return audio
+    grid = max(1, int(round(grid_sec * _ASR_SR)))
+    target = ((n + grid - 1) // grid) * grid
+    if target <= n:
+        return audio
+    return np.concatenate(
+        [audio, np.zeros(target - n, dtype=audio.dtype)]
+    )
 
 
 class _DeduplicatorMixin:
@@ -165,6 +208,10 @@ class Qwen3Transcriber(_DeduplicatorMixin):
 
         if self._use_mlx:
             from mlx_qwen3_asr import transcribe
+            # Pad to a fixed shape bucket so MLX reuses GPU buffers across
+            # calls instead of fragmenting the Metal heap (RMS gate above
+            # already ran on the unpadded audio).
+            audio = _pad_to_shape_bucket(audio)
             result = transcribe(
                 audio,
                 model=self._model if self._model else self.model_id,
