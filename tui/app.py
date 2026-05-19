@@ -347,6 +347,64 @@ class QuitConfirmScreen(ModalScreen):
         self.dismiss(False)
 
 
+class ClearConfirmScreen(ModalScreen):
+    """Confirmation dialog before clearing the on-screen transcript."""
+
+    DEFAULT_CSS = """
+    ClearConfirmScreen {
+        align: center middle;
+    }
+    #clear-dialog {
+        width: 52;
+        height: 12;
+        border: heavy #ff6600;
+        border-title-color: #ffaa00;
+        border-title-style: bold;
+        background: #0a0e14;
+        padding: 1 2;
+    }
+    #clear-list {
+        height: 4;
+        background: #0a0e14;
+        color: #c0c0c0;
+    }
+    #clear-list > .option-list--option-highlighted {
+        background: #1a1a3a;
+        color: #00ffcc;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("c", "confirm_clear", "Clear"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="clear-dialog") as dialog:
+            dialog.border_title = "CLEAR?"
+            yield Static(
+                "[#ffaa00]Clear the on-screen transcript?[/]\n"
+                "The auto-saved file on disk is kept.",
+                markup=True,
+            )
+            yield Static("")
+            yield OptionList(
+                Option("  Clear transcript", id="clear"),
+                Option("  Cancel", id="cancel"),
+                id="clear-list",
+            )
+            yield Static("[dim]C to clear  ·  ESC to cancel[/]", markup=True)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id == "clear")
+
+    def action_confirm_clear(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class HelpScreen(ModalScreen):
     """Modal showing all keyboard shortcuts."""
 
@@ -2294,6 +2352,14 @@ class VoxTerm(App):
             )
 
     def action_clear_transcript(self):
+        """Confirm before clearing — guards against an accidental C press."""
+        self.push_screen(ClearConfirmScreen(), self._on_clear_confirm)
+
+    def _on_clear_confirm(self, confirmed: bool) -> None:
+        if confirmed:
+            self._do_clear_transcript()
+
+    def _do_clear_transcript(self):
         """Clear display only — live file stays on disk as the record."""
         self.query_one(TranscriptPanel).clear()
         self.audio_buffer.clear()
