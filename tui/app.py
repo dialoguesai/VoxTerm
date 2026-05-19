@@ -64,6 +64,8 @@ from tui.widgets.waveform import WaveformWidget, _make_style
 from tui.widgets.transcript import TranscriptPanel, Log
 from tui.widgets.tag_screen import SpeakerTagScreen
 from tui.widgets.profile_screen import SpeakerProfileScreen
+from tui.widgets.summary_screen import SummaryScreen, SummaryResultScreen
+from summarizer import SummarizerError, get_summarizer, resolve_template
 from tui.widgets.transcript_explorer import TranscriptExplorerScreen
 from tui.widgets.recording_pulse import RecordingPulse
 from audio.capture import AudioCapture
@@ -386,6 +388,7 @@ class HelpScreen(ModalScreen):
                 "[bold #00e5ff]T[/]       [#c0c0c0]Tag / name speakers[/]\n"
                 "[bold #00e5ff]E[/]       [#c0c0c0]Browse saved transcripts[/]\n"
                 "[bold #00e5ff]S[/]       [#c0c0c0]Save / copy transcript[/]\n"
+                "[bold #00e5ff]U[/]       [#c0c0c0]Save with summary (local LLM)[/]\n"
                 "[bold #00e5ff]M[/]       [#c0c0c0]Switch transcription model[/]\n"
                 "[bold #00e5ff]L[/]       [#c0c0c0]Switch language[/]\n"
                 "[bold #00e5ff]P[/]       [#c0c0c0]Party mode — join / leave[/]\n"
@@ -478,6 +481,7 @@ class VoxTerm(App):
         Binding("l", "switch_language", "Language"),
         Binding("ctrl+s", "export_transcript", "Save"),
         Binding("s", "export_transcript", "Export"),
+        Binding("u", "summarize_and_export", "Summarize"),
         Binding("d", "toggle_debug", "Debug"),
         Binding("c", "clear_transcript", "Clear"),
         Binding("e", "explore_transcripts", "History"),
@@ -1954,6 +1958,164 @@ class VoxTerm(App):
         self._start_new_session()
         transcript.system_message(f"exported {entry_count} entries → {filepath}", Log.REC)
 
+    def action_summarize_and_export(self):
+        """Open template picker, then save transcript with a local-LLM summary header."""
+        transcript = self.query_one(TranscriptPanel)
+        if not transcript.get_entries():
+            transcript.system_message("nothing to summarize", Log.REC)
+            return
+
+        cfg = _get_config()
+        default_template = cfg.get("summarization_template") or "tldr"
+        default_custom = cfg.get("summarization_custom_prompt") or ""
+        default_model = cfg.get("summarization_model") or ""
+
+        def on_template_selected(result):
+            if not result:
+                return
+            template_id = result["template_id"]
+            custom_prompt = result["custom_prompt"]
+            summary_model = result.get("summary_model", "")
+            # Persist the chosen template + model. Only overwrite the saved
+            # custom prompt when the custom template was actually used —
+            # otherwise picking TL;DR/Meeting Notes/etc. would wipe a
+            # previously saved custom prompt. The model is always persisted
+            # (blank is a valid, intentional choice = on-device MLX), so the
+            # picker doubles as the place to set it — no JSON editing.
+            updates = {
+                "summarization_template": template_id,
+                "summarization_model": summary_model,
+            }
+            if template_id == "custom":
+                updates["summarization_custom_prompt"] = custom_prompt
+            cfg.update(updates)
+            # Snapshot the transcript BEFORE logging the progress message,
+            # so the system message isn't fed to the LLM or written into
+            # the exported file, and so a later worker can't race ongoing
+            # transcription. The exact snapshot flows through to the write.
+            body = transcript.get_markdown(
+                self._model_name,
+                session_start=self._session_start,
+                language=self._language or "",
+            )
+            entry_count = len(transcript.get_entries())
+            transcript.system_message(
+                "summarizing transcript (local LLM)…", Log.REC
+            )
+            self._run_summarize_and_export(
+                template_id, custom_prompt, body, entry_count, summary_model
+            )
+
+        self.push_screen(
+            SummaryScreen(
+                default_template_id=default_template,
+                default_custom_prompt=default_custom,
+                default_summary_model=default_model,
+            ),
+            on_template_selected,
+        )
+
+    @work(thread=True, exclusive=True, group="summarization")
+    def _run_summarize_and_export(
+        self,
+        template_id: str,
+        custom_prompt: str,
+        body: str,
+        entry_count: int,
+        summary_model: str,
+    ):
+        """Worker: load LLM if needed, run summary, write final markdown.
+
+        `body`/`entry_count`/`summary_model` are the snapshot taken on the
+        main thread before this worker started, so the exported file matches
+        exactly what was summarized — and the model is the one the user just
+        picked, not whatever the config happens to hold now (the running app
+        rewrites the config file, so re-reading it here would race).
+        """
+        transcript = self.query_one(TranscriptPanel)
+        try:
+            template = resolve_template(template_id)
+            summarizer = get_summarizer(model_name=summary_model)
+            # MLX binds arrays to per-thread streams and Metal command
+            # buffers are not safe under concurrent submission. Route the
+            # model load + generation through the same single-thread
+            # executor and GPU lock that serialize transcription, so a
+            # summary can't overlap a transcribe/model-load on the GPU.
+            with self._transcribe_lock:
+                summary = self._mlx_executor.submit(
+                    summarizer.summarize, body, template, custom_prompt
+                ).result()
+        except SummarizerError as e:
+            self.call_from_thread(
+                lambda: transcript.system_message(
+                    f"summary failed: {e}", Log.REC
+                )
+            )
+            return
+        except Exception as e:
+            self.call_from_thread(
+                lambda: transcript.system_message(
+                    f"summary error: {e}", Log.REC
+                )
+            )
+            return
+
+        self.call_from_thread(
+            self._write_summary_export,
+            template.label,
+            summary,
+            body,
+            entry_count,
+        )
+
+    def _write_summary_export(
+        self,
+        template_label: str,
+        summary: str,
+        body: str,
+        entry_count: int,
+    ) -> None:
+        """Write the summarized snapshot + summary header to a .md file (main-thread)."""
+        transcript = self.query_one(TranscriptPanel)
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        filename = (
+            self._session_start.strftime("%Y-%m-%d_%H%M%S") + "-transcript.md"
+        )
+        filepath = SESSIONS_DIR / filename
+
+        # Splice the summary in just after the first `---` divider so the
+        # session header stays at the top.
+        marker = "\n---\n"
+        idx = body.find(marker)
+        summary_block = (
+            f"\n## Summary — {template_label}\n\n{summary.strip()}\n"
+        )
+        if idx == -1:
+            md = body + summary_block
+        else:
+            head = body[: idx + len(marker)]
+            tail = body[idx + len(marker):]
+            md = head + summary_block + "\n---\n" + tail
+
+        filepath.write_text(md, encoding="utf-8")
+
+        if self._live_file and self._live_file.exists():
+            self._live_file.unlink()
+
+        self._start_new_session()
+        transcript.system_message(
+            f"exported {entry_count} entries + summary → {filepath}", Log.REC
+        )
+        # Surface the summary immediately so it's reachable (copy/open)
+        # without digging through the transcripts folder.
+        self.push_screen(
+            SummaryResultScreen(
+                summary=summary,
+                path=str(filepath),
+                template_label=template_label,
+            )
+        )
+
     def _export_to_clipboard(self):
         """Copy transcript to clipboard."""
         transcript = self.query_one(TranscriptPanel)
@@ -2242,6 +2404,7 @@ def main():
     _saved_lang = _cfg.get("last_language")
     _default_model = _saved_model if _saved_model in AVAILABLE_MODELS else DEFAULT_MODEL
     _default_lang = _saved_lang if _saved_lang in AVAILABLE_LANGUAGES else DEFAULT_LANGUAGE
+    _saved_summary_model = _cfg.get("summarization_model") or ""
 
     parser = argparse.ArgumentParser(description="VOXTERM — Local Voice Transcription TUI")
     parser.add_argument(
@@ -2254,6 +2417,18 @@ def main():
         choices=list(AVAILABLE_LANGUAGES.keys()),
         default=_default_lang,
         help=f"Transcription language (default: {_default_lang})",
+    )
+    parser.add_argument(
+        "--summary-model",
+        type=str,
+        default=None,
+        metavar="MODEL",
+        help=(
+            "Model for transcript summaries (U key). Blank = on-device "
+            "MLX; or 'ollama:<model>[@host]' e.g. ollama:qwen3.5:35b. "
+            "Persisted, so you only need to set it once "
+            f"(current: {_saved_summary_model or 'on-device MLX'})."
+        ),
     )
     parser.add_argument(
         "--list-models",
@@ -2305,6 +2480,12 @@ def main():
         help="Optional location tag attached to every transcript batch.",
     )
     args = parser.parse_args()
+
+    # --summary-model is sticky: persist it once so the user never has to
+    # hand-edit the (triple-hidden) state JSON. None = flag not passed
+    # (leave the saved value alone); "" = explicitly reset to on-device MLX.
+    if args.summary_model is not None:
+        _cfg.set("summarization_model", args.summary_model.strip())
 
     # Validate model choice
     if args.model not in AVAILABLE_MODELS:
