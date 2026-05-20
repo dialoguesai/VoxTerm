@@ -1570,6 +1570,14 @@ class VoxTerm(App):
 
     @work(thread=True, group="diarizer_loading")
     def _load_diarizer(self):
+        # VOXTERM_DISABLE_DIARIZATION=1: transcription-only mode (no speaker labels).
+        if os.environ.get("VOXTERM_DISABLE_DIARIZATION", "") not in ("", "0"):
+            self.call_from_thread(
+                self.query_one(TranscriptPanel).system_message,
+                "speaker ID off (VOXTERM_DISABLE_DIARIZATION) — transcription only",
+            )
+            self.call_from_thread(self._on_diarizer_fallback)
+            return
         enc = ""
         if self.speaker_store.is_open and self.speaker_store.is_encrypted:
             enc = " (encrypted)"

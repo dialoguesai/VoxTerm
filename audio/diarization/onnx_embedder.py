@@ -52,6 +52,39 @@ DEFAULT_MODEL = "eres2net_large"
 CACHE_DIR = Path.home() / ".cache" / "3dspeaker"
 
 
+def _pad_fbank_to_bucket(feats: np.ndarray) -> np.ndarray:
+    """Snap an Fbank feature matrix's frame count up to a fixed grid.
+
+    Mirrors `_pad_to_shape_bucket` in `audio/transcriber.py` for the speaker-
+    embedding ONNX path. Buffers feeding `extract()` are 1–3s, so `num_frames`
+    varies on essentially every call and the onnxruntime CPU arena allocates
+    a new slab per unique shape. Bucketing collapses that to a handful of
+    shapes (default {100, 200, 300} = 1/2/3s of frames) so slabs are reused.
+
+    Padding replicates the last real frame instead of zero-padding: the model
+    pools across time, so zero rows would distort the pooled statistics
+    (post-CMN values are mean-zero, so trailing zero rows shift the pool's
+    centroid toward the origin). Replicating the last frame keeps padded rows
+    in-distribution; the resulting embedding stays close to the unpadded one.
+
+    Tunable via `VOXTERM_EMBED_PAD_FRAMES` (default 100 = ~1s; 0 disables).
+    """
+    try:
+        grid = int(os.environ.get("VOXTERM_EMBED_PAD_FRAMES", "100"))
+    except ValueError:
+        grid = 100
+    if grid <= 0:
+        return feats
+    n = feats.shape[0]
+    if n == 0:
+        return feats
+    target = ((n + grid - 1) // grid) * grid
+    if target <= n:
+        return feats
+    pad = np.repeat(feats[-1:], target - n, axis=0)
+    return np.concatenate([feats, pad], axis=0)
+
+
 class OnnxSpeakerEmbedder:
     """Extract speaker embeddings via ONNX Runtime.
 
@@ -145,6 +178,10 @@ class OnnxSpeakerEmbedder:
         if feats.shape[0] == 0:
             return None
 
+        # Bucket num_frames to a fixed grid so the onnxruntime arena reuses
+        # slabs instead of growing per unique input length (RSS leak fix).
+        feats = _pad_fbank_to_bucket(feats)
+
         # ONNX inference: input shape (1, num_frames, 80)
         feats_input = feats[np.newaxis, :, :].astype(np.float32)
 
@@ -198,6 +235,9 @@ class OnnxSpeakerEmbedder:
             fbank_weights[i] = frame_weights[seg_idx]
 
         feats = feats * fbank_weights[:, None]
+
+        # Bucket num_frames to a fixed grid (replicate-last; see extract()).
+        feats = _pad_fbank_to_bucket(feats)
 
         feats_input = feats[np.newaxis, :, :].astype(np.float32)
         outputs = self._session.run(None, {"feature": feats_input})
