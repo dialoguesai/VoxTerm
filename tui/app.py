@@ -2407,6 +2407,18 @@ class VoxTerm(App):
         except Exception:
             return ""
 
+    def _flowchart_backend_label(self, model_name: str) -> str:
+        """Human label for the active backend, honest about platform support."""
+        if model_name:
+            return model_name
+        # Empty model_name → summarizer falls back to MLX, which only works on
+        # Apple Silicon macOS. Reflect that in the label so users on other
+        # platforms aren't misled into thinking something is configured.
+        import platform as _pf
+        if sys.platform == "darwin" and _pf.machine() == "arm64":
+            return "MLX default"
+        return "no LLM configured (set summarization_model to ollama:<model>)"
+
     def action_toggle_flowchart(self):
         """Toggle the LLM-generated mermaid flowchart side panel."""
         try:
@@ -2417,9 +2429,10 @@ class VoxTerm(App):
         panel.set_visible(self._flowchart_enabled)
         tp = self.query_one(TranscriptPanel)
         if self._flowchart_enabled:
-            model = self._flowchart_model_name() or "MLX default"
-            panel.set_status(f"[#607080]idle · {model}[/]")
-            tp.system_message(f"flowchart mode ON ({model})", Log.SYS)
+            model_name = self._flowchart_model_name()
+            label = self._flowchart_backend_label(model_name)
+            panel.set_status(f"[#607080]idle · {label}[/]")
+            tp.system_message(f"flowchart mode ON ({label})", Log.SYS)
             self._flowchart_last_run = 0.0
             self._flowchart_last_signature = ""
         else:
@@ -2435,6 +2448,11 @@ class VoxTerm(App):
         return f"{len(entries)}:{last_content[-80:]}"
 
     def _maybe_refresh_flowchart(self):
+        # Refresh is gated by the signature check below (transcript content
+        # changed?) rather than `self._recording` — P2P parties deliver
+        # transcript turns while the local mic is paused, and we want the
+        # flowchart to update for those too. The min-interval timer prevents
+        # back-to-back LLM calls.
         if not self._flowchart_enabled or self._flowchart_inflight:
             return
         now = time.time()
@@ -2466,7 +2484,25 @@ class VoxTerm(App):
     @work(exclusive=True, thread=True, group="flowchart")
     def _run_flowchart_worker(self, transcript_text: str, model_name: str) -> None:
         try:
-            mermaid = generate_flowchart(transcript_text, model_name=model_name)
+            # MLX binds arrays to per-thread streams and Metal command buffers
+            # aren't safe under concurrent submission. Route MLX work through
+            # the single-thread MLX executor under _transcribe_lock — same
+            # pattern as _run_summarize_and_export — so a flowchart generation
+            # can't overlap a transcribe or model load on the GPU.
+            #
+            # Ollama is plain HTTP and shares nothing with MLX, so we skip the
+            # GPU lock for it (otherwise a slow Ollama call would block every
+            # transcription for its full duration, every 15 seconds).
+            is_ollama = model_name.startswith("ollama:")
+            if is_ollama:
+                mermaid = generate_flowchart(transcript_text, model_name=model_name)
+            else:
+                with self._transcribe_lock:
+                    mermaid = self._mlx_executor.submit(
+                        generate_flowchart,
+                        transcript_text,
+                        model_name=model_name,
+                    ).result()
             self.call_from_thread(self._apply_flowchart_result, mermaid, None)
         except FlowchartGenError as e:
             self.call_from_thread(self._apply_flowchart_result, None, str(e))

@@ -6,7 +6,7 @@ from textual.widgets import Static
 
 _PLACEHOLDER = (
     "[#607080]waiting for transcript…[/]\n"
-    "[#445566]flowchart will refresh every few seconds[/]"
+    "[#445566]flowchart refreshes roughly every 15 seconds[/]"
 )
 
 
