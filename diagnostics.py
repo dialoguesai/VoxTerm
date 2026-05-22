@@ -58,10 +58,18 @@ _saved_termios = None
 
 
 def setup_signal_handlers() -> None:
-    """Install a SIGSEGV handler that restores terminal settings before dying.
+    """Install signal handlers for crash recovery and graceful termination.
+
+    Handlers installed:
+      - SIGSEGV: restore terminal, log crash marker, exit 139.
+      - SIGHUP/SIGTERM: hard-exit so the process doesn't linger spinning
+        against a dead tty when the controlling terminal goes away
+        (e.g. pane closed). We skip the usual `_do_quit` teardown because
+        it's TUI-bound; `_kill_stale_helpers()` on next launch reclaims any
+        orphaned Swift sck-helper.
 
     Must be called after the terminal is configured but before app.run().
-    On Windows: no-op (no termios, SIGSEGV handler not reliable).
+    On Windows: no-op (no termios, SIGSEGV/SIGHUP handlers not reliable).
     """
     if sys.platform == "win32":
         return
@@ -75,6 +83,26 @@ def setup_signal_handlers() -> None:
         pass
 
     signal.signal(signal.SIGSEGV, _segfault_handler)
+    signal.signal(signal.SIGHUP, _terminate_handler)
+    signal.signal(signal.SIGTERM, _terminate_handler)
+
+
+def _terminate_handler(signum, frame):
+    """Restore terminal, then hard-exit. Avoids stuck-loop zombies after
+    the controlling tty is closed (kill, hangup, pane close)."""
+    if _saved_termios is not None:
+        try:
+            import termios
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, _saved_termios)
+        except Exception:
+            pass
+    # Backstop: if a C extension is holding the GIL, SIGALRM is delivered by
+    # the kernel and its default disposition terminates the process.
+    try:
+        signal.alarm(2)
+    except (OSError, AttributeError, ValueError):
+        pass
+    os._exit(128 + signum)
 
 
 def _segfault_handler(signum, frame):
