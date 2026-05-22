@@ -273,8 +273,9 @@ esac
 
 cd "$INSTALL_DIR"
 export PYTHONWARNINGS="ignore::UserWarning"
-# `exec -a voxterm` sets argv[0] so `pkill voxterm` / `ps` match the
-# TUI process rather than `python -m tui.app`.
+# `exec -a voxterm` puts "voxterm" in argv[0] so `pkill -f voxterm` and
+# `ps -o args` match the TUI process rather than `python -m tui.app`.
+# (Plain `pkill voxterm` still matches comm name, which stays `python`.)
 exec -a voxterm "$INSTALL_DIR/.venv/bin/python" -m tui.app "$@"
 LAUNCHER
 chmod +x "$BIN_DIR/voxterm"

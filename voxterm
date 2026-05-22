@@ -7,6 +7,7 @@ if [[ "$1" == "--dictate" || "$1" == "-D" ]]; then
     exec -a voxterm-dictate "$DIR/.venv/bin/python3" -m dictation "$@"
 fi
 
-# `exec -a voxterm` sets argv[0] so `pkill voxterm` / `ps` match the
-# launcher's name rather than `python3 -m tui.app`.
+# `exec -a voxterm` puts "voxterm" in argv[0] so `pkill -f voxterm` and
+# `ps -o args` match the launcher rather than `python3 -m tui.app`.
+# (Plain `pkill voxterm` still matches comm name, which stays `python3`.)
 exec -a voxterm "$DIR/.venv/bin/python3" -m tui.app "$@"

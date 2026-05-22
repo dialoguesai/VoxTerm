@@ -90,18 +90,20 @@ def setup_signal_handlers() -> None:
 def _terminate_handler(signum, frame):
     """Restore terminal, then hard-exit. Avoids stuck-loop zombies after
     the controlling tty is closed (kill, hangup, pane close)."""
+    # Arm the backstop FIRST, before any work that could block. If termios
+    # restore or os._exit gets wedged behind a C extension holding the GIL,
+    # SIGALRM is delivered by the kernel and its default disposition
+    # terminates the process within 2 seconds.
+    try:
+        signal.alarm(2)
+    except (OSError, AttributeError, ValueError):
+        pass
     if _saved_termios is not None:
         try:
             import termios
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, _saved_termios)
         except Exception:
             pass
-    # Backstop: if a C extension is holding the GIL, SIGALRM is delivered by
-    # the kernel and its default disposition terminates the process.
-    try:
-        signal.alarm(2)
-    except (OSError, AttributeError, ValueError):
-        pass
     os._exit(128 + signum)
 
 
