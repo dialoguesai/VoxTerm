@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Local-LLM transcript redaction** (`X` key). Masks PII in a transcript
+  using an on-device model and saves a non-destructive `*-redacted.md`
+  copy. The LLM only *identifies* verbatim sensitive spans (returned as
+  JSON); the engine does the masking by exact string replacement, so the
+  transcript stays byte-for-byte intact and the model can't paraphrase or
+  drop content. A deterministic regex pass backstops structured PII
+  (emails, URLs, SSNs, phone/IP-like runs). Four profiles
+  (standard / contacts-only / aggressive / custom) and the same
+  MLX + Ollama backend split as summarization (`ollama:model[@host]` works
+  off Apple Silicon). New `redaction/` package; mirrors `summarizer/`.
+
 ## [0.2.1] - 2026-05-16
 
 ### Fixed
