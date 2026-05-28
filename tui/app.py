@@ -73,6 +73,7 @@ from audio.buffer import AudioBuffer
 from audio.system_capture import SystemCapture
 from audio.transcriber import (
     Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber,
+    ParakeetTranscriber,
     configure_mlx_memory,
 )
 from audio.diarization.proxy import DiarizationProxy
@@ -82,7 +83,7 @@ from config import (
     SAMPLE_RATE, CHUNK_SIZE, WAVEFORM_FPS,
     SILENCE_THRESHOLD, SILENCE_TRIGGER_SECONDS,
     MAX_BUFFER_SECONDS, MIN_BUFFER_SECONDS,
-    DEFAULT_MODEL, AVAILABLE_MODELS, QWEN3_MODELS, FASTER_WHISPER_MODELS,
+    DEFAULT_MODEL, AVAILABLE_MODELS, QWEN3_MODELS, PARAKEET_MODELS, FASTER_WHISPER_MODELS,
     DEFAULT_LANGUAGE, AVAILABLE_LANGUAGES,
     LIVE_DIR,
     EVENTS_ENABLED,
@@ -1603,6 +1604,8 @@ class VoxTerm(App):
                 model_repo = AVAILABLE_MODELS[self._model_name]
                 if self._model_name in QWEN3_MODELS:
                     self.transcriber = Qwen3Transcriber(model=model_repo, language=self._language)
+                elif self._model_name in PARAKEET_MODELS:
+                    self.transcriber = ParakeetTranscriber(model=model_repo, language=self._language)
                 elif self._model_name in FASTER_WHISPER_MODELS:
                     self.transcriber = FasterWhisperTranscriber(model=model_repo, language=self._language)
                 else:
@@ -1982,6 +1985,8 @@ class VoxTerm(App):
         try:
             if model_key in QWEN3_MODELS:
                 new_transcriber = Qwen3Transcriber(model=repo, language=self._language)
+            elif model_key in PARAKEET_MODELS:
+                new_transcriber = ParakeetTranscriber(model=repo, language=self._language)
             elif model_key in FASTER_WHISPER_MODELS:
                 new_transcriber = FasterWhisperTranscriber(model=repo, language=self._language)
             else:
@@ -2640,6 +2645,8 @@ def main():
             tag = " (default)" if name == _default_model else ""
             if name in QWEN3_MODELS:
                 backend = " [qwen3-asr]"
+            elif name in PARAKEET_MODELS:
+                backend = " [parakeet-mlx]"
             elif name in FASTER_WHISPER_MODELS:
                 backend = " [faster-whisper]"
             else:

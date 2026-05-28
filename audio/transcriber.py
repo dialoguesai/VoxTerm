@@ -240,6 +240,64 @@ class Qwen3Transcriber(_DeduplicatorMixin):
         return self._loaded
 
 
+class ParakeetTranscriber(_DeduplicatorMixin):
+    """NVIDIA Parakeet (TDT/CTC/RNNT) transcriber, MLX backend (Apple Silicon).
+
+    Parakeet runs ~3-5x faster than Qwen3-ASR or Whisper on Apple Silicon for
+    English speech. The MLX port (``parakeet-mlx``) handles model loading and
+    log-mel preprocessing; we feed it the float32 audio buffer the rest of the
+    pipeline produces, skipping the file-load step in its top-level
+    ``transcribe`` helper.
+
+    English-only by default — Parakeet's official checkpoints are English.
+    """
+
+    def __init__(
+        self,
+        model: str = "mlx-community/parakeet-tdt-0.6b-v3",
+        language: str | None = "en",
+    ):
+        self.model_id = model
+        self._language = language
+        self._model = None
+        self._loaded = False
+        self._init_dedup()
+
+    def load(self):
+        from parakeet_mlx import from_pretrained
+        self._model = from_pretrained(self.model_id)
+        self._loaded = True
+
+    def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
+        rms = float(np.sqrt(np.mean(audio ** 2)))
+        if rms < 0.005:
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        import mlx.core as mx
+        from parakeet_mlx.audio import get_logmel
+
+        # Pad to a fixed shape bucket — same Metal-frag reasoning as
+        # Qwen3Transcriber.transcribe (variable input shapes blow up the
+        # MLX arena across calls).
+        audio = _pad_to_shape_bucket(audio)
+        audio_mx = mx.array(audio.astype(np.float32))
+        mel = get_logmel(audio_mx, self._model.preprocessor_config)
+        results = self._model.generate(mel)
+        text = results[0].text.strip() if results else ""
+
+        if _is_hallucination(text, self._language):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        if self._is_duplicate(text):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        return {"text": text, "speaker": "", "speaker_id": 0}
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+
 class WhisperTranscriber(_DeduplicatorMixin):
     """Legacy mlx-whisper transcriber (fallback)."""
 

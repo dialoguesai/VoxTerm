@@ -34,6 +34,7 @@ from config import (
     DEFAULT_LANGUAGE,
     DEFAULT_MODEL,
     FASTER_WHISPER_MODELS,
+    PARAKEET_MODELS,
     QWEN3_MODELS,
 )
 
@@ -96,6 +97,7 @@ def _load_transcriber(model_name: str, model_repo: str, language: str, mlx_execu
     """
     from audio.transcriber import (
         FasterWhisperTranscriber,
+        ParakeetTranscriber,
         Qwen3Transcriber,
         WhisperTranscriber,
     )
@@ -105,6 +107,8 @@ def _load_transcriber(model_name: str, model_repo: str, language: str, mlx_execu
 
     if model_name in QWEN3_MODELS:
         transcriber = Qwen3Transcriber(model=model_repo, language=language)
+    elif model_name in PARAKEET_MODELS:
+        transcriber = ParakeetTranscriber(model=model_repo, language=language)
     elif model_name in FASTER_WHISPER_MODELS:
         transcriber = FasterWhisperTranscriber(model=model_repo, language=language)
     else:
