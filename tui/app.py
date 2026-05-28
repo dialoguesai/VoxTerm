@@ -70,6 +70,7 @@ from tui.widgets.transcript_explorer import TranscriptExplorerScreen
 from tui.widgets.recording_pulse import RecordingPulse
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
+from audio.mixer import MicSystemMixer
 from audio.system_capture import SystemCapture
 from audio.transcriber import (
     Qwen3Transcriber, WhisperTranscriber, FasterWhisperTranscriber,
@@ -565,6 +566,7 @@ class VoxTerm(App):
         self._hivemind = hivemind_client
         self.audio_capture = AudioCapture()
         self.system_capture = SystemCapture()
+        self.audio_mixer = MicSystemMixer()
         self.audio_buffer = AudioBuffer()
         self._local_audio_buffer = AudioBuffer()  # local-only audio for diarization
         self.vad = SileroVAD()
@@ -944,16 +946,14 @@ class VoxTerm(App):
             self._write_crash_dump("_process_audio", e)
             raise
 
-    @staticmethod
-    def _mix_chunks(mic: list[np.ndarray], sys: list[np.ndarray]) -> list[np.ndarray]:
-        """Time-aligned addition of mic and system audio chunks."""
-        mixed = []
-        n = min(len(mic), len(sys))
-        for i in range(n):
-            mixed.append(np.clip(mic[i] + sys[i], -1.0, 1.0))
-        mixed.extend(mic[n:])
-        mixed.extend(sys[n:])
-        return mixed
+    def _mix_chunks(self, mic: list[np.ndarray], sys: list[np.ndarray]) -> list[np.ndarray]:
+        """Sidechain-ducked, soft-clipped mix of mic + system audio chunks.
+
+        Delegates to ``MicSystemMixer`` so the gain state survives across
+        timer ticks (attack/release time constants only behave correctly
+        when state persists between calls).
+        """
+        return self.audio_mixer.mix_chunks(mic, sys)
 
     def _process_audio_inner(self):
         waveform = self.query_one(WaveformWidget)
@@ -1709,6 +1709,7 @@ class VoxTerm(App):
             self._mic_error_shown = False
             self._sck_death_shown = False
             self.vad.reset()
+            self.audio_mixer.reset()
             try:
                 self.audio_capture.start()
                 waveform.set_recording(True)
