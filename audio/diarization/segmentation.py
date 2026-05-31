@@ -16,9 +16,44 @@ Powerset classes:
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import numpy as np
+
+_SEG_SR = 16000  # pyannote segmentation-3.0 fixed input rate
+
+
+def _pad_samples_to_bucket(audio: np.ndarray) -> np.ndarray:
+    """Snap a raw-waveform length up to a fixed grid by zero-padding.
+
+    Mirrors the bucketing fix in `onnx_embedder._pad_fbank_to_bucket` and
+    `transcriber._pad_to_shape_bucket`. The segmentation model runs on every
+    transcribed buffer (1-3s) with input shape (1, 1, num_samples), so the
+    sample count differs on essentially every call. The onnxruntime CPU arena
+    allocates a new slab per unique shape and cannot defragment, so RSS climbs
+    monotonically over a long session. Rounding the length up to a coarse grid
+    collapses thousands of distinct shapes to a handful (e.g. {1s, 2s, 3s}) so
+    slabs are reused.
+
+    Zero-padding (silence) is the correct choice here: trailing silence implies
+    no active speaker, and the caller trims the corresponding output frames
+    back off before computing activation stats, so padding never reaches the
+    quality gates. Tunable via VOXTERM_SEG_PAD_SAMPLES (0 disables).
+    """
+    try:
+        grid = int(os.environ.get("VOXTERM_SEG_PAD_SAMPLES", str(_SEG_SR)))
+    except ValueError:
+        grid = _SEG_SR
+    if grid <= 0:
+        return audio
+    n = len(audio)
+    if n == 0:
+        return audio
+    target = ((n + grid - 1) // grid) * grid
+    if target <= n:
+        return audio
+    return np.concatenate([audio, np.zeros(target - n, dtype=audio.dtype)])
 
 # Powerset → per-speaker mapping
 # Each local speaker appears in these powerset classes:
@@ -125,8 +160,21 @@ class SpeakerSegmentation:
         if audio.ndim > 1:
             audio = audio[:, 0]
 
+        # Bucket the raw-sample count to a fixed grid so the onnxruntime arena
+        # reuses buffer slabs across calls instead of fragmenting (RSS leak).
+        orig_n = len(audio)
+        audio = _pad_samples_to_bucket(audio)
+        padded_n = len(audio)
+
         inp = audio.reshape(1, 1, -1)
         logits = self._session.run(None, {"input_values": inp})[0][0]
+
+        # Trim the frames that correspond to the zero-padding so downstream
+        # activation stats (mean/peak) see only the real audio. Frames are
+        # uniform in time, so the original duration maps proportionally.
+        if padded_n > orig_n and logits.shape[0] > 0:
+            keep = int(round(logits.shape[0] * orig_n / padded_n))
+            logits = logits[: max(1, keep)]
 
         # Softmax over powerset classes
         logits_shifted = logits - logits.max(axis=-1, keepdims=True)
