@@ -38,3 +38,6 @@ docs/pipeline.mp4
 
 # Nix
 result
+
+# Claude Code local session state
+.claude/

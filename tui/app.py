@@ -80,6 +80,7 @@ from config import (
     SILENCE_THRESHOLD, SILENCE_TRIGGER_SECONDS,
     MAX_BUFFER_SECONDS, MIN_BUFFER_SECONDS,
     DEFAULT_MODEL, AVAILABLE_MODELS, QWEN3_MODELS, FASTER_WHISPER_MODELS,
+    PARAKEET_MODELS,
     DEFAULT_LANGUAGE, AVAILABLE_LANGUAGES,
     LIVE_DIR,
     EVENTS_ENABLED,
@@ -2625,6 +2626,8 @@ def main():
             tag = " (default)" if name == _default_model else ""
             if name in QWEN3_MODELS:
                 backend = " [qwen3-asr]"
+            elif name in PARAKEET_MODELS:
+                backend = " [parakeet-mlx]"
             elif name in FASTER_WHISPER_MODELS:
                 backend = " [faster-whisper]"
             else:
