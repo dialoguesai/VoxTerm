@@ -13,7 +13,7 @@ on identical input, plus honest speed measurements.
 
 Usage:
     .venv/bin/python -m dev.bench_asr                 # default model set
-    .venv/bin/python -m dev.bench_asr --models nemotron-streaming parakeet-1.1b qwen3-0.6b
+    .venv/bin/python -m dev.bench_asr --models parakeet-1.1b parakeet-0.6b qwen3-0.6b
     .venv/bin/python -m dev.bench_asr --json out.json
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
+from scipy.io import wavfile
 
 # Make repo root importable when run as a file.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -94,8 +94,17 @@ def synth_clips(cache: Path) -> list[dict]:
                 check=True,
             )
             aiff.unlink(missing_ok=True)
-        audio, sr = sf.read(wav, dtype="float32")
+        sr, raw = wavfile.read(wav)
         assert sr == SR, sr
+        # afconvert wrote 16-bit PCM mono; normalise to float32 [-1, 1].
+        if raw.dtype == np.int16:
+            audio = raw.astype(np.float32) / 32768.0
+        elif raw.dtype == np.int32:
+            audio = raw.astype(np.float32) / 2147483648.0
+        else:
+            audio = raw.astype(np.float32)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
         clips.append({"text": text, "audio": audio, "dur": len(audio) / SR})
     return clips
 

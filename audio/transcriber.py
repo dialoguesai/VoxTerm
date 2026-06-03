@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import platform
 import re
 import sys
 
@@ -269,9 +270,18 @@ class ParakeetTranscriber(_DeduplicatorMixin):
 
     def load(self):
         """Pre-load the model (downloads on first run)."""
-        if CURRENT_PLATFORM != Platform.MACOS:
+        # parakeet-mlx ships Apple-Silicon-only wheels; CURRENT_PLATFORM ==
+        # MACOS is also true on Intel macs, so check the arch explicitly to
+        # raise a clear error instead of an opaque ModuleNotFoundError.
+        if sys.platform != "darwin" or platform.machine() != "arm64":
             raise RuntimeError("Parakeet models require Apple Silicon (MLX).")
-        from parakeet_mlx import from_pretrained
+        try:
+            from parakeet_mlx import from_pretrained
+        except ImportError as e:
+            raise RuntimeError(
+                "parakeet-mlx is not installed; install it to use Parakeet "
+                "models (pip install parakeet-mlx)."
+            ) from e
         self._model = from_pretrained(self.model_id)
         self._loaded = True
 
