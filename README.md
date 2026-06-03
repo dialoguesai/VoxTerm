@@ -3,7 +3,7 @@
 Local real-time voice transcription TUI with speaker diarization and P2P collaborative transcription. Runs entirely offline — no cloud APIs, no audio stored.
 
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-black)
-![version](https://img.shields.io/badge/version-0.1.0-blue)
+![version](https://img.shields.io/badge/version-0.3.0-blue)
 
 ## Privacy & Storage Policy
 

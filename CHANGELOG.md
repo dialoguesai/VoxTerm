@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-03
+
 ### Added
 
 - NVIDIA Parakeet ASR backend on Apple Silicon via `parakeet-mlx`: new
@@ -17,7 +19,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `python -m dev.bench_asr`). Note: the requested cache-aware *streaming*
   model `nvidia/nemotron-speech-streaming-en-0.6b` can't run on this MLX
   stack yet (causal downsampling unsupported by `parakeet-mlx`; NeMo is
-  CUDA-only) — the 0.6B TDT is its supported non-streaming sibling.
+  CUDA-only) — the 0.6B TDT is its supported non-streaming sibling (#167).
+- Per-peer audio frame-loss telemetry in the P2P debug overlay — surfaces the
+  real UDP loss signal (sequence gaps filled with silence) as a per-peer gap
+  rate instead of a permanently-zero counter (#162).
+- Hivemind sink integration spec (`docs/specs/hivemind-sink-integration.md`):
+  one client speaking two transcript-sink protocols (legacy non-TEE + attested
+  TEE), selected by config (#154).
+
+### Changed
+
+- Transcriber backend selection is centralized in a single `get_transcriber()`
+  factory, replacing three hand-written if/elif chains (#165).
+
+### Fixed
+
+- Pin `onnxruntime<1.24`: 1.24.0 introduced a ~11 MB-per-`session.run` heap leak
+  (measured, not shape-driven) that drove multi-GB RSS growth over long
+  diarization sessions; 1.23.x is the last leak-free release (#166).
+- P2P mesh self-healing: wire `on_peer_updated` and add a periodic reconnect
+  sweep so a peer that re-advertises (or leaves and rejoins) no longer leaves a
+  permanent hole in a 3+ peer mesh (#161).
+- Diarizer subprocess respawn runs off the IPC lock, so the up-to-30s model-load
+  wait during crash recovery no longer freezes a concurrent call or the UI
+  (#163).
+- Diarization CMN mean is computed in float64 for a true zero-mean result, and
+  the macOS test suite is stabilized (fbank precision + p2p e2e session key)
+  (#156).
+- Linux test suite passes and platform-support docs are accurate (macOS +
+  Linux); macOS-Keychain-only tests are skipped on Linux (#159).
+
+### Security
+
+- Crash dumps and `faulthandler.log` are now owner-only (`0o600`/`0o700`),
+  matching the speaker-DB convention — they carry session/runtime metadata a
+  local reader on a shared machine shouldn't get (#164).
 
 ## [0.2.1] - 2026-05-16
 
