@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- NVIDIA Parakeet ASR backend on Apple Silicon via `parakeet-mlx`: new
+  `ParakeetTranscriber` plus two registry models — `parakeet-0.6b`
+  (`parakeet-tdt-0.6b-v3`) and `parakeet-1.1b` (`parakeet-tdt-1.1b`).
+  `parakeet-1.1b` matches the largest Qwen3 model's accuracy at ~12× the
+  throughput in benchmarks (`docs/parakeet-asr-benchmark.md`, reproduce with
+  `python -m dev.bench_asr`). Note: the requested cache-aware *streaming*
+  model `nvidia/nemotron-speech-streaming-en-0.6b` can't run on this MLX
+  stack yet (causal downsampling unsupported by `parakeet-mlx`; NeMo is
+  CUDA-only) — the 0.6B TDT is its supported non-streaming sibling.
+
 ## [0.2.1] - 2026-05-16
 
 ### Fixed

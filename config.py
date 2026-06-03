@@ -18,6 +18,12 @@ if sys.platform == "darwin" and platform.machine() == "arm64":
     AVAILABLE_MODELS = {
         "qwen3-0.6b":  "Qwen/Qwen3-ASR-0.6B",
         "qwen3-1.7b":  "Qwen/Qwen3-ASR-1.7B",
+        # NVIDIA Parakeet FastConformer (TDT) via parakeet-mlx. The 0.6B is the
+        # supported, non-streaming sibling of nvidia/nemotron-speech-streaming
+        # (whose causal cache-aware encoder parakeet-mlx can't load yet — see
+        # ParakeetTranscriber docstring). The 1.1B is the higher-param variant.
+        "parakeet-0.6b": "mlx-community/parakeet-tdt-0.6b-v3",
+        "parakeet-1.1b": "mlx-community/parakeet-tdt-1.1b",
         "tiny":        "mlx-community/whisper-tiny",
         "small":       "mlx-community/whisper-small-mlx",
         "medium":      "mlx-community/whisper-medium-mlx",
@@ -26,6 +32,8 @@ if sys.platform == "darwin" and platform.machine() == "arm64":
         "distil-v3":   "distil-whisper/distil-large-v3",
     }
     QWEN3_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
+    # NVIDIA Parakeet FastConformer models via parakeet-mlx.
+    PARAKEET_MODELS = {"parakeet-0.6b", "parakeet-1.1b"}
     WHISPER_MODEL = "mlx-community/whisper-small-mlx"
     FASTER_WHISPER_MODELS: set[str] = set()
 elif sys.platform == "darwin":
@@ -40,6 +48,7 @@ elif sys.platform == "darwin":
     }
     DEFAULT_MODEL = "fw-small"
     QWEN3_MODELS = set()
+    PARAKEET_MODELS: set[str] = set()
     WHISPER_MODEL = None
     FASTER_WHISPER_MODELS = set(AVAILABLE_MODELS)
 elif sys.platform.startswith("linux"):
@@ -58,6 +67,7 @@ elif sys.platform.startswith("linux"):
         AVAILABLE_MODELS["qwen3-0.6b"] = "Qwen/Qwen3-ASR-0.6B"
         AVAILABLE_MODELS["qwen3-1.7b"] = "Qwen/Qwen3-ASR-1.7B"
     QWEN3_MODELS = set(AVAILABLE_MODELS) - FASTER_WHISPER_MODELS
+    PARAKEET_MODELS: set[str] = set()
     DEFAULT_MODEL = "qwen3-0.6b" if _HAS_QWEN_ASR else "fw-small"
     WHISPER_MODEL = None
 elif sys.platform == "win32":
@@ -74,6 +84,7 @@ elif sys.platform == "win32":
         "fw-distil-large-v3": "distil-large-v3",
     }
     QWEN3_MODELS = {"qwen3-0.6b", "qwen3-1.7b"}
+    PARAKEET_MODELS: set[str] = set()
     WHISPER_MODEL = None
     FASTER_WHISPER_MODELS = {"fw-tiny", "fw-base", "fw-small", "fw-medium", "fw-large-v3", "fw-distil-large-v3"}
 else:

@@ -240,6 +240,80 @@ class Qwen3Transcriber(_DeduplicatorMixin):
         return self._loaded
 
 
+class ParakeetTranscriber(_DeduplicatorMixin):
+    """NVIDIA Parakeet FastConformer transcriber — MLX on Apple Silicon.
+
+    Runs NVIDIA's Parakeet family (FastConformer encoder + TDT/RNNT/CTC decoder)
+    on Metal via the `parakeet-mlx` port. Wired models:
+      - `mlx-community/parakeet-tdt-0.6b-v3`  (0.6B, multilingual)
+      - `mlx-community/parakeet-tdt-1.1b`     (1.1B, higher accuracy)
+
+    The models ship their own punctuation/capitalisation and infer language
+    internally, so the `language` argument is accepted for interface parity
+    (and the hallucination filter) but not passed to the model.
+
+    Note on `nvidia/nemotron-speech-streaming-en-0.6b`: that cache-aware
+    *streaming* model uses causal downsampling + batch-norm convs that
+    parakeet-mlx 0.5.1 does not implement (its loader raises on
+    `causal_downsampling`/subsampling), and NeMo itself is CUDA/Linux-only.
+    So the streaming model can't run on this MLX stack today; the 0.6B TDT
+    above is its supported, non-streaming sibling.
+    """
+
+    def __init__(self, model: str = "mlx-community/parakeet-tdt-1.1b", language: str | None = "en"):
+        self.model_id = model
+        self._language = language
+        self._model = None
+        self._loaded = False
+        self._init_dedup()
+
+    def load(self):
+        """Pre-load the model (downloads on first run)."""
+        if CURRENT_PLATFORM != Platform.MACOS:
+            raise RuntimeError("Parakeet models require Apple Silicon (MLX).")
+        from parakeet_mlx import from_pretrained
+        self._model = from_pretrained(self.model_id)
+        self._loaded = True
+
+    def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
+        """Transcribe audio array (float32, 16kHz mono).
+
+        Returns:
+            {"text": str, "speaker": str, "speaker_id": int}
+        """
+        rms = float(np.sqrt(np.mean(audio ** 2)))
+        if rms < 0.005:
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        import mlx.core as mx
+        from parakeet_mlx.audio import get_logmel
+
+        # Pad to a fixed shape bucket so MLX reuses Metal GPU buffers across
+        # calls instead of fragmenting the heap (RMS gate above already ran on
+        # the unpadded audio). Same rationale as Qwen3Transcriber.
+        audio = _pad_to_shape_bucket(audio)
+
+        mel = get_logmel(
+            mx.array(audio, dtype=mx.float32)[None],
+            self._model.preprocessor_config,
+        )
+        results = self._model.generate(mel)
+        result = results[0] if isinstance(results, list) else results
+        text = str(getattr(result, "text", "")).strip()
+
+        if _is_hallucination(text, self._language):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        if self._is_duplicate(text):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+
+        return {"text": text, "speaker": "", "speaker_id": 0}
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+
 class WhisperTranscriber(_DeduplicatorMixin):
     """Legacy mlx-whisper transcriber (fallback)."""
 
