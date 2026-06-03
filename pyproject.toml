@@ -8,11 +8,17 @@ version = "0.2.1"
 description = "Local real-time voice transcription TUI with speaker diarization"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.12"
+# Upper bound: onnxruntime is capped <1.24 (see below) and ORT has no wheels
+# below 1.24.1 for Python 3.14, so 3.14 can't get a leak-free runtime yet.
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "cryptography>=42.0.0",
     "numpy>=2.0.0",
-    "onnxruntime>=1.16.0",
+    # Cap <1.24: onnxruntime 1.24.0 introduced a ~11 MB-per-`session.run`
+    # heap leak (measured, not shape-driven, not fixable via session options)
+    # that drives multi-GB RSS growth over long diarization sessions. 1.23.x
+    # is the last leak-free release. Re-test before raising this ceiling.
+    "onnxruntime>=1.16.0,<1.24",
     "scipy>=1.10.0",
     "silero-vad>=5.1",
     "sounddevice>=0.5.0",
