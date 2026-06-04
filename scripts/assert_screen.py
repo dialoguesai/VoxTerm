@@ -20,7 +20,7 @@ def check(path: str) -> tuple[bool, str]:
         im = Image.open(path).convert("L").resize((64, 128))
     except Exception as e:
         return False, f"could not open screenshot: {e}"
-    px = list(im.getdata())
+    px = list(getattr(im, "get_flattened_data", im.getdata)())  # getdata deprecated in Pillow 14
     n = len(px)
     near_white = sum(1 for v in px if v > 245) / n
     near_black = sum(1 for v in px if v < 8) / n
