@@ -99,6 +99,7 @@ def main(argv=None) -> int:
             print(f"  models: {opts}")
             if "sherpa" not in (opts or ""):
                 print("  ! note: no sherpa key in dropdown (extra not installed?)")
+        cdp.poll("document.querySelectorAll('.session').length > 0")  # /api/sessions is async
         n_sessions = cdp.eval("document.querySelectorAll('.session').length") or 0
         print(f"  sessions listed: {n_sessions}")
         if n_sessions == 0:
@@ -112,6 +113,7 @@ def main(argv=None) -> int:
             else:
                 preview = cdp.eval("document.querySelector('.transcript-view').textContent.trim().slice(0,80)")
                 print(f"  transcript rendered: {preview!r}…")
+                time.sleep(1.2)   # let the fade-in animation finish so the screenshot is crisp
                 png = cdp.call("Page.captureScreenshot")["data"]
                 Path(shot).write_bytes(base64.b64decode(png))
                 print(f"  screenshot: {shot}")
