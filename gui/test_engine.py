@@ -310,7 +310,7 @@ def test_status_idle_shape():
     assert st["level"] == 0.0
     assert st["elapsed"] == 0           # not recording -> zero, never time.time()
     assert st["job"] == {"state": "idle"}
-    assert st["live"] == {"active": False, "wav": None, "lines": []}
+    assert st["live"] == {"active": False, "wav": None, "lines": [], "partial": None}
 
 
 def test_status_elapsed_zero_even_with_started_at():

@@ -166,7 +166,7 @@ function applyStatus(s) {
     $("recState").textContent = "Ready to record";
   }
   // live transcript panel (near-real-time tail of an in-progress recording)
-  const live = s.live || { active: false, lines: [] };
+  const live = s.live || { active: false, lines: [], partial: null };
   document.body.classList.toggle("live-on", !!live.active);
   $("liveToggle").textContent = live.active ? "■ Stop live" : "⦿ Live transcript";
   if (live.active) {
@@ -175,9 +175,18 @@ function applyStatus(s) {
     const lines = live.lines || [];
     const el = $("liveLines");
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    el.innerHTML = lines.length
-      ? lines.map((l) => `<div class="ll"><span class="ll-t">${escapeHtml(l.t)}</span>${escapeHtml(l.text)}</div>`).join("")
-      : `<div class="ll-empty">listening…</div>`;
+    let html = lines
+      .map((l) => `<div class="ll"><span class="ll-t">${escapeHtml(l.t)}</span>${escapeHtml(l.text)}</div>`)
+      .join("");
+    // the still-in-progress utterance: committed words solid, the rest dimmed (volatile)
+    const p = live.partial;
+    if (p && (p.stable || p.volatile)) {
+      html += `<div class="ll ll-partial"><span class="ll-t">${escapeHtml(p.t || "")}</span>`
+        + escapeHtml(p.stable || "")
+        + (p.stable && p.volatile ? " " : "")
+        + `<span class="ll-vol">${escapeHtml(p.volatile || "")}</span></div>`;
+    }
+    el.innerHTML = html || `<div class="ll-empty">listening…</div>`;
     if (atBottom) el.scrollTop = el.scrollHeight;   // keep pinned to newest unless scrolled up
   } else {
     $("liveView").classList.add("hidden");

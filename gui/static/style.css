@@ -178,6 +178,10 @@ body.live-on .live-toggle { background: var(--rec); color: #fff; border-color: t
 .live-lines .ll { color: var(--text); }
 .live-lines .ll-t { color: var(--faint); font-variant-numeric: tabular-nums; font-size: 12px; margin-right: 8px; }
 .live-lines .ll-empty { color: var(--faint); font-style: italic; }
+/* the in-progress utterance: committed words solid, volatile tail dimmed + softly pulsing */
+.live-lines .ll-partial { color: var(--accent-dim); }
+.live-lines .ll-partial .ll-vol { color: var(--faint); font-style: italic; animation: livepulse 1.4s ease-in-out infinite; }
+@keyframes livepulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.95; } }
 
 .hidden { display: none !important; }
 .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--bg-elev-2); color: var(--text); border: 1px solid var(--line); padding: 10px 18px; border-radius: 10px; box-shadow: var(--shadow); font-size: 13.5px; z-index: 50; animation: fade .2s ease; }

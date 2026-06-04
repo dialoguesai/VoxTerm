@@ -55,9 +55,10 @@ class Engine:
         self.started_at = None
         self.job = {"state": "idle"}  # idle | transcribing | done | error
         # live (near-real-time) monitor of an in-progress recording (reads the file)
-        self._live = {"active": False, "wav": None, "lines": []}
+        self._live = {"active": False, "wav": None, "lines": [], "partial": None}
         self._live_stop = threading.Event()
         self._live_thread = None
+        self._stab = None  # PartialStabilizer for the in-progress (volatile) tail
 
     # ---- static option lists for the UI ----
     def models(self) -> list[str]:
@@ -165,7 +166,7 @@ class Engine:
             "elapsed": round(time.time() - self.started_at, 1) if (self.recording and self.started_at) else 0,
             "job": self.job,
             "live": {"active": self._live["active"], "wav": self._live["wav"],
-                     "lines": self._live["lines"][-120:]},
+                     "lines": self._live["lines"][-120:], "partial": self._live.get("partial")},
         }
 
     # ---- live (near-real-time) monitor: tail an in-progress recording's file ----
@@ -180,7 +181,9 @@ class Engine:
             target = Path(wav) if wav else self._newest_wav()
             if not target or not target.exists():
                 return {"ok": False, "error": "no recording to monitor"}
-            self._live = {"active": True, "wav": str(target), "lines": []}
+            self._live = {"active": True, "wav": str(target), "lines": [], "partial": None}
+            from gui.stabilize import PartialStabilizer
+            self._stab = PartialStabilizer()
             self._live_stop.clear()
             self._live_thread = threading.Thread(target=self._live_loop, args=(target,), daemon=True, name="gui-live")
             self._live_thread.start()
@@ -191,6 +194,7 @@ class Engine:
         if self._live_thread:
             self._live_thread.join(timeout=3)
         self._live["active"] = False
+        self._live["partial"] = None
         return {"ok": True}
 
     def _live_loop(self, wav: Path):
@@ -229,6 +233,17 @@ class Engine:
                     if consumed:
                         abs_start += consumed
                         buf = buf[consumed:]
+                        if self._stab:           # finalized → the volatile tail starts fresh
+                            self._stab.reset()
+                # Volatile preview of the still-in-progress tail (LocalAgreement-stabilized),
+                # so an in-progress utterance shows up live instead of only after the pause.
+                if self._stab is not None and len(buf) >= int(SR * 0.4):
+                    ptxt = (tr.transcribe(buf).get("text") or "").strip()
+                    st = self._stab.push(ptxt)
+                    self._live["partial"] = ({"t": _fmt_hms(abs_start / SR), **st}
+                                             if (st["stable"] or st["volatile"]) else None)
+                else:
+                    self._live["partial"] = None
         finally:
             f.close()
             self._live["active"] = False
