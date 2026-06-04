@@ -2,7 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const PALETTE = ["#5eead4", "#f0566a", "#fbbf24", "#a78bfa", "#60a5fa", "#34d399", "#fb923c", "#f472b6"];
 
-let OPTS = { models: [], languages: {} };
+let OPTS = { models: [], languages: {}, default_model: "" };
 let CUR = null;            // current doc (agent_json parsed)
 let RENAMES = {};          // speaker_id -> custom name (view + export)
 let lastJobState = "idle";
@@ -88,12 +88,12 @@ function clearWave() {
 // ---------- init ----------
 async function init() {
   const o = await getJSON("/api/options");
-  OPTS = { models: o.models || [], languages: o.languages || {} };
+  OPTS = { models: o.models || [], languages: o.languages || {}, default_model: o.default_model || "" };
   const mSel = $("model"), lSel = $("language");
-  OPTS.models.forEach((m) => { const o = document.createElement("option"); o.value = m; o.textContent = m; if (m === "fw-small") o.selected = true; mSel.appendChild(o); });
+  OPTS.models.forEach((m) => { const o = document.createElement("option"); o.value = m; o.textContent = m; if (m === OPTS.default_model) o.selected = true; mSel.appendChild(o); });
   Object.entries(OPTS.languages).forEach(([code, name]) => { const o = document.createElement("option"); o.value = code; o.textContent = name; if (code === "en") o.selected = true; lSel.appendChild(o); });
 
-  // Restore remembered Model/Language (keep the fw-small/en defaults if nothing saved
+  // Restore remembered Model/Language (keep the server default / en if nothing saved
   // or the saved value is no longer offered by the server).
   const savedModel = lsGet(LS_MODEL);
   if (savedModel && OPTS.models.includes(savedModel)) mSel.value = savedModel;

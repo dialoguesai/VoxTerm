@@ -451,7 +451,15 @@ def main(argv=None) -> int:
             from config import LIVE_DIR
             live = Path(LIVE_DIR)
         except Exception:
-            live = Path.home() / ".local" / "share" / "voxterm" / ".live"
+            # mirror config.py's per-platform live dir if that import ever fails
+            _h = Path.home()
+            if sys.platform == "darwin":
+                live = _h / "Documents" / "voxterm-transcripts" / ".live"
+            elif sys.platform.startswith("linux"):
+                import os as _os
+                live = Path(_os.environ.get("XDG_DATA_HOME", _h / ".local" / "share")) / "voxterm" / ".live"
+            else:
+                live = _h / "Documents" / "voxterm" / ".live"
         cands = sorted(live.glob("*-events.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True) if live.exists() else []
         if not cands:
             print("error: no events file given and none found in the live dir", file=sys.stderr)

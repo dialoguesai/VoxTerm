@@ -81,8 +81,14 @@ class Engine:
 
     # ---- static option lists for the UI ----
     def models(self) -> list[str]:
-        # faster-whisper keys only (the CPU-usable set; qwen3 default is unusable on CPU)
-        return sorted(config.FASTER_WHISPER_MODELS)
+        # the host's usable model set: fw-* on Linux/Intel mac; MLX (qwen3/parakeet) on Apple
+        # Silicon, where FASTER_WHISPER_MODELS is empty — fall back so the dropdown isn't blank.
+        return sorted(config.FASTER_WHISPER_MODELS or set(config.AVAILABLE_MODELS))
+
+    def default_model(self) -> str:
+        # CPU-friendly default (fw-small on Linux/Intel; MLX on Apple Silicon) — not the raw
+        # config.DEFAULT_MODEL, which is qwen3-0.6b when qwen-asr is installed (slow on CPU).
+        return transcribe.gui_default_model()
 
     def languages(self) -> dict:
         return dict(config.AVAILABLE_LANGUAGES)
@@ -145,7 +151,8 @@ class Engine:
                     self.level = float(np.sqrt(np.mean(np.square(last))))
             time.sleep(0.066)  # ~15 Hz
 
-    def stop_recording(self, model: str = "fw-small", language: str = "en") -> dict:
+    def stop_recording(self, model: str | None = None, language: str = "en") -> dict:
+        model = model or transcribe.gui_default_model()
         if not self.recording:
             return {"ok": False, "error": "not recording"}
         # Signal + join the poll thread WITHOUT holding self._lock (the poll thread takes
@@ -211,8 +218,9 @@ class Engine:
         except Exception as e:
             self.job = {"state": "error", "error": f"{type(e).__name__}: {e}"}
 
-    def transcribe_existing(self, wav_path: str, model: str = "fw-small", language: str = "en") -> dict:
+    def transcribe_existing(self, wav_path: str, model: str | None = None, language: str = "en") -> dict:
         """Transcribe an already-recorded WAV (e.g. a prior capture) in the background."""
+        model = model or transcribe.gui_default_model()
         p = Path(wav_path)
         if not p.exists():
             return {"ok": False, "error": "no such file"}
@@ -272,8 +280,11 @@ class Engine:
         from gui.eot import is_incomplete
         try:
             # dedicated="live" → the live monitor gets its OWN transcriber, never sharing
-            # CTranslate2 decode state with the post-stop batch job.
-            tr, vad, _d = _get_engines("fw-base", "en", dedicated="live")
+            # CTranslate2 decode state with the post-stop batch job. fw-base is the light live
+            # default where it exists (Linux/Intel mac); on Apple Silicon fall back to the
+            # platform default (MLX) so this doesn't KeyError.
+            live_model = "fw-base" if "fw-base" in config.AVAILABLE_MODELS else config.DEFAULT_MODEL
+            tr, vad, _d = _get_engines(live_model, "en", dedicated="live")
         except Exception as e:
             self._live["lines"].append({"t": "", "text": f"(live engine error: {e})"})
             self._live["active"] = False

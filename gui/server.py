@@ -138,7 +138,8 @@ class Handler(BaseHTTPRequestHandler):
         if p.startswith("/static/"):
             return self._serve_static(p[len("/static/"):])
         if p == "/api/options":
-            return self._json({"models": ENGINE.models(), "languages": ENGINE.languages()})
+            return self._json({"models": ENGINE.models(), "languages": ENGINE.languages(),
+                               "default_model": ENGINE.default_model()})
         if p == "/api/status":
             return self._json(ENGINE.status())
         if p == "/api/sessions":
@@ -166,11 +167,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(ENGINE.start_recording())
         if p == "/api/record/stop":
             b = self._read_json()
-            return self._json(ENGINE.stop_recording(model=b.get("model", "fw-small"),
+            return self._json(ENGINE.stop_recording(model=b.get("model") or None,
                                                      language=b.get("language", "en")))
         if p == "/api/transcribe":
             b = self._read_json()
-            return self._json(ENGINE.transcribe_existing(b.get("wav", ""), model=b.get("model", "fw-small"),
+            return self._json(ENGINE.transcribe_existing(b.get("wav", ""), model=b.get("model") or None,
                                                          language=b.get("language", "en")))
         if p == "/api/live/start":
             b = self._read_json()

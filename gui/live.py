@@ -35,7 +35,9 @@ _WAV_HEADER = 44  # bytes; raw little-endian s16 PCM follows
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Live transcription of an in-progress WAV.")
     ap.add_argument("wav")
-    ap.add_argument("--model", default="fw-base")
+    # fw-base is the light live default where it exists (Linux/Intel mac); Apple Silicon
+    # has no fw-* keys, so fall back to the platform default (MLX).
+    ap.add_argument("--model", default=("fw-base" if "fw-base" in config.AVAILABLE_MODELS else config.DEFAULT_MODEL))
     ap.add_argument("--language", default="en")
     ap.add_argument("--interval", type=float, default=10.0, help="seconds between passes")
     ap.add_argument("--max-seconds", type=float, default=0.0, help="stop after N seconds (0 = until interrupted)")

@@ -65,6 +65,20 @@ def _get_engines(model: str, language: str, dedicated: str | None = None):
         return tr, _VAD, _DIAR
 
 
+def gui_default_model() -> str:
+    """Best default model for the GUI/CLI on THIS host. Prefer a CPU-friendly faster-whisper
+    model where available (Linux / Intel mac); only fall back to config.DEFAULT_MODEL (MLX
+    qwen3) on Apple Silicon, where there are no fw-* keys. This deliberately avoids defaulting
+    to qwen3-0.6b on CPU-only Linux (config.DEFAULT_MODEL picks it when qwen-asr is installed,
+    but it's too slow to be usable on CPU)."""
+    fw = config.FASTER_WHISPER_MODELS
+    if "fw-small" in fw:
+        return "fw-small"
+    if fw:
+        return sorted(fw)[0]
+    return config.DEFAULT_MODEL
+
+
 def load_wav_16k_mono(path: Path) -> np.ndarray:
     """Load any WAV as float32 mono @ 16 kHz (the live-capture format)."""
     import soundfile as sf
@@ -84,11 +98,12 @@ def _fmt_hms(seconds: float) -> str:
     return f"{h}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
 
 
-def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str = "fw-base",
+def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str | None = None,
                      language: str = "en", progress=None) -> dict:
     """Transcribe a float32/16k mono buffer. Returns
     {events_path, transcript_path, n_turns, n_speakers}. ``progress(frac, msg)`` is
     called 0..1 as windows complete (optional, for a live UI)."""
+    model = model or gui_default_model()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -173,7 +188,7 @@ def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str = "fw-base"
             "n_turns": n_turns, "n_speakers": len(speakers)}
 
 
-def transcribe_wav(wav_path, out_dir, *, model="fw-base", language="en", progress=None) -> dict:
+def transcribe_wav(wav_path, out_dir, *, model=None, language="en", progress=None) -> dict:
     return transcribe_audio(load_wav_16k_mono(Path(wav_path)), Path(out_dir),
                             model=model, language=language, progress=progress)
 
@@ -182,7 +197,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Headless VoxTerm transcription of a WAV file.")
     ap.add_argument("wav")
     ap.add_argument("--out-dir", default=str(Path.home() / "voxterm-live"))
-    ap.add_argument("--model", default="fw-base")
+    ap.add_argument("--model", default=gui_default_model())
     ap.add_argument("--language", default="en")
     args = ap.parse_args(argv)
     if not Path(args.wav).exists():
