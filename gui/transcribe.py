@@ -31,7 +31,7 @@ from audio.transcriber import get_transcriber  # noqa: E402
 from audio.vad import SileroVAD  # noqa: E402
 from audio.diarization.proxy import DiarizationProxy  # noqa: E402
 from tui.events import EventLogger  # noqa: E402
-from tui.app import VoxTerm  # noqa: E402  (reuse only the static _split_text_by_segments)
+from tui.text_split import split_text_by_segments  # noqa: E402  (TUI-free; no textual/sounddevice)
 
 SR = config.SAMPLE_RATE  # 16000
 
@@ -155,7 +155,7 @@ def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str | None = No
             if not segments:
                 segments = [("", 0, 0, len(clip))]
             if len(segments) > 1:
-                parts = VoxTerm._split_text_by_segments(text, segments)
+                parts = split_text_by_segments(text, segments)
             else:
                 parts = [(text, segments[0][0], segments[0][1])]
             for (seg_text, label, sid), (_l, _s, seg_start, seg_end) in zip(parts, segments):

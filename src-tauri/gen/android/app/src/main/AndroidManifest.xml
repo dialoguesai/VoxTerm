@@ -10,6 +10,11 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.app"
         android:usesCleartextTraffic="true">
+        <!-- INTENTIONAL (debug AND release): this thin client connects over plain HTTP to a
+             user-entered LAN desktop IP (the VoxTerm server). Android's network_security_config
+             <domain> can't match arbitrary RFC1918 IPs, so app-wide cleartext is required for the
+             core pairing flow. The trust model is the LAN + the per-session access token, not TLS.
+             (We deliberately keep this on for release, unlike Tauri's debug-only default.) -->
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"

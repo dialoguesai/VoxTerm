@@ -8,7 +8,7 @@ tails) — no audio, no live state. Produces two files alongside the session:
   <stem>-agent.json  the typed, lossless companion the .md is rendered from.
 
 Run:
-  python -m glass.export [events.jsonl] [--out-dir DIR]
+  python -m gui.export [events.jsonl] [--out-dir DIR]
   # with no path, exports the newest *-events.jsonl in VoxTerm's live dir.
 
 Design notes:

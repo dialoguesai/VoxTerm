@@ -80,10 +80,12 @@
   // automatically. On a normal phone this fails fast and the pairing form just stays.
   // Loopback is tokenless on the desktop, so no secret is needed.
   (function probeLoopback() {
+    const p = (document.getElementById("port").value.trim() || "8740");
+    const base = "http://localhost:" + p;
     const c = new AbortController();
     const timer = setTimeout(() => c.abort(), 800);
-    fetch("http://localhost:8740/api/options", { signal: c.signal })
-      .then((r) => { if (r.ok) window.location.href = "http://localhost:8740/"; })
+    fetch(base + "/api/options", { signal: c.signal })
+      .then((r) => { if (r.ok) window.location.href = base + "/"; })
       .catch(() => {})
       .finally(() => clearTimeout(timer));
   })();

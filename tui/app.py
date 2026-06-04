@@ -1382,31 +1382,11 @@ class VoxTerm(App):
     ) -> list[tuple[str, str, int]]:
         """Split transcribed text across segments proportionally by duration.
 
-        Returns list of (text_portion, speaker_label, speaker_id).
+        Returns list of (text_portion, speaker_label, speaker_id). The implementation lives
+        in the TUI-free ``tui.text_split`` so headless consumers can reuse it.
         """
-        words = text.split()
-        if not words or not segments:
-            return [(text, "", 0)]
-
-        total_samples = sum(end - start for _, _, start, end in segments)
-        if total_samples <= 0:
-            return [(text, segments[0][0], segments[0][1])]
-
-        result = []
-        word_idx = 0
-        for i, (label, sid, start, end) in enumerate(segments):
-            duration_frac = (end - start) / total_samples
-            if i == len(segments) - 1:
-                # Last segment gets remaining words
-                n_words = len(words) - word_idx
-            else:
-                n_words = max(1, round(len(words) * duration_frac))
-
-            seg_words = words[word_idx:word_idx + n_words]
-            word_idx += n_words
-            result.append((" ".join(seg_words), label, sid))
-
-        return result
+        from tui.text_split import split_text_by_segments
+        return split_text_by_segments(text, segments)
 
     def _on_transcription(
         self, text: str, speaker: str = "", speaker_id: int = 0,

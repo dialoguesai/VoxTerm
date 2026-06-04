@@ -286,8 +286,9 @@ class Engine:
             live_model = "fw-base" if "fw-base" in config.AVAILABLE_MODELS else config.DEFAULT_MODEL
             tr, vad, _d = _get_engines(live_model, "en", dedicated="live")
         except Exception as e:
-            self._live["lines"].append({"t": "", "text": f"(live engine error: {e})"})
-            self._live["active"] = False
+            with self._lock:
+                self._live["lines"].append({"t": "", "text": f"(live engine error: {e})"})
+                self._live["active"] = False
             return
         f = open(wav, "rb")
         f.seek(0, 2)  # tail from the CURRENT end — only NEW speech (true live, no slow backlog replay)
@@ -310,16 +311,20 @@ class Engine:
                             break
                         txt = (tr.transcribe(buf[s:e]).get("text") or "").strip()
                         if txt:
-                            lines = self._live["lines"]
-                            # If the previous line ended mid-clause ("…and", "…the"), this VAD
-                            # segment is the same sentence continuing after a breath — merge it
-                            # in rather than emitting a choppy second line. (Live view is
-                            # text-only/unattributed, so there's no speaker boundary to cross.)
-                            if lines and is_incomplete(lines[-1]["text"]):
-                                lines[-1]["text"] = (lines[-1]["text"] + " " + txt).strip()
-                            else:
-                                lines.append({"t": _fmt_hms((abs_start + s) / SR), "text": txt})
-                            self._live["lines"] = lines[-200:]
+                            # lock only the brief dict mutation, never the slow transcribe/VAD,
+                            # so status()/SSE (which reads self._live under the same lock) sees a
+                            # consistent snapshot without stalling.
+                            with self._lock:
+                                lines = self._live["lines"]
+                                # If the previous line ended mid-clause ("…and", "…the"), this VAD
+                                # segment is the same sentence continuing after a breath — merge it
+                                # in rather than emitting a choppy second line. (Live view is
+                                # text-only/unattributed, so there's no speaker boundary to cross.)
+                                if lines and is_incomplete(lines[-1]["text"]):
+                                    lines[-1]["text"] = (lines[-1]["text"] + " " + txt).strip()
+                                else:
+                                    lines.append({"t": _fmt_hms((abs_start + s) / SR), "text": txt})
+                                self._live["lines"] = lines[-200:]
                         consumed = e
                     if consumed:
                         abs_start += consumed
@@ -331,13 +336,17 @@ class Engine:
                 if self._stab is not None and len(buf) >= int(SR * 0.4):
                     ptxt = (tr.transcribe(buf).get("text") or "").strip()
                     st = self._stab.push(ptxt)
-                    self._live["partial"] = ({"t": _fmt_hms(abs_start / SR), **st}
-                                             if (st["stable"] or st["volatile"]) else None)
+                    partial = ({"t": _fmt_hms(abs_start / SR), **st}
+                               if (st["stable"] or st["volatile"]) else None)
+                    with self._lock:
+                        self._live["partial"] = partial
                 else:
-                    self._live["partial"] = None
+                    with self._lock:
+                        self._live["partial"] = None
         finally:
             f.close()
-            self._live["active"] = False
+            with self._lock:
+                self._live["active"] = False
 
     # ---- session history ----
     def _session_dirs(self) -> list[Path]:

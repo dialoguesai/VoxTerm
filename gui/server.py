@@ -76,8 +76,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_json(self) -> dict:
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except (ValueError, TypeError):     # a malformed Content-Length must not crash the handler
+            return {}
         if n <= 0 or n > MAX_BODY:
+            if n > MAX_BODY:
+                self.close_connection = True   # don't leave an undrained oversized body on the socket
             return {}
         try:
             return json.loads(self.rfile.read(n).decode("utf-8")) or {}
@@ -204,7 +209,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "too many streams"}, 429)
             _sse_count += 1
         try:
-            self._hdr(200, "text/event-stream", {"Cache-Control": "no-cache", "Connection": "keep-alive"})
+            self._hdr(200, "text/event-stream", {"Cache-Control": "no-cache"})
             while True:
                 payload = json.dumps(ENGINE.status(), ensure_ascii=False)
                 self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
