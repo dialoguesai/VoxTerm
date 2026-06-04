@@ -9,3 +9,10 @@
 /gen/android/build
 /gen/android/local.properties
 /gen/android/.idea
+# iOS (generated on a Mac by `cargo tauri ios init`)
+/gen/apple/Externals
+/gen/apple/build
+/gen/apple/Pods
+/gen/apple/.tauri
+/gen/apple/*.xcworkspace
+/gen/apple/project.yml
