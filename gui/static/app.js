@@ -8,7 +8,14 @@ let RENAMES = {};          // speaker_id -> custom name (view + export)
 let lastJobState = "idle";
 
 // ---------- helpers ----------
-async function getJSON(url, opts) { const r = await fetch(url, opts); return r.json(); }
+// When opened via http://host/?token=… (LAN mode) every API call carries the token.
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+function authUrl(u) { return TOKEN ? u + (u.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN) : u; }
+async function getJSON(url, opts) {
+  opts = opts || {};
+  if (TOKEN) opts.headers = Object.assign({ "X-VoxTerm-Token": TOKEN }, opts.headers || {});
+  const r = await fetch(url, opts); return r.json();
+}
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.remove("hidden");
   clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add("hidden"), 2200);
@@ -38,8 +45,8 @@ async function init() {
   $("refreshSessions").addEventListener("click", loadSessions);
   $("navToggle").addEventListener("click", () => document.body.classList.toggle("nav-open"));
   $("copyAgent").addEventListener("click", copyForAI);
-  $("dlMd").addEventListener("click", () => download(buildMarkdown(), `${CUR.session.id}-agent.md`, "text/markdown"));
-  $("dlJson").addEventListener("click", () => download(buildJson(), `${CUR.session.id}-agent.json`, "application/json"));
+  $("dlMd").addEventListener("click", () => { if (!CUR) return toast("Load an AI export first"); download(buildMarkdown(), `${CUR.session.id}-agent.md`, "text/markdown"); });
+  $("dlJson").addEventListener("click", () => { if (!CUR) return toast("Load an AI export first"); download(buildJson(), `${CUR.session.id}-agent.json`, "application/json"); });
 
   await loadSessions();
   openEvents();
@@ -47,7 +54,7 @@ async function init() {
 
 // ---------- live status (SSE) ----------
 function openEvents() {
-  const es = new EventSource("/api/events");
+  const es = new EventSource(authUrl("/api/events"));
   es.onmessage = (e) => {
     let s; try { s = JSON.parse(e.data); } catch { return; }
     applyStatus(s);
@@ -117,9 +124,9 @@ async function loadSessions() {
   sessions.forEach((s) => {
     const li = document.createElement("li"); li.className = "session"; li.dataset.stem = s.stem;
     const has = []; if (s.agent_md) has.push("AI"); if (s.transcript) has.push("md");
-    li.innerHTML = `<div class="s-title">${prettyStem(s.stem)}</div>
+    li.innerHTML = `<div class="s-title">${escapeHtml(prettyStem(s.stem))}</div>
       <div class="s-sub">${has.map((h) => `<span class="tag">${h}</span>`).join("")}</div>`;
-    li.addEventListener("click", () => loadSession(s.stem));
+    li.addEventListener("click", () => loadSession(s.stem, s.dir));
     ul.appendChild(li);
   });
 }
@@ -129,11 +136,12 @@ function prettyStem(stem) {
   return stem;
 }
 
-async function loadSession(stem) {
+async function loadSession(stem, dir) {
+  const dq = dir ? `&dir=${encodeURIComponent(dir)}` : "";
   // prefer the structured JSON; fall back to the markdown if the AI export is missing
-  let res = await getJSON(`/api/session?stem=${encodeURIComponent(stem)}&kind=agent_json`);
+  let res = await getJSON(`/api/session?stem=${encodeURIComponent(stem)}&kind=agent_json${dq}`);
   if (!res.ok) {
-    res = await getJSON(`/api/session?stem=${encodeURIComponent(stem)}&kind=transcript`);
+    res = await getJSON(`/api/session?stem=${encodeURIComponent(stem)}&kind=transcript${dq}`);
     if (res.ok) return showRawMarkdown(stem, res.text);
     return toast("Could not load session");
   }
@@ -156,7 +164,7 @@ function render() {
   const leg = $("speakerLegend"); leg.innerHTML = "";
   CUR.speakers.filter((sp) => !sp.peer).forEach((sp) => {
     const el = document.createElement("button"); el.className = "lg";
-    el.innerHTML = `<span class="dot" style="background:${colorFor(sp.id)}"></span><span>${RENAMES[sp.id] || sp.label}</span>`;
+    el.innerHTML = `<span class="dot" style="background:${colorFor(sp.id)}"></span><span>${escapeHtml(RENAMES[sp.id] || sp.label)}</span>`;
     el.title = "Click to rename this speaker";
     el.addEventListener("click", () => renameSpeaker(sp.id));
     leg.appendChild(el);
@@ -200,12 +208,16 @@ function buildJson() {
 }
 function buildMarkdown() {
   const s = CUR.session;
+  // JSON.stringify of a string is a valid YAML double-quoted scalar — mirrors the
+  // server's _yaml_scalar so a rename/peer_name with a quote or newline can't break
+  // the front-matter or inject keys.
+  const y = (v) => JSON.stringify(String(v == null ? "" : v));
   const spk = CUR.speakers.map((sp) => sp.peer
-    ? `  - { id: 0, label: "${sp.label}", turns: ${sp.turns}, peer: true, peer_name: "${sp.peer_name}" }`
-    : `  - { id: ${sp.id}, label: "${RENAMES[sp.id] || sp.label}", turns: ${sp.turns}, peer: false }`).join("\n");
+    ? `  - { id: 0, label: ${y(sp.label)}, turns: ${sp.turns}, peer: true, peer_name: ${y(sp.peer_name)} }`
+    : `  - { id: ${sp.id}, label: ${y(RENAMES[sp.id] || sp.label)}, turns: ${sp.turns}, peer: false }`).join("\n");
   const fm = ["---", "voxterm_export_version: 1", "kind: voxterm-transcript",
-    `session_id: "${s.id}"`, `date: ${(s.started_at || "").slice(0, 10) || "null"}`,
-    `duration: "${s.duration_hms || ""}"`, `model: "${s.model || ""}"`, `language: "${s.language || ""}"`,
+    `session_id: ${y(s.id)}`, `date: ${(s.started_at || "").slice(0, 10) || "null"}`,
+    `duration: ${y(s.duration_hms || "")}`, `model: ${y(s.model || "")}`, `language: ${y(s.language || "")}`,
     "speakers:", spk, `turns: ${CUR.turns.length}`,
     "notes:", '  - "Speaker labels are diarization clusters / your renames, not verified identities."', "---", ""].join("\n");
   const body = ["> VoxTerm session — timestamps are [mm:ss] into the recording; [~]=uncertain, [overlap], [new-voice], [peer].", "", "## Transcript", ""];

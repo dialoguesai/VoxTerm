@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,13 +29,22 @@ STATIC = Path(__file__).resolve().parent / "static"
 DEFAULT_PORT = 8740
 MAX_BODY = 64 * 1024            # API requests are tiny; bound them
 MAX_SSE = 8                     # cap concurrent status streams
+_sse_lock = threading.Lock()
 _sse_count = 0
+
+# When LAN-exposed (VOXTERM_GUI_LAN=1) every /api/* call must carry this token —
+# without it, anyone on the wifi could start a recording of the room or read past
+# transcripts. None = loopback (no token required). Set in main().
+TOKEN = None
 
 ENGINE = Engine()
 
 # Strict CSP: same-origin only, no external anything (the UI is fully self-hosted).
-CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-       "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'")
+# style-src allows 'unsafe-inline' because the UI sets element.style (the live level
+# ring, the progress bar) and per-speaker color dots; all interpolated values are
+# escaped (app.js escapeHtml) and the data is local, so the exposure is minimal.
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+       "img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'")
 _CTYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
            ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json"}
 
@@ -68,10 +79,21 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
+    def _authed(self, q) -> bool:
+        """Token check for /api/* when LAN-exposed. Loopback (TOKEN is None) is open."""
+        if TOKEN is None:
+            return True
+        given = (self.headers.get("X-VoxTerm-Token")
+                 or (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+                 or (q.get("token") or [""])[0])
+        return bool(given) and secrets.compare_digest(given, TOKEN)
+
     # ---- GET ----
     def do_GET(self):
         u = urlparse(self.path)
         p, q = u.path, parse_qs(u.query)
+        if p.startswith("/api/") and not self._authed(q):
+            return self._json({"error": "unauthorized"}, 401)
         if p == "/" or p == "/index.html":
             return self._serve_static("index.html")
         if p.startswith("/static/"):
@@ -85,14 +107,18 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/session":
             stem = (q.get("stem") or [""])[0]
             kind = (q.get("kind") or ["transcript"])[0]
-            return self._json(ENGINE.read_artifact(stem, kind))
+            d = (q.get("dir") or [None])[0]
+            return self._json(ENGINE.read_artifact(stem, kind, dir=d))
         if p == "/api/events":
             return self._sse()
         return self._json({"error": "not found"}, 404)
 
     # ---- POST ----
     def do_POST(self):
-        p = urlparse(self.path).path
+        u = urlparse(self.path)
+        p, q = u.path, parse_qs(u.query)
+        if p.startswith("/api/") and not self._authed(q):
+            return self._json({"error": "unauthorized"}, 401)
         if p == "/api/record/start":
             return self._json(ENGINE.start_recording())
         if p == "/api/record/stop":
@@ -121,9 +147,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _sse(self):
         global _sse_count
-        if _sse_count >= MAX_SSE:
-            return self._json({"error": "too many streams"}, 429)
-        _sse_count += 1
+        with _sse_lock:
+            if _sse_count >= MAX_SSE:
+                return self._json({"error": "too many streams"}, 429)
+            _sse_count += 1
         try:
             self._hdr(200, "text/event-stream", {"Cache-Control": "no-cache", "Connection": "keep-alive"})
             while True:
@@ -134,21 +161,25 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            _sse_count -= 1
+            with _sse_lock:
+                _sse_count -= 1
 
 
 def main(argv=None) -> int:
+    global TOKEN
     lan = os.environ.get("VOXTERM_GUI_LAN") == "1"
     host = "0.0.0.0" if lan else "127.0.0.1"
     port = int(os.environ.get("VOXTERM_GUI_PORT", DEFAULT_PORT))
+    if lan:
+        # Records a real room — never expose to the wifi without a secret.
+        TOKEN = os.environ.get("VOXTERM_GUI_TOKEN") or secrets.token_urlsafe(24)
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
-    where = f"http://{'<this-host>' if lan else '127.0.0.1'}:{port}"
-    print(f"[voxterm-gui] serving {where}")
     if lan:
-        print("[voxterm-gui] LAN-exposed (VOXTERM_GUI_LAN=1) — reachable from your phone on this wifi.")
+        print(f"[voxterm-gui] LAN-exposed (VOXTERM_GUI_LAN=1) — token REQUIRED on every /api call.", flush=True)
+        print(f"[voxterm-gui] open from your phone:  http://<this-host>:{port}/?token={TOKEN}", flush=True)
     else:
-        print("[voxterm-gui] loopback only. Set VOXTERM_GUI_LAN=1 to reach it from your phone.")
+        print(f"[voxterm-gui] serving http://127.0.0.1:{port}  (loopback only; set VOXTERM_GUI_LAN=1 for phone access)", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -69,8 +69,13 @@ class Engine:
             if self.recording:
                 return {"ok": True, "already": True}
             from audio.capture import AudioCapture
-            self._cap = AudioCapture()
-            self._cap.start()
+            try:
+                self._cap = AudioCapture()
+                self._cap.start()
+            except Exception as e:  # no input device / busy / permission
+                self._cap = None
+                self.recording = False
+                return {"ok": False, "error": f"could not open the microphone: {e}"}
             self._chunks = []
             self._stop.clear()
             self.recording = True
@@ -86,31 +91,33 @@ class Engine:
                 chunks = self._cap.drain()
             except Exception:
                 chunks = []
-            for c in chunks:
-                if c is not None and len(c):
-                    self._chunks.append(np.asarray(c, dtype=np.float32))
-            if chunks:
-                last = np.asarray(chunks[-1], dtype=np.float32)
+            fresh = [np.asarray(c, dtype=np.float32) for c in chunks if c is not None and len(c)]
+            if fresh:
+                with self._lock:                       # serialize with stop's concat/clear
+                    self._chunks.extend(fresh)
+                last = fresh[-1]
                 if len(last):
                     self.level = float(np.sqrt(np.mean(np.square(last))))
             time.sleep(0.066)  # ~15 Hz
 
     def stop_recording(self, model: str = "fw-small", language: str = "en") -> dict:
+        if not self.recording:
+            return {"ok": False, "error": "not recording"}
+        # Signal + join the poll thread WITHOUT holding self._lock (the poll thread takes
+        # the lock to append, so holding it here would deadlock). Once joined, no more
+        # appends can race the final drain/concat/clear.
+        self._stop.set()
+        if self._poll_thread:
+            self._poll_thread.join(timeout=5)
         with self._lock:
-            if not self.recording:
-                return {"ok": False, "error": "not recording"}
-            self._stop.set()
-            if self._poll_thread:
-                self._poll_thread.join(timeout=3)
+            self.recording = False
             try:
-                rest = self._cap.drain()
-                for c in rest:
+                for c in self._cap.drain():
                     if c is not None and len(c):
                         self._chunks.append(np.asarray(c, dtype=np.float32))
                 self._cap.stop()
             except Exception:
                 pass
-            self.recording = False
             audio = np.concatenate(self._chunks).astype(np.float32) if self._chunks else np.zeros(0, dtype=np.float32)
             self._chunks = []
         if len(audio) < SR // 2:  # < 0.5s
@@ -189,21 +196,25 @@ class Engine:
         items = sorted(out.values(), key=lambda x: x.get("mtime", 0), reverse=True)
         return items
 
-    def _resolve(self, stem: str, suffix: str) -> Path | None:
+    def _resolve(self, stem: str, suffix: str, only_dir: str | None = None) -> Path | None:
         # prevent traversal: stem must be a bare name
         if "/" in stem or ".." in stem:
             return None
-        for d in self._session_dirs():
+        dirs = self._session_dirs()
+        if only_dir:  # restrict to that dir IFF it's a known session dir (no traversal)
+            od = Path(only_dir)
+            dirs = [d for d in dirs if d == od]
+        for d in dirs:
             p = d / f"{stem}{suffix}"
             if p.exists():
                 return p
         return None
 
-    def read_artifact(self, stem: str, kind: str) -> dict:
+    def read_artifact(self, stem: str, kind: str, dir: str | None = None) -> dict:
         suffix = {"transcript": "-transcript.md", "agent_md": "-agent.md", "agent_json": "-agent.json"}.get(kind)
         if not suffix:
             return {"ok": False, "error": "bad kind"}
-        p = self._resolve(stem, suffix)
+        p = self._resolve(stem, suffix, only_dir=dir)
         if not p:
             return {"ok": False, "error": "not found"}
         return {"ok": True, "stem": stem, "kind": kind, "path": str(p), "text": p.read_text(encoding="utf-8")}

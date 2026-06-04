@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -33,6 +34,31 @@ from tui.events import EventLogger  # noqa: E402
 from tui.app import VoxTerm  # noqa: E402  (reuse only the static _split_text_by_segments)
 
 SR = config.SAMPLE_RATE  # 16000
+
+# Loaded engines are cached so a second recording doesn't reload the model (hundreds
+# of MB) from disk. Acquisition is serialized; the diarizer's per-session state is
+# reset per run. (The GUI runs one transcription at a time.)
+_ENGINE_LOCK = threading.Lock()
+_TR_CACHE: dict = {}
+_VAD = None
+_DIAR = None
+
+
+def _get_engines(model: str, language: str):
+    global _VAD, _DIAR
+    with _ENGINE_LOCK:
+        key = (model, language)
+        tr = _TR_CACHE.get(key)
+        if tr is None:
+            tr = get_transcriber(model, language=language)
+            tr.load()
+            _TR_CACHE[key] = tr
+        if _VAD is None:
+            _VAD = SileroVAD()
+        if _DIAR is None:
+            _DIAR = DiarizationProxy()
+            _DIAR.load()
+        return tr, _VAD, _DIAR
 
 
 def load_wav_16k_mono(path: Path) -> np.ndarray:
@@ -64,11 +90,7 @@ def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str = "fw-base"
 
     if progress:
         progress(0.02, "loading engine")
-    tr = get_transcriber(model, language=language)
-    tr.load()
-    vad = SileroVAD()
-    diar = DiarizationProxy()
-    diar.load()
+    tr, vad, diar = _get_engines(model, language)  # cached across calls
     diar.reset_session()
 
     session_start = datetime.now()
