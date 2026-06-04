@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>VoxTerm</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <button id="navToggle" class="nav-toggle" aria-label="Toggle sessions">☰</button>
+
+  <aside id="sidebar" class="sidebar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <h1>VoxTerm</h1>
+    </div>
+    <p class="brand-sub">record · transcribe · review</p>
+    <div class="sessions-head">
+      <h2>Sessions</h2>
+      <button id="refreshSessions" class="ghost-btn" title="Refresh">↻</button>
+    </div>
+    <ul id="sessions" class="sessions"></ul>
+  </aside>
+
+  <main class="main">
+    <!-- RECORD HERO -->
+    <section class="hero" id="hero">
+      <div class="record-wrap">
+        <div id="ring" class="ring"><div id="ringFill" class="ring-fill"></div>
+          <button id="recBtn" class="rec-btn" aria-label="Start recording">
+            <span class="rec-icon"></span>
+          </button>
+        </div>
+        <div class="hero-meta">
+          <div id="timer" class="timer">00:00</div>
+          <div id="recState" class="rec-state">Ready to record</div>
+        </div>
+      </div>
+      <div class="controls">
+        <label class="field">
+          <span>Model</span>
+          <select id="model" class="select"></select>
+        </label>
+        <label class="field">
+          <span>Language</span>
+          <select id="language" class="select"></select>
+        </label>
+      </div>
+      <p class="hint" id="hint">Pick a model, hit record, talk. Stop when done — you’ll get a clean transcript and an AI-ready export.</p>
+    </section>
+
+    <!-- PROGRESS -->
+    <section id="progress" class="progress hidden">
+      <div class="progress-row">
+        <span id="progressMsg">Transcribing…</span>
+        <span id="progressPct">0%</span>
+      </div>
+      <div class="bar"><div id="barFill" class="bar-fill"></div></div>
+    </section>
+
+    <!-- TRANSCRIPT -->
+    <section id="transcriptView" class="transcript-view hidden">
+      <div class="tv-head">
+        <div>
+          <h2 id="tvTitle">Transcript</h2>
+          <p id="tvMeta" class="tv-meta"></p>
+        </div>
+        <div class="tv-actions">
+          <button id="copyAgent" class="btn">Copy for AI</button>
+          <button id="dlJson" class="btn ghost">Download JSON</button>
+          <button id="dlMd" class="btn ghost">Download .md</button>
+        </div>
+      </div>
+      <div id="speakerLegend" class="legend"></div>
+      <div id="turns" class="turns"></div>
+    </section>
+
+    <!-- EMPTY STATE -->
+    <section id="empty" class="empty">
+      <p>No transcript yet. Record something, or pick a past session from the left.</p>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

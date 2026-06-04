@@ -1,0 +1,160 @@
+"""VoxTerm GUI control server — stdlib http.server, no extra deps.
+
+Serves the web UI (gui/static/) + a small JSON API + an SSE status stream, all
+backed by gui.engine (which reuses VoxTerm's own engine). Loopback-only by default;
+set VOXTERM_GUI_LAN=1 to expose on the LAN (e.g. to drive it from your phone).
+
+    python -m gui.server            # http://127.0.0.1:8740
+    VOXTERM_GUI_LAN=1 python -m gui.server
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
+
+_ROOT = str(Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from gui.engine import Engine  # noqa: E402
+
+STATIC = Path(__file__).resolve().parent / "static"
+DEFAULT_PORT = 8740
+MAX_BODY = 64 * 1024            # API requests are tiny; bound them
+MAX_SSE = 8                     # cap concurrent status streams
+_sse_count = 0
+
+ENGINE = Engine()
+
+# Strict CSP: same-origin only, no external anything (the UI is fully self-hosted).
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+       "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'")
+_CTYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+           ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json"}
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "voxterm-gui"
+
+    def _hdr(self, code=200, ctype="application/json", extra=None):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+
+    def _json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self._hdr(code, "application/json")
+        self.wfile.write(body)
+
+    def _read_json(self) -> dict:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > MAX_BODY:
+            return {}
+        try:
+            return json.loads(self.rfile.read(n).decode("utf-8")) or {}
+        except Exception:
+            return {}
+
+    def log_message(self, *a):  # quiet
+        pass
+
+    # ---- GET ----
+    def do_GET(self):
+        u = urlparse(self.path)
+        p, q = u.path, parse_qs(u.query)
+        if p == "/" or p == "/index.html":
+            return self._serve_static("index.html")
+        if p.startswith("/static/"):
+            return self._serve_static(p[len("/static/"):])
+        if p == "/api/options":
+            return self._json({"models": ENGINE.models(), "languages": ENGINE.languages()})
+        if p == "/api/status":
+            return self._json(ENGINE.status())
+        if p == "/api/sessions":
+            return self._json({"sessions": ENGINE.sessions()})
+        if p == "/api/session":
+            stem = (q.get("stem") or [""])[0]
+            kind = (q.get("kind") or ["transcript"])[0]
+            return self._json(ENGINE.read_artifact(stem, kind))
+        if p == "/api/events":
+            return self._sse()
+        return self._json({"error": "not found"}, 404)
+
+    # ---- POST ----
+    def do_POST(self):
+        p = urlparse(self.path).path
+        if p == "/api/record/start":
+            return self._json(ENGINE.start_recording())
+        if p == "/api/record/stop":
+            b = self._read_json()
+            return self._json(ENGINE.stop_recording(model=b.get("model", "fw-small"),
+                                                     language=b.get("language", "en")))
+        if p == "/api/transcribe":
+            b = self._read_json()
+            return self._json(ENGINE.transcribe_existing(b.get("wav", ""), model=b.get("model", "fw-small"),
+                                                         language=b.get("language", "en")))
+        return self._json({"error": "not found"}, 404)
+
+    def _serve_static(self, rel: str):
+        # resolve within STATIC only (no traversal)
+        target = (STATIC / rel).resolve()
+        try:
+            target.relative_to(STATIC.resolve())
+        except ValueError:
+            return self._json({"error": "forbidden"}, 403)
+        if not target.is_file():
+            return self._json({"error": "not found"}, 404)
+        ctype = _CTYPES.get(target.suffix, "application/octet-stream")
+        data = target.read_bytes()
+        self._hdr(200, ctype)
+        self.wfile.write(data)
+
+    def _sse(self):
+        global _sse_count
+        if _sse_count >= MAX_SSE:
+            return self._json({"error": "too many streams"}, 429)
+        _sse_count += 1
+        try:
+            self._hdr(200, "text/event-stream", {"Cache-Control": "no-cache", "Connection": "keep-alive"})
+            while True:
+                payload = json.dumps(ENGINE.status(), ensure_ascii=False)
+                self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                self.wfile.flush()
+                time.sleep(0.4)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            _sse_count -= 1
+
+
+def main(argv=None) -> int:
+    lan = os.environ.get("VOXTERM_GUI_LAN") == "1"
+    host = "0.0.0.0" if lan else "127.0.0.1"
+    port = int(os.environ.get("VOXTERM_GUI_PORT", DEFAULT_PORT))
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd.daemon_threads = True
+    where = f"http://{'<this-host>' if lan else '127.0.0.1'}:{port}"
+    print(f"[voxterm-gui] serving {where}")
+    if lan:
+        print("[voxterm-gui] LAN-exposed (VOXTERM_GUI_LAN=1) — reachable from your phone on this wifi.")
+    else:
+        print("[voxterm-gui] loopback only. Set VOXTERM_GUI_LAN=1 to reach it from your phone.")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
