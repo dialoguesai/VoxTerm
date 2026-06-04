@@ -275,15 +275,20 @@ class Engine:
         return {"ok": True}
 
     def _live_loop(self, wav: Path):
-        # tail raw PCM of the (still-growing) WAV, transcribe finalized speech windows
+        # tail raw PCM of the (still-growing) WAV; dispatch to streaming or chunked transcription
         from gui.transcribe import _get_engines, _fmt_hms
         from gui.eot import is_incomplete
         try:
-            # dedicated="live" → the live monitor gets its OWN transcriber, never sharing
-            # CTranslate2 decode state with the post-stop batch job. fw-base is the light live
-            # default where it exists (Linux/Intel mac); on Apple Silicon fall back to the
-            # platform default (MLX) so this doesn't KeyError.
-            live_model = "fw-base" if "fw-base" in config.AVAILABLE_MODELS else config.DEFAULT_MODEL
+            # Prefer the sherpa streaming backend for the live view when it's installed (opt-in)
+            # — it streams word-by-word. Else fw-base (light, where it exists), else the platform
+            # default (MLX on Apple Silicon). dedicated="live" → its OWN transcriber, never
+            # sharing decode state with the post-stop batch job.
+            if "sherpa-stream-en" in config.AVAILABLE_MODELS:
+                live_model = "sherpa-stream-en"
+            elif "fw-base" in config.AVAILABLE_MODELS:
+                live_model = "fw-base"
+            else:
+                live_model = config.DEFAULT_MODEL
             tr, vad, _d = _get_engines(live_model, "en", dedicated="live")
         except Exception as e:
             with self._lock:
@@ -293,60 +298,98 @@ class Engine:
         f = open(wav, "rb")
         f.seek(0, 2)  # tail from the CURRENT end — only NEW speech (true live, no slow backlog replay)
         abs_start = max(0, (f.tell() - 44) // 2)  # samples already recorded before we started (for timestamps)
-        buf = np.zeros(0, dtype=np.float32)
         try:
-            while not self._live_stop.is_set():
-                self._live_stop.wait(8.0)
-                data = f.read()
-                if data:
-                    n = len(data) - (len(data) % 2)
-                    if n:
-                        buf = np.concatenate([buf, np.frombuffer(data[:n], dtype="<i2").astype(np.float32) / 32768.0])
-                if len(buf) >= SR * 2:
-                    segs = vad.get_speech_segments(buf, min_speech_ms=500, min_silence_ms=300, max_speech_s=6.0)
-                    guard = len(buf) - int(SR * 0.6)
-                    consumed = 0
-                    for (s, e) in segs:
-                        if e > guard:
-                            break
-                        txt = (tr.transcribe(buf[s:e]).get("text") or "").strip()
-                        if txt:
-                            # lock only the brief dict mutation, never the slow transcribe/VAD,
-                            # so status()/SSE (which reads self._live under the same lock) sees a
-                            # consistent snapshot without stalling.
-                            with self._lock:
-                                lines = self._live["lines"]
-                                # If the previous line ended mid-clause ("…and", "…the"), this VAD
-                                # segment is the same sentence continuing after a breath — merge it
-                                # in rather than emitting a choppy second line. (Live view is
-                                # text-only/unattributed, so there's no speaker boundary to cross.)
-                                if lines and is_incomplete(lines[-1]["text"]):
-                                    lines[-1]["text"] = (lines[-1]["text"] + " " + txt).strip()
-                                else:
-                                    lines.append({"t": _fmt_hms((abs_start + s) / SR), "text": txt})
-                                self._live["lines"] = lines[-200:]
-                        consumed = e
-                    if consumed:
-                        abs_start += consumed
-                        buf = buf[consumed:]
-                        if self._stab:           # finalized → the volatile tail starts fresh
-                            self._stab.reset()
-                # Volatile preview of the still-in-progress tail (LocalAgreement-stabilized),
-                # so an in-progress utterance shows up live instead of only after the pause.
-                if self._stab is not None and len(buf) >= int(SR * 0.4):
-                    ptxt = (tr.transcribe(buf).get("text") or "").strip()
-                    st = self._stab.push(ptxt)
-                    partial = ({"t": _fmt_hms(abs_start / SR), **st}
-                               if (st["stable"] or st["volatile"]) else None)
-                    with self._lock:
-                        self._live["partial"] = partial
-                else:
-                    with self._lock:
-                        self._live["partial"] = None
+            if type(tr).__name__ == "SherpaStreamingTranscriber":
+                self._live_stream_loop(tr, f, abs_start, _fmt_hms)
+            else:
+                self._live_chunk_loop(tr, vad, f, abs_start, _fmt_hms, is_incomplete)
         finally:
             f.close()
             with self._lock:
                 self._live["active"] = False
+
+    def _live_chunk_loop(self, tr, vad, f, abs_start, _fmt_hms, is_incomplete):
+        """VAD-windowed transcription for batch backends (fw-*/MLX/qwen3/parakeet). The
+        original live path, unchanged — finalize speech windows past a tail guard, merge
+        mid-clause fragments, publish a LocalAgreement-stabilized volatile partial."""
+        buf = np.zeros(0, dtype=np.float32)
+        while not self._live_stop.is_set():
+            self._live_stop.wait(8.0)
+            data = f.read()
+            if data:
+                n = len(data) - (len(data) % 2)
+                if n:
+                    buf = np.concatenate([buf, np.frombuffer(data[:n], dtype="<i2").astype(np.float32) / 32768.0])
+            if len(buf) >= SR * 2:
+                segs = vad.get_speech_segments(buf, min_speech_ms=500, min_silence_ms=300, max_speech_s=6.0)
+                guard = len(buf) - int(SR * 0.6)
+                consumed = 0
+                for (s, e) in segs:
+                    if e > guard:
+                        break
+                    txt = (tr.transcribe(buf[s:e]).get("text") or "").strip()
+                    if txt:
+                        # lock only the brief dict mutation, never the slow transcribe/VAD, so
+                        # status()/SSE sees a consistent snapshot without stalling.
+                        with self._lock:
+                            lines = self._live["lines"]
+                            if lines and is_incomplete(lines[-1]["text"]):
+                                lines[-1]["text"] = (lines[-1]["text"] + " " + txt).strip()
+                            else:
+                                lines.append({"t": _fmt_hms((abs_start + s) / SR), "text": txt})
+                            self._live["lines"] = lines[-200:]
+                    consumed = e
+                if consumed:
+                    abs_start += consumed
+                    buf = buf[consumed:]
+                    if self._stab:
+                        self._stab.reset()
+            if self._stab is not None and len(buf) >= int(SR * 0.4):
+                ptxt = (tr.transcribe(buf).get("text") or "").strip()
+                st = self._stab.push(ptxt)
+                partial = ({"t": _fmt_hms(abs_start / SR), **st}
+                           if (st["stable"] or st["volatile"]) else None)
+                with self._lock:
+                    self._live["partial"] = partial
+            else:
+                with self._lock:
+                    self._live["partial"] = None
+
+    def _live_stream_loop(self, tr, f, abs_start, _fmt_hms):
+        """True word-by-word streaming for the sherpa-onnx backend. One persistent OnlineStream
+        is fed the freshly-tailed PCM; the running decode is the volatile partial; sherpa's own
+        endpoint detection finalizes a line. Tighter cadence than the chunked path for low
+        latency. Same lock discipline on the live-state writes."""
+        rec = tr._rec
+        st = rec.create_stream()
+        fed = abs_start            # total samples fed (for the current line's start timestamp)
+        line_start = abs_start
+        while not self._live_stop.is_set():
+            self._live_stop.wait(1.0)
+            data = f.read()
+            if data:
+                n = len(data) - (len(data) % 2)
+                if n:
+                    frame = np.frombuffer(data[:n], dtype="<i2").astype(np.float32) / 32768.0
+                    st.accept_waveform(16000, np.ascontiguousarray(frame))
+                    fed += n // 2
+                    while rec.is_ready(st):
+                        rec.decode_stream(st)
+            text = (rec.get_result(st) or "").strip()
+            if rec.is_endpoint(st):
+                final = text.capitalize() if text else ""
+                rec.reset(st)
+                with self._lock:
+                    if final:
+                        self._live["lines"].append({"t": _fmt_hms(line_start / SR), "text": final})
+                        self._live["lines"] = self._live["lines"][-200:]
+                    self._live["partial"] = None
+                line_start = fed
+            else:
+                partial = ({"t": _fmt_hms(line_start / SR), "stable": "", "volatile": text.capitalize()}
+                           if text else None)
+                with self._lock:
+                    self._live["partial"] = partial
 
     # ---- session history ----
     def _session_dirs(self) -> list[Path]:
