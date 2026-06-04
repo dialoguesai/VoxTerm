@@ -10,7 +10,6 @@
 set -uo pipefail
 
 APP_ID="site.nubs.voxterm"          # keep in sync with src-tauri/tauri.conf.json `identifier`
-ACTIVITY="${APP_ID}/.MainActivity"
 PORT="${VOXTERM_GUI_PORT:-8740}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
 
@@ -21,6 +20,11 @@ for a in "$@"; do case "$a" in
   --no-build) NO_BUILD=1;; --deep) DEEP=1;;
   -h|--help) sed -n '2,9p' "$0"; exit 0;;
   *) echo "unknown arg: $a"; exit 2;; esac; done
+
+# Debug builds get the `.debug` applicationId suffix (tauri.conf.json), but the activity CLASS
+# keeps the base namespace → launch component is <installed-appId>/<base-namespace>.MainActivity.
+APP_ID_RUN="$APP_ID"; [ "$PROFILE" = debug ] && APP_ID_RUN="${APP_ID}.debug"
+ACTIVITY="${APP_ID_RUN}/${APP_ID}.MainActivity"
 
 # SDK location: honor ANDROID_HOME/ANDROID_SDK_ROOT, else per-OS default (mac vs linux).
 : "${ANDROID_HOME:=${ANDROID_SDK_ROOT:-}}"
@@ -57,7 +61,7 @@ BACKEND_PID=""; EMU_PID=""; LOG=/tmp/voxterm-backend.log
 cleanup(){
   [ -n "$BACKEND_PID" ] && kill "$BACKEND_PID" 2>/dev/null
   adb reverse --remove tcp:$PORT 2>/dev/null
-  adb shell am force-stop "$APP_ID" 2>/dev/null
+  adb shell am force-stop "${APP_ID_RUN:-$APP_ID}" 2>/dev/null
   [ "$KEEP" = 0 ] && [ -n "$EMU_PID" ] && kill "$EMU_PID" 2>/dev/null
 }
 trap cleanup EXIT
@@ -69,7 +73,7 @@ command -v cargo >/dev/null || die 10 "cargo missing"
 cargo tauri --version >/dev/null 2>&1 || die 10 "cargo-tauri missing (cargo install tauri-cli)"
 [ -d "$NDK_HOME" ]         || die 10 "NDK not found ($NDK_HOME)"
 [ -x "$JAVA_HOME/bin/java" ] || die 10 "JAVA_HOME invalid ($JAVA_HOME)"
-[ -n "$PY" ]               || die 10 "python3 not found (set \$PYTHON)"
+{ [ -n "$PY" ] && "$PY" -c "import sys" >/dev/null 2>&1; } || die 10 "python3 not usable (set \$PYTHON)"
 ok "adb · cargo · cargo-tauri · NDK · JAVA_HOME · python3"
 have="$(rustup target list --installed 2>/dev/null)"
 for t in aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android; do
@@ -137,8 +141,10 @@ FAILS=0
 adb shell dumpsys activity activities 2>/dev/null | grep -q "$APP_ID" \
   && ok "E1 activity foregrounded" || { echo "  ✗ E1 activity not found"; FAILS=$((FAILS+1)); }
 adb exec-out screencap -p > /tmp/voxterm-shot.png 2>/dev/null
-"$PY" "$ROOT/scripts/assert_screen.py" /tmp/voxterm-shot.png \
-  && ok "E3 render sane" || { echo "  ✗ E3 render check failed"; FAILS=$((FAILS+1)); }
+"$PY" "$ROOT/scripts/assert_screen.py" /tmp/voxterm-shot.png; _e3=$?
+if [ "$_e3" = 0 ]; then ok "E3 render sane"
+elif [ "$_e3" = 3 ]; then echo "  ~ E3 render check skipped (Pillow not installed)"   # soft, not a pass
+else echo "  ✗ E3 render check failed"; FAILS=$((FAILS+1)); fi
 if [ "$up" = 1 ] && grep -q "GET /api/options" "$LOG"; then
   ok "E2 WebView reached the engine (GET /api/options)"
   grep -q "GET /api/events" "$LOG" && ok "E2 SSE stream opened"

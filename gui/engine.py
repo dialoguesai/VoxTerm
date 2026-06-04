@@ -360,6 +360,7 @@ class Engine:
         is fed the freshly-tailed PCM; the running decode is the volatile partial; sherpa's own
         endpoint detection finalizes a line. Tighter cadence than the chunked path for low
         latency. Same lock discipline on the live-state writes."""
+        from audio.transcriber import _is_hallucination
         rec = tr._rec
         st = rec.create_stream()
         fed = abs_start            # total samples fed (for the current line's start timestamp)
@@ -379,6 +380,9 @@ class Engine:
             if rec.is_endpoint(st):
                 final = text.capitalize() if text else ""
                 rec.reset(st)
+                # parity with the chunked/batch backends: drop hallucinations + consecutive dupes
+                if final and (_is_hallucination(final, "en") or tr._is_duplicate(final)):
+                    final = ""
                 with self._lock:
                     if final:
                         self._live["lines"].append({"t": _fmt_hms(line_start / SR), "text": final})

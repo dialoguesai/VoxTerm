@@ -423,25 +423,48 @@ _SHERPA_MODEL_URL = (
 )
 
 
+def _model_complete(d: "Path") -> bool:
+    """True only when ALL four artifacts are present (so a half-extracted dir isn't trusted)."""
+    return (d.is_dir() and any(d.glob("*encoder*.onnx")) and any(d.glob("*decoder*.onnx"))
+            and any(d.glob("*joiner*.onnx")) and (d / "tokens.txt").exists())
+
+
 def _ensure_sherpa_model(repo: str) -> "Path":
     """Return a local dir holding the streaming-zipformer ONNX files, downloading + extracting
-    the published tarball on first use. Cached under ~/.cache/voxterm/sherpa/<repo>/."""
+    the published tarball on first use. Cached under ~/.cache/voxterm/sherpa/<repo>/. Both the
+    download and the extraction are atomic, and a partial/corrupt cache self-heals."""
     from pathlib import Path
+    import shutil
     import tarfile
     import urllib.request
 
     cache = Path.home() / ".cache" / "voxterm" / "sherpa"
     target = cache / repo
-    if target.is_dir() and any(target.glob("*encoder*.onnx")):
+    if _model_complete(target):
         return target
+    shutil.rmtree(target, ignore_errors=True)               # wipe any partial/corrupt extraction
     cache.mkdir(parents=True, exist_ok=True)
     tarball = cache / (repo + ".tar.bz2")
     if not tarball.exists():
         tmp = tarball.with_suffix(".part")
-        urllib.request.urlretrieve(_SHERPA_MODEL_URL, tmp)  # noqa: S310 (pinned github release URL)
+        try:
+            urllib.request.urlretrieve(_SHERPA_MODEL_URL, tmp)  # noqa: S310 (pinned github release URL)
+        except Exception:
+            tmp.unlink(missing_ok=True)                     # don't leak a partial download
+            raise
         tmp.rename(tarball)
+    # extract into a sibling staging dir, then atomically move into place — an interrupted
+    # extraction never leaves a half-populated dir that _model_complete would accept.
+    staging = cache / (repo + ".extracting")
+    shutil.rmtree(staging, ignore_errors=True)
     with tarfile.open(tarball, "r:bz2") as tf:
-        tf.extractall(cache)                                # extracts to cache/<repo>/
+        tf.extractall(staging)                              # produces staging/<repo>/
+    extracted = staging / repo
+    if not _model_complete(extracted):
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RuntimeError(f"sherpa model tarball for {repo} is incomplete after extraction")
+    extracted.rename(target)
+    shutil.rmtree(staging, ignore_errors=True)
     return target
 
 
@@ -468,12 +491,23 @@ class SherpaStreamingTranscriber(_DeduplicatorMixin):
                 '(pip install "voxterm[streaming]" or pip install sherpa-onnx).'
             ) from e
         d = _ensure_sherpa_model(self.model_id)
-        enc = next(iter(sorted(d.glob("*encoder*.int8.onnx")) or sorted(d.glob("*encoder*.onnx"))))
-        dec = next(iter(sorted(d.glob("*decoder*.onnx"))))
-        joi = next(iter(sorted(d.glob("*joiner*.int8.onnx")) or sorted(d.glob("*joiner*.onnx"))))
-        tokens = next(iter(sorted(d.glob("tokens.txt"))))
+
+        def _pick(*globs):
+            for g in globs:
+                hits = sorted(d.glob(g))
+                if hits:
+                    return str(hits[0])
+            raise RuntimeError(
+                f"sherpa model dir {d} is missing a required file (looked for {globs!r}); "
+                "delete it and re-run to re-download."
+            )
+
+        enc = _pick("*encoder*.int8.onnx", "*encoder*.onnx")
+        dec = _pick("*decoder*.onnx")
+        joi = _pick("*joiner*.int8.onnx", "*joiner*.onnx")
+        tokens = _pick("tokens.txt")
         self._rec = sherpa_onnx.OnlineRecognizer.from_transducer(
-            tokens=str(tokens), encoder=str(enc), decoder=str(dec), joiner=str(joi),
+            tokens=tokens, encoder=enc, decoder=dec, joiner=joi,
             num_threads=2, provider="cpu", enable_endpoint_detection=True,
             rule1_min_trailing_silence=2.4, rule2_min_trailing_silence=1.2,
             rule3_min_utterance_length=20.0,
@@ -498,7 +532,8 @@ class SherpaStreamingTranscriber(_DeduplicatorMixin):
             return {"text": "", "speaker": "", "speaker_id": 0}
         return {"text": text, "speaker": "", "speaker_id": 0}
 
-    def is_loaded(self) -> bool:
+    @property
+    def is_loaded(self) -> bool:        # @property to match every other backend's contract
         return self._loaded
 
 

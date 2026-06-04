@@ -34,7 +34,7 @@ def test_factory_returns_sherpa_backend():
     assert "sherpa-stream-en" in config.SHERPA_MODELS
     tr = get_transcriber("sherpa-stream-en")
     assert isinstance(tr, SherpaStreamingTranscriber)
-    assert not tr.is_loaded()      # factory returns UNLOADED (load() downloads the model)
+    assert not tr.is_loaded        # factory returns UNLOADED (load() downloads the model)
 
 
 @pytest.mark.skipif(_NO_SHERPA, reason="sherpa-onnx not installed (optional [streaming] extra)")

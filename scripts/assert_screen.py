@@ -40,6 +40,13 @@ def main(argv=None) -> int:
     if not args:
         print("usage: assert_screen.py <screenshot.png>", file=sys.stderr)
         return 2
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        # exit 3 = SKIP (not a pass): Pillow isn't a macOS dep, so the caller must NOT treat
+        # an absent-Pillow run as a green render gate.
+        print("SKIP: Pillow not installed — render check skipped (pip install Pillow to enable)")
+        return 3
     ok, msg = check(args[0])
     print(("OK: " if ok else "FAIL: ") + msg)
     return 0 if ok else 1
