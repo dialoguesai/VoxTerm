@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <button id="navToggle" class="nav-toggle" aria-label="Toggle sessions">☰</button>
+  <button id="navToggle" class="nav-toggle" aria-label="Toggle sessions" aria-controls="sidebar" aria-expanded="false">☰</button>
 
   <aside id="sidebar" class="sidebar">
     <div class="brand">
@@ -34,7 +34,7 @@
         </div>
         <div class="hero-meta">
           <div id="timer" class="timer">00:00</div>
-          <div id="recState" class="rec-state">Ready to record</div>
+          <div id="recState" class="rec-state" aria-live="polite">Ready to record</div>
         </div>
       </div>
       <div class="controls">
@@ -68,6 +68,7 @@
         </div>
         <div class="tv-actions">
           <button id="copyAgent" class="btn">Copy for AI</button>
+          <button id="summarizeAi" class="btn ghost">Summarize for AI</button>
           <button id="dlJson" class="btn ghost">Download JSON</button>
           <button id="dlMd" class="btn ghost">Download .md</button>
         </div>
@@ -81,7 +82,7 @@
       <p>No transcript yet. Record something, or pick a past session from the left.</p>
     </section>
 
-    <div id="toast" class="toast hidden"></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </main>
 
   <script src="/static/app.js"></script>

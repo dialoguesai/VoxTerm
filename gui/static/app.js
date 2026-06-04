@@ -28,6 +28,11 @@ function fmtClock(sec) {
            : `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 function colorFor(sid) { return PALETTE[((sid || 0) % PALETTE.length + PALETTE.length) % PALETTE.length]; }
+// Sidebar drawer (mobile): keep body class + aria-expanded in sync.
+function setNav(open) {
+  document.body.classList.toggle("nav-open", open);
+  $("navToggle").setAttribute("aria-expanded", open ? "true" : "false");
+}
 function nameFor(turn) {
   if (turn.peer) return turn.peer_name ? `${turn.speaker} · ${turn.peer_name}` : turn.speaker;
   if (RENAMES[turn.speaker_id]) return RENAMES[turn.speaker_id];
@@ -43,13 +48,44 @@ async function init() {
 
   $("recBtn").addEventListener("click", toggleRecord);
   $("refreshSessions").addEventListener("click", loadSessions);
-  $("navToggle").addEventListener("click", () => document.body.classList.toggle("nav-open"));
+  $("navToggle").addEventListener("click", () => setNav(!document.body.classList.contains("nav-open")));
   $("copyAgent").addEventListener("click", copyForAI);
-  $("dlMd").addEventListener("click", () => { if (!CUR) return toast("Load an AI export first"); download(buildMarkdown(), `${CUR.session.id}-agent.md`, "text/markdown"); });
-  $("dlJson").addEventListener("click", () => { if (!CUR) return toast("Load an AI export first"); download(buildJson(), `${CUR.session.id}-agent.json`, "application/json"); });
+  $("summarizeAi").addEventListener("click", summarizeForAI);
+  $("dlMd").addEventListener("click", () => { if (!CUR) return; download(buildMarkdown(), `${CUR.session.id}-agent.md`, "text/markdown"); });
+  $("dlJson").addEventListener("click", () => { if (!CUR) return; download(buildJson(), `${CUR.session.id}-agent.json`, "application/json"); });
+  setExportEnabled(false);
+
+  // close the mobile drawer when clicking outside it (the toggle handles its own click)
+  document.addEventListener("click", (e) => {
+    if (!document.body.classList.contains("nav-open")) return;
+    if ($("sidebar").contains(e.target) || $("navToggle").contains(e.target)) return;
+    setNav(false);
+  });
+  // global keyboard: Escape closes drawer; Space / r toggle record (not while typing in a control)
+  document.addEventListener("keydown", onKeydown);
 
   await loadSessions();
   openEvents();
+}
+
+function onKeydown(e) {
+  if (e.key === "Escape") { setNav(false); return; }
+  const el = document.activeElement;
+  const tag = el && el.tagName;
+  const typing = tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA" || (el && el.isContentEditable);
+  if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+  const isSpace = e.code === "Space" || e.key === " ";
+  // Let Space activate a focused button/session instead of hijacking it for record/stop.
+  if (isSpace && el && (tag === "BUTTON" || el.getAttribute("role") === "button")) return;
+  if (isSpace || e.key === "r" || e.key === "R") {
+    e.preventDefault();
+    toggleRecord();
+  }
+}
+
+// Export/copy actions are meaningless without a loaded transcript — disable them outright.
+function setExportEnabled(on) {
+  ["copyAgent", "summarizeAi", "dlJson", "dlMd"].forEach((id) => { $(id).disabled = !on; });
 }
 
 // ---------- live status (SSE) ----------
@@ -105,7 +141,7 @@ async function toggleRecord() {
   const recording = document.body.classList.contains("recording");
   if (!recording) {
     const r = await getJSON("/api/record/start", { method: "POST" });
-    if (!r.ok) toast("Could not start (mic busy?)");
+    if (!r.ok) toast(r.error ? "Mic error: " + r.error : "Could not start (mic busy?)");
   } else {
     $("recBtn").disabled = true;
     await getJSON("/api/record/stop", {
@@ -120,13 +156,15 @@ async function toggleRecord() {
 async function loadSessions() {
   const { sessions } = await getJSON("/api/sessions");
   const ul = $("sessions"); ul.innerHTML = "";
-  if (!sessions.length) { ul.innerHTML = `<li class="brand-sub" style="margin-left:0">No sessions yet.</li>`; return; }
+  if (!sessions.length) { ul.innerHTML = `<li class="sessions-empty">No sessions yet — record one to get started.</li>`; return; }
   sessions.forEach((s) => {
     const li = document.createElement("li"); li.className = "session"; li.dataset.stem = s.stem;
+    li.tabIndex = 0; li.setAttribute("role", "button");
     const has = []; if (s.agent_md) has.push("AI"); if (s.transcript) has.push("md");
     li.innerHTML = `<div class="s-title">${escapeHtml(prettyStem(s.stem))}</div>
       <div class="s-sub">${has.map((h) => `<span class="tag">${h}</span>`).join("")}</div>`;
     li.addEventListener("click", () => loadSession(s.stem, s.dir));
+    li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); loadSession(s.stem, s.dir); } });
     ul.appendChild(li);
   });
 }
@@ -149,13 +187,14 @@ async function loadSession(stem, dir) {
   RENAMES = {};
   render();
   document.querySelectorAll(".session").forEach((el) => el.classList.toggle("active", el.dataset.stem === stem));
-  document.body.classList.remove("nav-open");
+  setNav(false);
 }
 
 // ---------- render ----------
 function render() {
   $("empty").classList.add("hidden");
   $("transcriptView").classList.remove("hidden");
+  setExportEnabled(true);
   const s = CUR.session;
   $("tvTitle").textContent = prettyStem(s.id);
   $("tvMeta").textContent = `${CUR.turns.length} turns · ${CUR.speakers.length} speaker(s) · ${s.duration_hms || ""} · ${s.model || ""}`;
@@ -187,6 +226,7 @@ function render() {
 }
 function showRawMarkdown(stem, text) {
   CUR = null;
+  setExportEnabled(false);  // no structured JSON behind a raw-markdown view
   $("empty").classList.add("hidden"); $("transcriptView").classList.remove("hidden");
   $("tvTitle").textContent = prettyStem(stem); $("tvMeta").textContent = "(no AI export — raw transcript)";
   $("speakerLegend").innerHTML = "";
@@ -235,6 +275,32 @@ async function copyForAI() {
   const md = buildMarkdown();
   try { await navigator.clipboard.writeText(md); toast("Copied AI transcript to clipboard"); }
   catch { download(md, `${CUR.session.id}-agent.md`, "text/markdown"); toast("Clipboard blocked — downloaded instead"); }
+}
+// A ready-to-paste prompt: a strong summarization instruction followed by the transcript.
+function summaryPrompt() {
+  return [
+    "## Task",
+    "",
+    "You are given a transcript of a recorded conversation (below). Read it in full, then produce:",
+    "",
+    "1. **Summary** — a concise overview (3-5 sentences) of what the conversation was about.",
+    "2. **Key decisions** — a bullet list of decisions reached, or \"None\" if there were none.",
+    "3. **Action items** — a bullet list of follow-ups, each with the owner if one is identifiable.",
+    "4. **Per-speaker highlights** — for each speaker, 1-2 bullets on their main points or positions.",
+    "",
+    "Stick to what the transcript actually says. Do not invent details. Speaker labels are diarization",
+    "clusters or manual renames, not verified identities — treat them as such.",
+    "",
+    "---",
+    "",
+    buildMarkdown(),
+  ].join("\n");
+}
+async function summarizeForAI() {
+  if (!CUR) return toast("Load a transcript first");
+  const text = summaryPrompt();
+  try { await navigator.clipboard.writeText(text); toast("Copied summary prompt to clipboard"); }
+  catch { download(text, `${CUR.session.id}-summarize.md`, "text/markdown"); toast("Clipboard blocked — downloaded instead"); }
 }
 function download(text, filename, mime) {
   const blob = new Blob([text], { type: mime });
