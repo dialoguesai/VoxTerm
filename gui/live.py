@@ -26,6 +26,7 @@ import numpy as np  # noqa: E402
 
 import config  # noqa: E402
 from gui.transcribe import _get_engines, _fmt_hms  # reuse the cached engine + time fmt  # noqa: E402
+from gui.stabilize import PartialStabilizer  # noqa: E402
 
 SR = config.SAMPLE_RATE
 _WAV_HEADER = 44  # bytes; raw little-endian s16 PCM follows
@@ -55,6 +56,16 @@ def main(argv=None) -> int:
     abs_start = 0          # absolute sample index of buf[0]
     started = time.time()
     n_lines = 0
+    stab = PartialStabilizer()   # volatile preview of the still-in-progress tail
+    partial_len = 0              # chars of the in-place partial line currently on screen
+
+    def clear_partial():
+        nonlocal partial_len
+        if partial_len:
+            sys.stdout.write("\r" + " " * partial_len + "\r")
+            sys.stdout.flush()
+            partial_len = 0
+
     try:
         while True:
             time.sleep(args.interval)
@@ -75,17 +86,31 @@ def main(argv=None) -> int:
                     out = tr.transcribe(buf[s:e])
                     txt = (out.get("text") or "").strip()
                     if txt:
+                        clear_partial()            # erase the in-place partial before a final line
                         print(f"  [{_fmt_hms((abs_start + s) / SR)}] {txt}", flush=True)
                         n_lines += 1
                     consumed = e
                 if consumed:
                     abs_start += consumed
                     buf = buf[consumed:]
+                    stab.reset()                   # finalized → the volatile tail restarts clean
+            # in-place volatile partial of the still-in-progress tail
+            if len(buf) >= int(SR * 0.4):
+                st = stab.push((tr.transcribe(buf).get("text") or "").strip())
+                line = (st["stable"] + (" " if st["stable"] and st["volatile"] else "") + st["volatile"]).strip()
+                if line:
+                    s_out = f"  ~ [{_fmt_hms(abs_start / SR)}] {line}"
+                    sys.stdout.write("\r" + s_out + " " * max(0, partial_len - len(s_out)))
+                    sys.stdout.flush()
+                    partial_len = len(s_out)
+                else:
+                    clear_partial()
             if args.max_seconds and (time.time() - started) >= args.max_seconds:
                 break
     except KeyboardInterrupt:
         pass
     finally:
+        clear_partial()
         f.close()
     print(f"[live] stopped — {n_lines} live lines transcribed", flush=True)
     return 0

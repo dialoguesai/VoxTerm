@@ -11,6 +11,7 @@ word-by-word streaming is a planned fast-follow.
 """
 from __future__ import annotations
 
+import struct
 import sys
 import threading
 import time
@@ -41,12 +42,30 @@ def _write_wav(path: Path, audio: np.ndarray) -> None:
         w.writeframes(pcm.tobytes())
 
 
+def _wav_header(data_len: int, sr: int = SR) -> bytes:
+    """The canonical 44-byte PCM WAV header (mono, s16). ``data_len`` may be 0 as a
+    placeholder while the file is still growing — it's patched on close. Tailers read raw
+    PCM past byte 44 regardless, so a placeholder size never breaks live monitoring."""
+    return (b"RIFF" + struct.pack("<I", 36 + data_len) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, sr, sr * 2, 2, 16)
+            + b"data" + struct.pack("<I", data_len))
+
+
+def _pcm_bytes(chunk: np.ndarray) -> bytes:
+    """float32 [-1,1] → little-endian s16 bytes (the same mapping as ``_write_wav``)."""
+    return (np.clip(chunk, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+
+
 class Engine:
     def __init__(self, out_dir: Path = OUT_DIR):
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self._cap = None
-        self._chunks: list[np.ndarray] = []
+        # Recording streams straight to a growing WAV on disk (so the live monitor can tail
+        # THIS recording, and so a long session doesn't sit entirely in RAM).
+        self._rec_file = None
+        self._rec_wav_path = None
+        self._rec_bytes = 0
         self._poll_thread = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -81,14 +100,30 @@ class Engine:
                 self._cap = None
                 self.recording = False
                 return {"ok": False, "error": f"could not open the microphone: {e}"}
-            self._chunks = []
+            # open the growing WAV now (placeholder header, patched on stop) so the live
+            # monitor can tail this very recording and click-Live follows what you're saying.
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            self._rec_wav_path = self.out_dir / f"{ts}-gui.wav"
+            try:
+                self._rec_file = open(self._rec_wav_path, "wb")
+                self._rec_file.write(_wav_header(0))
+                self._rec_file.flush()
+            except OSError as e:
+                try:
+                    self._cap.stop()
+                except Exception:
+                    pass
+                self._cap = None
+                self.recording = False
+                return {"ok": False, "error": f"could not open the recording file: {e}"}
+            self._rec_bytes = 0
             self._stop.clear()
             self.recording = True
             self.started_at = time.time()
             self.level = 0.0
             self._poll_thread = threading.Thread(target=self._poll, daemon=True, name="gui-rec-poll")
             self._poll_thread.start()
-            return {"ok": True}
+            return {"ok": True, "wav": str(self._rec_wav_path)}
 
     def _poll(self):
         while not self._stop.is_set():
@@ -98,8 +133,13 @@ class Engine:
                 chunks = []
             fresh = [np.asarray(c, dtype=np.float32) for c in chunks if c is not None and len(c)]
             if fresh:
-                with self._lock:                       # serialize with stop's concat/clear
-                    self._chunks.extend(fresh)
+                with self._lock:                       # serialize with stop's finalize
+                    if self._rec_file:
+                        for c in fresh:
+                            b = _pcm_bytes(c)
+                            self._rec_file.write(b)
+                            self._rec_bytes += len(b)
+                        self._rec_file.flush()         # make new audio visible to the live tailer
                 last = fresh[-1]
                 if len(last):
                     self.level = float(np.sqrt(np.mean(np.square(last))))
@@ -117,24 +157,38 @@ class Engine:
         with self._lock:
             self.recording = False
             try:
-                for c in self._cap.drain():
+                for c in self._cap.drain():       # capture any frames still queued
                     if c is not None and len(c):
-                        self._chunks.append(np.asarray(c, dtype=np.float32))
+                        b = _pcm_bytes(np.asarray(c, dtype=np.float32))
+                        self._rec_file.write(b)
+                        self._rec_bytes += len(b)
                 self._cap.stop()
             except Exception:
                 pass
-            audio = np.concatenate(self._chunks).astype(np.float32) if self._chunks else np.zeros(0, dtype=np.float32)
-            self._chunks = []
-        if len(audio) < SR // 2:  # < 0.5s
+            wav = self._rec_wav_path
+            n_bytes = self._rec_bytes
+            try:                                  # patch the header with the real size → valid WAV
+                self._rec_file.flush()
+                self._rec_file.seek(0)
+                self._rec_file.write(_wav_header(n_bytes))
+                self._rec_file.flush()
+                self._rec_file.close()
+            except Exception:
+                pass
+            self._rec_file = None
+        if n_bytes < SR:  # < 0.5s of s16 mono (SR*2 bytes/s → 0.5s = SR bytes)
+            try:
+                wav.unlink()
+            except OSError:
+                pass
             self.job = {"state": "error", "error": "recording too short"}
             return {"ok": False, "error": "recording too short"}
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        wav = self.out_dir / f"{ts}-gui.wav"
-        _write_wav(wav, audio)
         self.job = {"state": "transcribing", "frac": 0.0, "msg": "starting", "wav": str(wav)}
-        threading.Thread(target=self._do_transcribe, args=(audio, model, language, str(wav)),
-                         daemon=True, name="gui-transcribe").start()
-        return {"ok": True, "wav": str(wav), "seconds": round(len(audio) / SR, 1)}
+        # load + transcribe off the request thread (matches transcribe_existing)
+        threading.Thread(
+            target=lambda: self._do_transcribe(transcribe.load_wav_16k_mono(wav), model, language, str(wav)),
+            daemon=True, name="gui-transcribe").start()
+        return {"ok": True, "wav": str(wav), "seconds": round(n_bytes / (SR * 2), 1)}
 
     def _do_transcribe(self, audio, model, language, wav):
         try:

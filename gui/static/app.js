@@ -50,6 +50,30 @@ function nameFor(turn) {
   return turn.speaker || "(unattributed)";
 }
 
+// Live amplitude strip: push each SSE level reading and draw a scrolling bar history.
+const WAVE_MAX = 120;
+const _wave = [];
+function drawWave(level) {
+  const c = $("recWave");
+  if (!c || !c.getContext) return;
+  _wave.push(Math.min(1, Math.max(0, (level || 0) / 0.25)));  // ~0.25 RMS ≈ full height
+  if (_wave.length > WAVE_MAX) _wave.shift();
+  const ctx = c.getContext("2d"), W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  const accent = (getComputedStyle(document.documentElement).getPropertyValue("--rec") || "#ff5d6c").trim();
+  ctx.fillStyle = accent || "#ff5d6c";
+  const barW = W / WAVE_MAX;
+  for (let i = 0; i < _wave.length; i++) {
+    const h = Math.max(2, _wave[i] * H);
+    ctx.fillRect(i * barW + barW * 0.2, (H - h) / 2, barW * 0.6, h);  // centered bar
+  }
+}
+function clearWave() {
+  _wave.length = 0;
+  const c = $("recWave");
+  if (c && c.getContext) c.getContext("2d").clearRect(0, 0, c.width, c.height);
+}
+
 // ---------- init ----------
 async function init() {
   const o = await getJSON("/api/options");
@@ -131,9 +155,11 @@ function applyStatus(s) {
     // level ring (0..~0.3 typical) -> 0..360deg
     const deg = Math.min(360, (s.level || 0) / 0.25 * 360);
     $("ring").style.background = `conic-gradient(var(--rec) ${deg}deg, var(--line) ${deg}deg)`;
+    drawWave(s.level);              // scrolling live amplitude strip
     $("model").disabled = $("language").disabled = true;
   } else {
     $("ring").style.background = "";
+    if (_wave.length) clearWave();
     $("model").disabled = $("language").disabled = false;
     if (lastJobState === "idle" && s.job.state === "idle") { $("recState").textContent = "Ready to record"; $("timer").textContent = "00:00"; }
   }

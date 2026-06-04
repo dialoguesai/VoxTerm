@@ -30,7 +30,7 @@ import numpy as np
 
 import config
 import engine as engine_mod
-from engine import Engine, _write_wav, SR
+from engine import Engine, _write_wav, _wav_header, _pcm_bytes, SR
 
 
 # --- isolation helpers -------------------------------------------------------
@@ -94,6 +94,50 @@ def test_write_wav_clips_out_of_range():
         frames = w.readframes(3)
     samples = np.frombuffer(frames, dtype="<i2")
     assert samples[0] == 32767 and samples[1] == -32767  # clipped, not wrapped
+
+
+# --- streaming-WAV path (record-while-live): header + incremental write ------
+
+def test_wav_header_is_44_bytes_and_parses():
+    n = SR  # 1s of samples → 2*SR data bytes
+    data = _pcm_bytes(np.zeros(n, dtype=np.float32))
+    hdr = _wav_header(len(data))
+    assert len(hdr) == 44
+    p = Path(tempfile.mkdtemp()) / "h.wav"
+    p.write_bytes(hdr + data)
+    with wave.open(str(p), "rb") as w:
+        assert w.getnchannels() == 1 and w.getsampwidth() == 2 and w.getframerate() == SR
+        assert w.getnframes() == n
+
+
+def test_pcm_bytes_matches_write_wav_mapping():
+    # _pcm_bytes must encode identically to _write_wav (same clip→int16 LE)
+    audio = np.array([0.0, 0.5, -0.5, 5.0, -5.0], dtype=np.float32)
+    out = Path(tempfile.mkdtemp())
+    _write_wav(out / "ref.wav", audio)
+    with wave.open(str(out / "ref.wav"), "rb") as w:
+        ref = w.readframes(w.getnframes())
+    assert _pcm_bytes(audio) == ref
+
+
+def test_growing_wav_is_tailable_then_finalizes_valid():
+    # Mirror start/poll/stop: placeholder header, append PCM (tailable mid-write), patch on stop.
+    p = Path(tempfile.mkdtemp()) / "grow.wav"
+    a = _pcm_bytes((np.ones(SR, dtype=np.float32) * 0.25))   # 1s
+    b = _pcm_bytes((np.ones(SR, dtype=np.float32) * -0.25))  # 1s
+    f = open(p, "wb")
+    f.write(_wav_header(0)); f.flush()
+    f.write(a); f.flush()
+    # a tailer reading raw PCM past byte 44 sees the data already, before finalize:
+    with open(p, "rb") as r:
+        r.seek(44)
+        assert r.read() == a
+    f.write(b)
+    total = len(a) + len(b)
+    f.seek(0); f.write(_wav_header(total)); f.flush(); f.close()
+    with wave.open(str(p), "rb") as w:
+        assert w.getnframes() == 2 * SR            # both seconds present
+        assert w.readframes(w.getnframes()) == a + b
 
 
 # --- session history ---------------------------------------------------------

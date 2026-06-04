@@ -177,6 +177,9 @@ body.live-on .live-toggle { background: var(--rec); color: #fff; border-color: t
 .live-lines { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; font-size: 14px; line-height: 1.5; }
 .live-lines .ll { color: var(--text); }
 .live-lines .ll-t { color: var(--faint); font-variant-numeric: tabular-nums; font-size: 12px; margin-right: 8px; }
+.rec-wave { display: none; width: 100%; height: 56px; margin: 6px 0 2px; }
+body.recording .rec-wave { display: block; }
+
 .live-lines .ll-empty { color: var(--faint); font-style: italic; }
 /* the in-progress utterance: committed words solid, volatile tail dimmed + softly pulsing */
 .live-lines .ll-partial { color: var(--accent-dim); }
