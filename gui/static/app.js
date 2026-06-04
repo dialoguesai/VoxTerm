@@ -6,6 +6,7 @@ let OPTS = { models: [], languages: {} };
 let CUR = null;            // current doc (agent_json parsed)
 let RENAMES = {};          // speaker_id -> custom name (view + export)
 let lastJobState = "idle";
+let SESSIONS = [];         // last-fetched session list (filtered by the search box for render)
 
 // ---------- helpers ----------
 // When opened via http://host/?token=… (LAN mode) every API call carries the token.
@@ -68,6 +69,7 @@ async function init() {
 
   $("recBtn").addEventListener("click", toggleRecord);
   $("refreshSessions").addEventListener("click", loadSessions);
+  $("sessionSearch").addEventListener("input", (e) => renderSessions(e.target.value));
   $("navToggle").addEventListener("click", () => setNav(!document.body.classList.contains("nav-open")));
   $("copyAgent").addEventListener("click", copyForAI);
   $("summarizeAi").addEventListener("click", summarizeForAI);
@@ -183,10 +185,18 @@ async function toggleRecord() {
 
 // ---------- sessions ----------
 async function loadSessions() {
-  const sessions = (await getJSON("/api/sessions")).sessions || [];
+  SESSIONS = (await getJSON("/api/sessions")).sessions || [];
+  renderSessions($("sessionSearch") ? $("sessionSearch").value : "");
+}
+// Render (a filtered view of) SESSIONS into the sidebar. Filter is case-insensitive
+// over the pretty date + raw stem.
+function renderSessions(query) {
+  const q = (query || "").trim().toLowerCase();
+  const list = q ? SESSIONS.filter((s) => prettyStem(s.stem).toLowerCase().includes(q) || s.stem.toLowerCase().includes(q)) : SESSIONS;
   const ul = $("sessions"); ul.innerHTML = "";
-  if (!sessions.length) { ul.innerHTML = `<li class="sessions-empty">No sessions yet — record one to get started.</li>`; return; }
-  sessions.forEach((s) => {
+  if (!SESSIONS.length) { ul.innerHTML = `<li class="sessions-empty">No sessions yet — record one to get started.</li>`; return; }
+  if (!list.length) { ul.innerHTML = `<li class="sessions-empty">No sessions match “${escapeHtml(query)}”.</li>`; return; }
+  list.forEach((s) => {
     const li = document.createElement("li"); li.className = "session"; li.dataset.stem = s.stem;
     li.tabIndex = 0; li.setAttribute("role", "button");
     const has = []; if (s.agent_md) has.push("AI"); if (s.transcript) has.push("md");
