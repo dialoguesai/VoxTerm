@@ -51,27 +51,38 @@ function nameFor(turn) {
 }
 
 // Live amplitude strip: push each SSE level reading and draw a scrolling bar history.
-const WAVE_MAX = 120;
+// Bitmap is sized to CSS px × devicePixelRatio so it stays crisp on any display (the
+// canvas is stretched by CSS, so a fixed 600px bitmap was blurry on phones/retina).
+const WAVE_MAX = 80;
 const _wave = [];
 function drawWave(level) {
   const c = $("recWave");
   if (!c || !c.getContext) return;
   _wave.push(Math.min(1, Math.max(0, (level || 0) / 0.25)));  // ~0.25 RMS ≈ full height
   if (_wave.length > WAVE_MAX) _wave.shift();
-  const ctx = c.getContext("2d"), W = c.width, H = c.height;
-  ctx.clearRect(0, 0, W, H);
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = c.clientWidth || 600, cssH = c.clientHeight || 56;
+  const bw = Math.round(cssW * dpr), bh = Math.round(cssH * dpr);
+  if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh; }
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // draw in CSS pixels
+  ctx.clearRect(0, 0, cssW, cssH);
   const accent = (getComputedStyle(document.documentElement).getPropertyValue("--rec") || "#ff5d6c").trim();
   ctx.fillStyle = accent || "#ff5d6c";
-  const barW = W / WAVE_MAX;
+  const barW = cssW / WAVE_MAX;
   for (let i = 0; i < _wave.length; i++) {
-    const h = Math.max(2, _wave[i] * H);
-    ctx.fillRect(i * barW + barW * 0.2, (H - h) / 2, barW * 0.6, h);  // centered bar
+    const h = Math.max(2, _wave[i] * cssH);
+    ctx.fillRect(i * barW + barW * 0.2, (cssH - h) / 2, barW * 0.6, h);  // centered bar
   }
 }
 function clearWave() {
   _wave.length = 0;
   const c = $("recWave");
-  if (c && c.getContext) c.getContext("2d").clearRect(0, 0, c.width, c.height);
+  if (c && c.getContext) {
+    const ctx = c.getContext("2d");
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, c.width, c.height);
+  }
 }
 
 // ---------- init ----------
