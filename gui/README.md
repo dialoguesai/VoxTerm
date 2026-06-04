@@ -17,13 +17,21 @@ A single linear flow:
 1. **Record** — pick a model + language, hit the button, talk.
 2. **Stop** — captured audio is written to a WAV.
 3. **Transcribe + diarize** — runs in the background; a progress bar tracks it.
-4. **Export** — produces an AI-ready `-agent.md` + `-agent.json` automatically.
+4. **Export** — automatically produces an AI-ready `-agent.md` + `-agent.json`, plus
+   `.srt` / `.vtt` subtitles.
 5. **History** — every past session is listed in the sidebar; click to reopen.
 6. **Rename** — relabel a diarized speaker; the rename flows into your copy/download.
 
-Review extras: a speaker legend, per-turn timestamps and uncertainty markers, a
-"Copy for AI" button, and `.md` / `.json` downloads built client-side from the
-loaded session (so your renames are included).
+Review extras: a speaker legend, per-turn timestamps and uncertainty markers, and
+client-side exports built from the loaded session (so your renames are included) —
+**Copy for AI**, **Summarize for AI** (transcript prefixed with a ready-to-paste LLM
+summarization task), and `.md` / `.json` / `.srt` / `.vtt` downloads. The subtitle
+output is byte-identical to the server-written files.
+
+It's also a **PWA** — install it to your phone/desktop home screen for an app-like,
+offline-capable shell. Your model + language picks are remembered (localStorage), and
+keyboard shortcuts work (**Space** or **R** to record, **Esc** to close the sidebar),
+with focus rings and aria-live status for accessibility.
 
 ## How to run
 
@@ -86,8 +94,8 @@ valid token, every `/api/*` call returns `401`.
 | `server.py` | stdlib `http.server` — serves the UI, a tiny JSON API, and an SSE status stream; handles the loopback/LAN + token gate and CSP. No transcription logic. |
 | `engine.py` | Control layer over VoxTerm's engine: start/stop recording (via `AudioCapture`), the background transcribe+export job, live level/status, and session-history listing/reads. |
 | `transcribe.py` | Headless transcription: a WAV (or in-memory buffer) → a faithful `events.jsonl` + `-transcript.md`, reusing VoxTerm's transcriber, Silero VAD, diarizer, and `EventLogger`. Also a CLI: `python -m gui.transcribe ROOM.wav`. |
-| `export.py` | Pure, replayable export of an `events.jsonl` → `-agent.md` (+ `-agent.json`). No audio, no live state. CLI: `python -m glass.export [events.jsonl]`. |
-| `static/index.html`, `static/app.js`, `static/style.css` | The self-hosted single-page UI (record hero, progress bar, transcript view, sessions sidebar). |
+| `export.py` | Pure, replayable export of an `events.jsonl` → `-agent.md` / `.json` / `.srt` / `.vtt`. No audio, no live state. CLI: `python -m gui.export [events.jsonl] [--format md\|json\|srt\|vtt\|all]`. |
+| `static/index.html`, `static/app.js`, `static/style.css`, `static/sw.js`, `static/manifest.webmanifest`, `static/icon*` | The self-hosted single-page UI + the PWA service worker, manifest, and icons. |
 
 ### Outputs
 
@@ -100,7 +108,8 @@ VoxTerm's own session and live dirs. Per session:
 | `<ts>-events.jsonl` | the canonical VoxTerm event stream (the same one the TUI emits / glass tails) |
 | `<ts>-transcript.md` | human-readable transcript with timestamps + speaker labels |
 | `<ts>-agent.md` | AI-ready transcript: YAML front-matter, marker legend, one speaker-attributed, timestamped turn per line |
-| `<ts>-agent.json` | typed, lossless companion the `-agent.md` is rendered from |
+| `<ts>-agent.json` | typed, lossless companion the `-agent.md` is rendered from (each turn carries `t_offset`/`t_offset_end`) |
+| `<ts>-agent.srt` / `.vtt` | subtitles (SubRip / WebVTT) rendered from the per-turn timestamps |
 
 `events.jsonl` is the source of truth: each line is one JSON object
 (`{"t", "kind", …}`). The exporter is a pure reduction of that stream — `text` events
@@ -129,4 +138,5 @@ history → rename). Planned fast-follows, not built here:
 - **Hivemind** shared/aggregated sessions.
 - **Merged view** across multiple sessions.
 - **Speaker profiles** (persistent cross-session identities; v1 renames are per-view).
-- **Tauri native / mobile wrapper** instead of the browser tab.
+- **Tauri native desktop + iOS/Android** app (the PWA already covers home-screen install;
+  Tauri is the native / app-store step, wrapping this same web UI).
