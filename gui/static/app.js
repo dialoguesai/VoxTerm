@@ -9,15 +9,14 @@ let lastJobState = "idle";
 let SESSIONS = [];         // last-fetched session list (filtered by the search box for render)
 
 // ---------- helpers ----------
-// When opened via http://host/?token=… (LAN mode) every API call carries the token.
-const TOKEN = new URLSearchParams(location.search).get("token") || "";
-function authUrl(u) { return TOKEN ? u + (u.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN) : u; }
+// The backend is pluggable. window.VOX_BACKEND is whatever engine the UI talks to; the
+// default (backend-remote.js) speaks HTTP+SSE to a VoxTerm server, same-origin, with the
+// optional ?token= auth — exactly the behavior shipped before this seam. A future on-device
+// (in-webview) engine sets window.VOX_BACKEND before this script and the UI is unchanged.
+const BACKEND = window.VOX_BACKEND || new RemoteBackend();
 async function getJSON(url, opts) {
-  opts = opts || {};
-  if (TOKEN) opts.headers = Object.assign({ "X-VoxTerm-Token": TOKEN }, opts.headers || {});
   try {
-    const r = await fetch(url, opts);
-    return await r.json();
+    return await BACKEND.getJSON(url, opts);
   } catch (e) {                                  // server down / non-JSON / offline
     toast("Network error — is the server running?");
     return { ok: false, error: "network" };
@@ -150,7 +149,7 @@ function setExportEnabled(on) {
 
 // ---------- live status (SSE) ----------
 function openEvents() {
-  const es = new EventSource(authUrl("/api/events"));
+  const es = BACKEND.events();
   es.onmessage = (e) => {
     let s; try { s = JSON.parse(e.data); } catch { return; }
     applyStatus(s);

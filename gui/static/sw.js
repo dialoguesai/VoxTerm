@@ -8,6 +8,7 @@
 const CACHE = "voxterm-shell-v1";
 const SHELL = [
   "/",
+  "/static/backend-remote.js",
   "/static/app.js",
   "/static/style.css",
   "/static/icon.svg",
