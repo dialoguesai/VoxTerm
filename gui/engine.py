@@ -54,6 +54,10 @@ class Engine:
         self.level = 0.0
         self.started_at = None
         self.job = {"state": "idle"}  # idle | transcribing | done | error
+        # live (near-real-time) monitor of an in-progress recording (reads the file)
+        self._live = {"active": False, "wav": None, "lines": []}
+        self._live_stop = threading.Event()
+        self._live_thread = None
 
     # ---- static option lists for the UI ----
     def models(self) -> list[str]:
@@ -160,7 +164,74 @@ class Engine:
             "level": round(self.level, 4),
             "elapsed": round(time.time() - self.started_at, 1) if (self.recording and self.started_at) else 0,
             "job": self.job,
+            "live": {"active": self._live["active"], "wav": self._live["wav"],
+                     "lines": self._live["lines"][-120:]},
         }
+
+    # ---- live (near-real-time) monitor: tail an in-progress recording's file ----
+    def _newest_wav(self):
+        wavs = sorted(self.out_dir.glob("*.wav"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return wavs[0] if wavs else None
+
+    def live_start(self, wav: str | None = None) -> dict:
+        with self._lock:
+            if self._live["active"]:
+                return {"ok": True, "already": True, "wav": self._live["wav"]}
+            target = Path(wav) if wav else self._newest_wav()
+            if not target or not target.exists():
+                return {"ok": False, "error": "no recording to monitor"}
+            self._live = {"active": True, "wav": str(target), "lines": []}
+            self._live_stop.clear()
+            self._live_thread = threading.Thread(target=self._live_loop, args=(target,), daemon=True, name="gui-live")
+            self._live_thread.start()
+            return {"ok": True, "wav": str(target)}
+
+    def live_stop(self) -> dict:
+        self._live_stop.set()
+        if self._live_thread:
+            self._live_thread.join(timeout=3)
+        self._live["active"] = False
+        return {"ok": True}
+
+    def _live_loop(self, wav: Path):
+        # tail raw PCM of the (still-growing) WAV, transcribe finalized speech windows
+        from gui.transcribe import _get_engines, _fmt_hms
+        try:
+            tr, vad, _d = _get_engines("fw-base", "en")
+        except Exception as e:
+            self._live["lines"].append({"t": "", "text": f"(live engine error: {e})"})
+            self._live["active"] = False
+            return
+        f = open(wav, "rb")
+        f.seek(0, 2)  # tail from the CURRENT end — only NEW speech (true live, no slow backlog replay)
+        abs_start = max(0, (f.tell() - 44) // 2)  # samples already recorded before we started (for timestamps)
+        buf = np.zeros(0, dtype=np.float32)
+        try:
+            while not self._live_stop.is_set():
+                self._live_stop.wait(8.0)
+                data = f.read()
+                if data:
+                    n = len(data) - (len(data) % 2)
+                    if n:
+                        buf = np.concatenate([buf, np.frombuffer(data[:n], dtype="<i2").astype(np.float32) / 32768.0])
+                if len(buf) >= SR * 2:
+                    segs = vad.get_speech_segments(buf, min_speech_ms=500, min_silence_ms=300, max_speech_s=6.0)
+                    guard = len(buf) - int(SR * 0.6)
+                    consumed = 0
+                    for (s, e) in segs:
+                        if e > guard:
+                            break
+                        txt = (tr.transcribe(buf[s:e]).get("text") or "").strip()
+                        if txt:
+                            self._live["lines"].append({"t": _fmt_hms((abs_start + s) / SR), "text": txt})
+                            self._live["lines"] = self._live["lines"][-200:]
+                        consumed = e
+                    if consumed:
+                        abs_start += consumed
+                        buf = buf[consumed:]
+        finally:
+            f.close()
+            self._live["active"] = False
 
     # ---- session history ----
     def _session_dirs(self) -> list[Path]:

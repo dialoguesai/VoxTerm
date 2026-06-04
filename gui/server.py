@@ -135,6 +135,11 @@ class Handler(BaseHTTPRequestHandler):
             b = self._read_json()
             return self._json(ENGINE.transcribe_existing(b.get("wav", ""), model=b.get("model", "fw-small"),
                                                          language=b.get("language", "en")))
+        if p == "/api/live/start":
+            b = self._read_json()
+            return self._json(ENGINE.live_start(b.get("wav")))
+        if p == "/api/live/stop":
+            return self._json(ENGINE.live_stop())
         return self._json({"error": "not found"}, 404)
 
     def _serve_static(self, rel: str):

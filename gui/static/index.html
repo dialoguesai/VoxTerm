@@ -53,6 +53,13 @@
         </label>
       </div>
       <p class="hint" id="hint">Pick a model, hit record, talk. Stop when done — you’ll get a clean transcript and an AI-ready export.</p>
+      <button id="liveToggle" class="btn ghost live-toggle">⦿ Live transcript</button>
+    </section>
+
+    <!-- LIVE TRANSCRIPT (near-real-time, while a recording is in progress) -->
+    <section id="liveView" class="live-view hidden">
+      <div class="live-head"><span class="live-dot"></span> Live transcript <span id="liveMeta" class="tv-meta"></span></div>
+      <div id="liveLines" class="live-lines" aria-live="polite"></div>
     </section>
 
     <!-- PROGRESS -->

@@ -68,6 +68,7 @@ async function init() {
   lSel.addEventListener("change", () => lsSet(LS_LANG, lSel.value));
 
   $("recBtn").addEventListener("click", toggleRecord);
+  $("liveToggle").addEventListener("click", toggleLive);
   $("refreshSessions").addEventListener("click", loadSessions);
   $("sessionSearch").addEventListener("input", (e) => renderSessions(e.target.value));
   $("navToggle").addEventListener("click", () => setNav(!document.body.classList.contains("nav-open")));
@@ -164,7 +165,32 @@ function applyStatus(s) {
     toast("Error: " + (job.error || "transcription failed"));
     $("recState").textContent = "Ready to record";
   }
+  // live transcript panel (near-real-time tail of an in-progress recording)
+  const live = s.live || { active: false, lines: [] };
+  document.body.classList.toggle("live-on", !!live.active);
+  $("liveToggle").textContent = live.active ? "■ Stop live" : "⦿ Live transcript";
+  if (live.active) {
+    $("liveView").classList.remove("hidden");
+    $("liveMeta").textContent = live.wav ? "· " + live.wav.split("/").pop() : "";
+    const lines = live.lines || [];
+    const el = $("liveLines");
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    el.innerHTML = lines.length
+      ? lines.map((l) => `<div class="ll"><span class="ll-t">${escapeHtml(l.t)}</span>${escapeHtml(l.text)}</div>`).join("")
+      : `<div class="ll-empty">listening…</div>`;
+    if (atBottom) el.scrollTop = el.scrollHeight;   // keep pinned to newest unless scrolled up
+  } else {
+    $("liveView").classList.add("hidden");
+  }
   lastJobState = job.state;
+}
+
+// ---------- live transcript ----------
+async function toggleLive() {
+  const on = document.body.classList.contains("live-on");
+  const r = await getJSON(on ? "/api/live/stop" : "/api/live/start",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  if (!on && r && r.ok === false) toast(r.error ? "Live: " + r.error : "Could not start live");
 }
 
 // ---------- record ----------
