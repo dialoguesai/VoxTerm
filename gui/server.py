@@ -84,8 +84,9 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
-    def log_message(self, *a):  # quiet
-        pass
+    def log_message(self, *a):  # quiet unless VOXTERM_GUI_LOG=1 (request log for tests/debug)
+        if os.environ.get("VOXTERM_GUI_LOG") == "1":
+            super().log_message(*a)
 
     def _authed(self, q) -> bool:
         """Token check for /api/* when LAN-exposed. Loopback (TOKEN is None) is open."""

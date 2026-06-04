@@ -75,6 +75,19 @@
     if (s.token) $("token").value = s.token;
   } catch (_) {}
 
+  // Dev/test convenience: if a VoxTerm backend answers on THIS device's localhost
+  // (e.g. `adb reverse tcp:8740` during dev, or the smoke-test harness), connect to it
+  // automatically. On a normal phone this fails fast and the pairing form just stays.
+  // Loopback is tokenless on the desktop, so no secret is needed.
+  (function probeLoopback() {
+    const c = new AbortController();
+    const timer = setTimeout(() => c.abort(), 800);
+    fetch("http://localhost:8740/api/options", { signal: c.signal })
+      .then((r) => { if (r.ok) window.location.href = "http://localhost:8740/"; })
+      .catch(() => {})
+      .finally(() => clearTimeout(timer));
+  })();
+
   function connect() {
     const host = $("host").value.trim();
     const port = ($("port").value.trim() || "8740");
