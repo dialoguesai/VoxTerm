@@ -31,10 +31,12 @@ def test_gating_consistent_either_way():
 def test_factory_returns_sherpa_backend():
     import config
     from audio.transcriber import get_transcriber, SherpaStreamingTranscriber
-    assert "sherpa-stream-en" in config.SHERPA_MODELS
-    tr = get_transcriber("sherpa-stream-en")
-    assert isinstance(tr, SherpaStreamingTranscriber)
-    assert not tr.is_loaded        # factory returns UNLOADED (load() downloads the model)
+    # both gated keys map to the streaming backend (UNLOADED — load() fetches the model)
+    for key in ("sherpa-stream-en", "sherpa-nemotron-en"):
+        assert key in config.SHERPA_MODELS
+        tr = get_transcriber(key)
+        assert isinstance(tr, SherpaStreamingTranscriber)
+        assert not tr.is_loaded
 
 
 @pytest.mark.skipif(_NO_SHERPA, reason="sherpa-onnx not installed (optional [streaming] extra)")

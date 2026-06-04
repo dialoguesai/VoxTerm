@@ -102,7 +102,9 @@ _HAS_SHERPA = (
 )
 if _HAS_SHERPA:
     AVAILABLE_MODELS["sherpa-stream-en"] = "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"
-SHERPA_MODELS = {"sherpa-stream-en"} if _HAS_SHERPA else set()
+    # nemotron-EN streaming (NeMo FastConformer-RNNT, 0.6B, exported for sherpa-onnx)
+    AVAILABLE_MODELS["sherpa-nemotron-en"] = "sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25"
+SHERPA_MODELS = {"sherpa-stream-en", "sherpa-nemotron-en"} if _HAS_SHERPA else set()
 
 # Language forcing for Qwen3-ASR (None = auto-detect)
 DEFAULT_LANGUAGE = "en"

@@ -417,10 +417,14 @@ class FasterWhisperTranscriber(_DeduplicatorMixin):
 
 # --- optional cross-platform streaming backend (sherpa-onnx) -----------------
 
-_SHERPA_MODEL_URL = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
-    "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2"
-)
+_SHERPA_RELEASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
+# repo dir name -> download tarball. All are transducer models (encoder/decoder/joiner/tokens).
+_SHERPA_MODEL_URLS = {
+    "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17":
+        f"{_SHERPA_RELEASE}/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2",
+    "sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25":
+        f"{_SHERPA_RELEASE}/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2",
+}
 
 
 def _model_complete(d: "Path") -> bool:
@@ -448,7 +452,7 @@ def _ensure_sherpa_model(repo: str) -> "Path":
     if not tarball.exists():
         tmp = tarball.with_suffix(".part")
         try:
-            urllib.request.urlretrieve(_SHERPA_MODEL_URL, tmp)  # noqa: S310 (pinned github release URL)
+            urllib.request.urlretrieve(_SHERPA_MODEL_URLS[repo], tmp)  # noqa: S310 (pinned github release URL)
         except Exception:
             tmp.unlink(missing_ok=True)                     # don't leak a partial download
             raise
