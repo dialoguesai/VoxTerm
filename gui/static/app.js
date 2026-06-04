@@ -14,7 +14,13 @@ function authUrl(u) { return TOKEN ? u + (u.includes("?") ? "&" : "?") + "token=
 async function getJSON(url, opts) {
   opts = opts || {};
   if (TOKEN) opts.headers = Object.assign({ "X-VoxTerm-Token": TOKEN }, opts.headers || {});
-  const r = await fetch(url, opts); return r.json();
+  try {
+    const r = await fetch(url, opts);
+    return await r.json();
+  } catch (e) {                                  // server down / non-JSON / offline
+    toast("Network error — is the server running?");
+    return { ok: false, error: "network" };
+  }
 }
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.remove("hidden");
@@ -41,7 +47,8 @@ function nameFor(turn) {
 
 // ---------- init ----------
 async function init() {
-  OPTS = await getJSON("/api/options");
+  const o = await getJSON("/api/options");
+  OPTS = { models: o.models || [], languages: o.languages || {} };
   const mSel = $("model"), lSel = $("language");
   OPTS.models.forEach((m) => { const o = document.createElement("option"); o.value = m; o.textContent = m; if (m === "fw-small") o.selected = true; mSel.appendChild(o); });
   Object.entries(OPTS.languages).forEach(([code, name]) => { const o = document.createElement("option"); o.value = code; o.textContent = name; if (code === "en") o.selected = true; lSel.appendChild(o); });
@@ -154,7 +161,7 @@ async function toggleRecord() {
 
 // ---------- sessions ----------
 async function loadSessions() {
-  const { sessions } = await getJSON("/api/sessions");
+  const sessions = (await getJSON("/api/sessions")).sessions || [];
   const ul = $("sessions"); ul.innerHTML = "";
   if (!sessions.length) { ul.innerHTML = `<li class="sessions-empty">No sessions yet — record one to get started.</li>`; return; }
   sessions.forEach((s) => {
