@@ -211,6 +211,8 @@ def build(events: list[dict], *, session_id: str, source_stream: str) -> dict:
             end = start + 2.0
         if not math.isfinite(end):
             end = start + 2.0
+        if end <= start:                 # out-of-order/zero-span: keep end > start in the JSON too
+            end = start + 0.5
         t["t_offset_end"] = round(end, 2)
 
     if has_audio_time:
@@ -350,12 +352,18 @@ def render_json(doc: dict) -> str:
     return json.dumps(d, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
 
 
+def _cue_text(s: str) -> str:
+    """Single-line, cue-safe text — collapse newlines/blank lines to spaces and
+    neutralize the "-->" timing marker, either of which inside a cue would corrupt
+    SRT/VTT cue boundaries (or inject a fake cue)."""
+    s = re.sub(r"\s*\n\s*", " ", (s or "").strip())
+    return s.replace("-->", "->")
+
+
 def _cue_label(t: dict) -> str:
-    """Cue speaker label: peers render "name (peer)"; locals use the speaker label."""
+    """Cue speaker label (sanitized): peers render "name (peer)"; locals use the label."""
     name = t.get("speaker") or "(unattributed)"
-    if t.get("peer"):
-        return f"{name} (peer)"
-    return name
+    return _cue_text(f"{name} (peer)" if t.get("peer") else name)
 
 
 def _cue_times(t: dict) -> tuple[float, float]:
@@ -373,7 +381,7 @@ def to_srt(doc: dict) -> str:
     blocks = []
     idx = 0
     for t in doc.get("turns", []):
-        text = (t.get("text") or "").strip()
+        text = _cue_text(t.get("text"))
         if not text:
             continue
         idx += 1
@@ -391,7 +399,7 @@ def to_vtt(doc: dict) -> str:
     Empty-text turns are skipped; cue label = speaker, cue text = turn text."""
     blocks = ["WEBVTT\n"]
     for t in doc.get("turns", []):
-        text = (t.get("text") or "").strip()
+        text = _cue_text(t.get("text"))
         if not text:
             continue
         start, end = _cue_times(t)

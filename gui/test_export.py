@@ -368,6 +368,36 @@ def test_subtitle_end_gt_start_min_span():
     assert start == "00:00:05,000" and end == "00:00:05,500"
 
 
+def test_to_srt_sanitizes_cue_text_no_injection():
+    # a turn whose text carries a blank line + a fake "-->" timing line must NOT inject
+    # extra cues or break the index sequence — it collapses to one single-line cue.
+    nasty = "line one\n\nfake\n00:00:99,000 --> 00:00:99,500\ninjected"
+    d = {"session": {"id": "x"}, "speakers": [], "turns": [
+        {"t_offset": 1.0, "t_offset_end": 2.0, "speaker": "A", "peer": False, "peer_name": None, "text": "first"},
+        {"t_offset": 2.0, "t_offset_end": 3.0, "speaker": "A", "peer": False, "peer_name": None, "text": nasty},
+    ]}
+    srt = to_srt(d)
+    idx_lines = [ln for ln in srt.splitlines() if ln.strip().isdigit()]
+    assert idx_lines == ["1", "2"]                                  # exactly two cues, sequential
+    assert sum(1 for ln in srt.splitlines() if " --> " in ln) == 2  # only the 2 REAL cue timings
+    assert "00:00:99,000 --> 00:00:99,500" not in srt               # injected timing line neutralized (--> -> ->)
+    assert "00:00:99,000 -> 00:00:99,500" in srt                    # ...it survives as harmless cue text
+
+
+def test_t_offset_end_after_start_when_offsets_out_of_order():
+    # next-turn-start fallback could yield end < start on out-of-order offsets; build()
+    # must still keep t_offset_end > t_offset in the JSON (matches the rendered cue).
+    t0 = 1000.0
+    evs = [{"t": t0, "kind": "session", "phase": "start", "model": "m", "language": "en"},
+           {"t": t0 + 1, "kind": "text", "speaker": "a", "speaker_id": 1, "text": "later-offset",
+            "confidence": "", "overlap": False, "audio_offset": 5.0},   # no audio_end -> uses next start
+           {"t": t0 + 2, "kind": "text", "speaker": "b", "speaker_id": 2, "text": "earlier-offset",
+            "confidence": "", "overlap": False, "audio_offset": 3.0, "audio_end": 4.0}]
+    d = build(evs, session_id="s", source_stream="x")
+    for t in d["turns"]:
+        assert t["t_offset_end"] > t["t_offset"], t
+
+
 def test_fmt_ts_edges():
     assert _fmt_ts(0, ",") == "00:00:00,000"
     assert _fmt_ts(0, ".") == "00:00:00.000"

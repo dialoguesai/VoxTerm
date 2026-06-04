@@ -299,21 +299,24 @@ function buildMarkdown() {
   });
   return fm + body.join("\n").trim() + "\n";
 }
-// ---------- subtitles (client-side, rename-aware) ----------
-// End of a turn: prefer the contract's t_offset_end; else fall back to the next turn's
-// start; else +2s. Always clamp to be strictly after the start so cues stay well-formed.
+// ---------- subtitles (client-side, rename-aware) — must byte-match the server's to_srt/to_vtt ----------
+// Single-line, cue-safe text (mirror export.py _cue_text): collapse newlines/blank lines
+// + neutralize the "-->" marker, either of which would corrupt SRT/VTT cue boundaries.
+function cueText(s) { return String(s == null ? "" : s).trim().replace(/\s*\n\s*/g, " ").replace(/-->/g, "->"); }
+// End of a turn: prefer t_offset_end; else the next (filtered) turn's start; else +2s.
+// Clamp end>start with a 0.5s minimum span — matches the backend _cue_times exactly.
 function turnEnd(t, next) {
   let end = (typeof t.t_offset_end === "number") ? t.t_offset_end
           : (next && typeof next.t_offset === "number") ? next.t_offset
           : (t.t_offset || 0) + 2.0;
   const start = t.t_offset || 0;
-  if (!(end > start)) end = start + 2.0;
+  if (!(end > start)) end = start + 0.5;
   return end;
 }
-// label for a cue: the speaker name, peers shown as "name (peer)".
-function cueLabel(t) {
-  return t.peer ? `${nameFor(t)} (peer)` : nameFor(t);
-}
+// Mirror the backend _cue_label exactly: peer = "<speaker> (peer)" (NOT nameFor's
+// "speaker · peer_name"); local = the rename-aware speaker name. Keeps client downloads
+// byte-identical to the server artifact (renames are an intentional client-only delta).
+function cueLabel(t) { return cueText(t.peer ? `${t.speaker || "(unattributed)"} (peer)` : nameFor(t)); }
 // seconds -> "HH:MM:SS" + sep + "mmm" (sep is "," for SRT, "." for VTT).
 function tsParts(sec, sep) {
   sec = Math.max(0, sec || 0);
@@ -325,21 +328,24 @@ function tsParts(sec, sep) {
   const p2 = (n) => String(n).padStart(2, "0");
   return `${p2(h)}:${p2(m)}:${p2(s)}${sep}${String(millis).padStart(3, "0")}`;
 }
+// Only turns with non-empty cue text become cues — exactly like the backend, so the
+// downloaded file matches the server artifact (no blank cues / index drift).
+function cueTurns() { return CUR.turns.filter((t) => cueText(t.text)); }
 function buildSrt() {
-  const out = [];
-  CUR.turns.forEach((t, i) => {
+  const cues = cueTurns(), out = [];
+  cues.forEach((t, i) => {
     const start = tsParts(t.t_offset || 0, ",");
-    const end = tsParts(turnEnd(t, CUR.turns[i + 1]), ",");
-    out.push(String(i + 1), `${start} --> ${end}`, `${cueLabel(t)}: ${t.text}`, "");
+    const end = tsParts(turnEnd(t, cues[i + 1]), ",");
+    out.push(String(i + 1), `${start} --> ${end}`, `${cueLabel(t)}: ${cueText(t.text)}`, "");
   });
   return out.join("\n");
 }
 function buildVtt() {
-  const out = ["WEBVTT", ""];
-  CUR.turns.forEach((t, i) => {
+  const cues = cueTurns(), out = ["WEBVTT", ""];
+  cues.forEach((t, i) => {
     const start = tsParts(t.t_offset || 0, ".");
-    const end = tsParts(turnEnd(t, CUR.turns[i + 1]), ".");
-    out.push(`${start} --> ${end}`, `${cueLabel(t)}: ${t.text}`, "");
+    const end = tsParts(turnEnd(t, cues[i + 1]), ".");
+    out.push(`${start} --> ${end}`, `${cueLabel(t)}: ${cueText(t.text)}`, "");
   });
   return out.join("\n");
 }
