@@ -103,6 +103,20 @@ def _fmt_hms(seconds: float) -> str:
     return f"{h}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
 
 
+def _fmt_ts(seconds: float, sep: str) -> str:
+    """Subtitle timestamp "HH:MM:SS<sep>mmm" (sep="," for SRT, "." for WebVTT).
+    Clamps a non-finite/negative value to 0 so a garbled offset can never produce
+    an invalid cue."""
+    s = _num(seconds, 0.0)
+    if s < 0:
+        s = 0.0
+    ms_total = int(round(s * 1000))
+    h, rem = divmod(ms_total, 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    sec, ms = divmod(rem, 1000)
+    return f"{h:02d}:{m:02d}:{sec:02d}{sep}{ms:03d}"
+
+
 def _iso_local(unix_ts: float) -> str:
     """Local, timezone-aware ISO 8601 (e.g. 2026-06-04T09:14:07-07:00)."""
     return datetime.fromtimestamp(unix_ts).astimezone().isoformat(timespec="seconds")
@@ -125,6 +139,7 @@ def build(events: list[dict], *, session_id: str, source_stream: str) -> dict:
     turns = []
     has_audio_time = any("audio_offset" in e for e in text_evs)
     audio_end_max = 0.0
+    raw_audio_ends: list[float | None] = []
     for idx, e in enumerate(text_evs):
         is_peer = e.get("kind") == "peer_text"
         if "audio_offset" in e:
@@ -132,6 +147,8 @@ def build(events: list[dict], *, session_id: str, source_stream: str) -> dict:
             audio_end_max = max(audio_end_max, _num(e.get("audio_end"), t_off))
         else:
             t_off = max(0.0, _num(e.get("t"), t0) - t0)
+        # raw per-turn audio_end (None if absent) feeds the t_offset_end post-pass below.
+        raw_audio_ends.append(_num(e.get("audio_end"), None) if "audio_end" in e else None)
         conf = "" if is_peer else e.get("confidence", "")
         if isinstance(conf, bool) or conf is None:
             conf = ""
@@ -180,6 +197,21 @@ def build(events: list[dict], *, session_id: str, source_stream: str) -> dict:
             "peer_name": peer_name,
             "markers": markers,
         })
+
+    # SHARED CONTRACT: every turn gains a finite t_offset_end (end seconds). Source
+    # priority: this turn's audio_end -> the NEXT turn's t_offset -> t_offset + 2.0.
+    for i, t in enumerate(turns):
+        start = t["t_offset"]
+        ae = raw_audio_ends[i]
+        if ae is not None and math.isfinite(ae):
+            end = ae
+        elif i + 1 < len(turns):
+            end = turns[i + 1]["t_offset"]
+        else:
+            end = start + 2.0
+        if not math.isfinite(end):
+            end = start + 2.0
+        t["t_offset_end"] = round(end, 2)
 
     if has_audio_time:
         # cover every turn, including any wall-clock-fallback turn, so a turn's
@@ -318,7 +350,59 @@ def render_json(doc: dict) -> str:
     return json.dumps(d, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
 
 
-def export(events_path: Path, out_dir: Path | None = None) -> tuple[Path, Path]:
+def _cue_label(t: dict) -> str:
+    """Cue speaker label: peers render "name (peer)"; locals use the speaker label."""
+    name = t.get("speaker") or "(unattributed)"
+    if t.get("peer"):
+        return f"{name} (peer)"
+    return name
+
+
+def _cue_times(t: dict) -> tuple[float, float]:
+    """(start, end) seconds for a cue, guaranteeing end > start (min 0.5s span)."""
+    start = _num(t.get("t_offset"), 0.0)
+    end = _num(t.get("t_offset_end"), start)
+    if end <= start:
+        end = start + 0.5
+    return start, end
+
+
+def to_srt(doc: dict) -> str:
+    """Render doc turns as SubRip (SRT): 1-indexed cues, "HH:MM:SS,mmm" times.
+    Empty-text turns are skipped; cue label = speaker, cue text = turn text."""
+    blocks = []
+    idx = 0
+    for t in doc.get("turns", []):
+        text = (t.get("text") or "").strip()
+        if not text:
+            continue
+        idx += 1
+        start, end = _cue_times(t)
+        blocks.append(
+            f"{idx}\n"
+            f"{_fmt_ts(start, ',')} --> {_fmt_ts(end, ',')}\n"
+            f"{_cue_label(t)}: {text}\n"
+        )
+    return "\n".join(blocks)
+
+
+def to_vtt(doc: dict) -> str:
+    """Render doc turns as WebVTT: "WEBVTT" header, "HH:MM:SS.mmm" times.
+    Empty-text turns are skipped; cue label = speaker, cue text = turn text."""
+    blocks = ["WEBVTT\n"]
+    for t in doc.get("turns", []):
+        text = (t.get("text") or "").strip()
+        if not text:
+            continue
+        start, end = _cue_times(t)
+        blocks.append(
+            f"{_fmt_ts(start, '.')} --> {_fmt_ts(end, '.')}\n"
+            f"{_cue_label(t)}: {text}\n"
+        )
+    return "\n".join(blocks)
+
+
+def export(events_path: Path, out_dir: Path | None = None) -> tuple[Path, Path, Path, Path]:
     events = load_events(events_path)
     stem = events_path.stem
     if stem.endswith("-events"):
@@ -332,15 +416,21 @@ def export(events_path: Path, out_dir: Path | None = None) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / f"{stem}-agent.md"
     json_path = out_dir / f"{stem}-agent.json"
+    srt_path = out_dir / f"{stem}-agent.srt"
+    vtt_path = out_dir / f"{stem}-agent.vtt"
     md_path.write_text(render_md(doc), encoding="utf-8")
     json_path.write_text(render_json(doc), encoding="utf-8")
-    return md_path, json_path
+    srt_path.write_text(to_srt(doc), encoding="utf-8")
+    vtt_path.write_text(to_vtt(doc), encoding="utf-8")
+    return md_path, json_path, srt_path, vtt_path
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Export a VoxTerm event log to an LLM-agent transcript.")
     ap.add_argument("events", nargs="?", help="path to a *-events.jsonl (default: newest in VoxTerm live dir)")
     ap.add_argument("--out-dir", default=None, help="output dir (default: alongside the events file)")
+    ap.add_argument("--format", choices=["md", "json", "srt", "vtt", "all"], default="all",
+                    help="which artifact(s) to write/print (default: all = md+json+srt+vtt)")
     args = ap.parse_args(argv)
 
     if args.events:
@@ -363,9 +453,18 @@ def main(argv=None) -> int:
         print(f"error: no such file: {events_path}", file=sys.stderr)
         return 2
 
-    md_path, json_path = export(events_path, Path(args.out_dir) if args.out_dir else None)
-    print(f"agent transcript: {md_path}")
-    print(f"json sidecar:     {json_path}")
+    md_path, json_path, srt_path, vtt_path = export(events_path, Path(args.out_dir) if args.out_dir else None)
+    # export() always writes md+json+srt+vtt (the default behavior); --format only
+    # controls which of those written paths are printed.
+    want = {"md", "json", "srt", "vtt"} if args.format == "all" else {args.format}
+    if "md" in want:
+        print(f"agent transcript: {md_path}")
+    if "json" in want:
+        print(f"json sidecar:     {json_path}")
+    if "srt" in want:
+        print(f"srt subtitles:    {srt_path}")
+    if "vtt" in want:
+        print(f"vtt subtitles:    {vtt_path}")
     return 0
 
 

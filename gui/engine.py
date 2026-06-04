@@ -136,9 +136,10 @@ class Engine:
             def prog(frac, msg):
                 self.job = {"state": "transcribing", "frac": round(frac, 3), "msg": msg, "wav": wav}
             r = transcribe.transcribe_audio(audio, self.out_dir, model=model, language=language, progress=prog)
-            md_path, json_path = export.export(Path(r["events_path"]), self.out_dir)
+            md_path, json_path, srt_path, vtt_path = export.export(Path(r["events_path"]), self.out_dir)
             self.job = {"state": "done", "wav": wav, **r,
                         "agent_md": str(md_path), "agent_json": str(json_path),
+                        "agent_srt": str(srt_path), "agent_vtt": str(vtt_path),
                         "stem": Path(r["transcript_path"]).stem.replace("-transcript", "")}
         except Exception as e:
             self.job = {"state": "error", "error": f"{type(e).__name__}: {e}"}
@@ -211,7 +212,8 @@ class Engine:
         return None
 
     def read_artifact(self, stem: str, kind: str, dir: str | None = None) -> dict:
-        suffix = {"transcript": "-transcript.md", "agent_md": "-agent.md", "agent_json": "-agent.json"}.get(kind)
+        suffix = {"transcript": "-transcript.md", "agent_md": "-agent.md", "agent_json": "-agent.json",
+                  "srt": "-agent.srt", "vtt": "-agent.vtt"}.get(kind)
         if not suffix:
             return {"ok": False, "error": "bad kind"}
         p = self._resolve(stem, suffix, only_dir=dir)

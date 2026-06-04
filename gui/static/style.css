@@ -92,6 +92,15 @@ body.recording .rec-btn { animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { box-shadow: 0 6px 24px var(--rec-glow); } 50% { box-shadow: 0 6px 40px var(--rec-glow); } }
 .rec-btn:disabled { filter: grayscale(.6) brightness(.7); cursor: not-allowed; }
 
+/* "working" affordance while a job is transcribing: a calm breathing ring + dimmed,
+   non-interactive record button. The progress bar still carries the precise status. */
+body.working .ring { animation: workpulse 2.2s ease-in-out infinite; }
+body.working .rec-btn { cursor: progress; filter: grayscale(.5) brightness(.78); }
+@keyframes workpulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(94, 234, 212, 0.0); }
+  50%      { box-shadow: 0 0 0 6px rgba(94, 234, 212, 0.10); }
+}
+
 .timer { font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
 .rec-state { color: var(--muted); font-size: 13px; }
 

@@ -10,7 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from export import build, export, render_md, render_json, _coerce_sid, _fmt_hms
+import re
+
+from export import (build, export, render_md, render_json, to_srt, to_vtt,
+                    _coerce_sid, _fmt_hms, _fmt_ts)
 
 
 def _evs():
@@ -134,11 +137,14 @@ def test_export_round_trip_files():
     tmp = Path(tempfile.mkdtemp())
     ev = tmp / "2026-06-04_120000-events.jsonl"
     ev.write_text("\n".join(json.dumps(e) for e in _evs()) + "\n", encoding="utf-8")
-    md_path, json_path = export(ev, tmp)
+    md_path, json_path, srt_path, vtt_path = export(ev, tmp)
     assert md_path.name == "2026-06-04_120000-agent.md"
     assert json_path.name == "2026-06-04_120000-agent.json"
-    assert md_path.exists() and json_path.exists()
+    assert srt_path.name == "2026-06-04_120000-agent.srt"
+    assert vtt_path.name == "2026-06-04_120000-agent.vtt"
+    assert md_path.exists() and json_path.exists() and srt_path.exists() and vtt_path.exists()
     json.loads(json_path.read_text())  # valid
+    assert vtt_path.read_text().startswith("WEBVTT")
 
 
 def test_malformed_lines_skipped():
@@ -149,7 +155,7 @@ def test_malformed_lines_skipped():
                   '\n'
                   '{"t":2,"kind":"text","speaker":"a","speaker_id":1,"text":"hi","confidence":"","overlap":false}\n',
                   encoding="utf-8")
-    md_path, _ = export(ev, tmp)
+    md_path, _json, _srt, _vtt = export(ev, tmp)
     assert "hi" in md_path.read_text()
 
 
@@ -237,6 +243,146 @@ def test_yaml_frontmatter_parses_with_injection_attempt():
     # peer name with a colon/newline round-trips inside the speakers list
     peer = next(s for s in parsed["speakers"] if s.get("peer"))
     assert peer["peer_name"] == "host: evil\nkey: 1"
+
+
+# --- subtitle export (SHARED CONTRACT: t_offset_end + SRT/WebVTT) ---
+
+def test_t_offset_end_present_and_after_start():
+    d = _doc()
+    for t in d["turns"]:
+        assert "t_offset_end" in t
+        assert isinstance(t["t_offset_end"], float)
+        assert t["t_offset_end"] > t["t_offset"]
+
+
+def test_t_offset_end_sources_per_contract():
+    d = _doc()
+    turns = d["turns"]
+    # turn 0 has audio_end 4.0 -> end from audio_end
+    assert turns[0]["t_offset_end"] == 4.0
+    # turn 1 audio_end 7.0
+    assert turns[1]["t_offset_end"] == 7.0
+    # last turn (peer, no audio_end, no next) -> t_offset + 2.0
+    last = turns[-1]
+    assert last["t_offset_end"] == round(last["t_offset"] + 2.0, 2)
+
+
+def test_t_offset_end_falls_back_to_next_start():
+    # no audio_end anywhere -> each turn's end = next turn's start; last = +2.0
+    t0 = 1000.0
+    evs = [{"t": t0, "kind": "session", "phase": "start", "model": "m", "language": "en"},
+           {"t": t0 + 1, "kind": "text", "speaker": "a", "speaker_id": 1, "text": "one",
+            "confidence": "", "overlap": False},
+           {"t": t0 + 5, "kind": "text", "speaker": "a", "speaker_id": 1, "text": "two",
+            "confidence": "", "overlap": False},
+           {"t": t0 + 9, "kind": "session", "phase": "end"}]
+    d = build(evs, session_id="s", source_stream="x")
+    turns = d["turns"]
+    assert turns[0]["t_offset_end"] == turns[1]["t_offset"]
+    assert turns[1]["t_offset_end"] == round(turns[1]["t_offset"] + 2.0, 2)
+    for t in turns:
+        assert t["t_offset_end"] > t["t_offset"]
+
+
+def test_t_offset_end_monotonic_ish():
+    # for the audio-timed turns (which carry true audio_end), starts and ends both
+    # advance monotonically; each end strictly follows its own start.
+    d = _doc()
+    audio_turns = [t for t in d["turns"] if not t["peer"]]  # the 4 audio-timed turns
+    starts = [t["t_offset"] for t in audio_turns]
+    ends = [t["t_offset_end"] for t in audio_turns]
+    assert starts == sorted(starts)
+    assert ends == sorted(ends)
+    for t in audio_turns:
+        assert t["t_offset_end"] > t["t_offset"]
+
+
+def test_t_offset_end_finite_on_garbled():
+    evs = [{"t": "x", "kind": "session", "phase": "start", "model": "m", "language": "en"},
+           {"t": "", "kind": "text", "speaker": "a", "speaker_id": 1, "text": "hi",
+            "confidence": "", "overlap": False, "audio_offset": "NaN", "audio_end": "Inf"}]
+    d = build(evs, session_id="s", source_stream="x")
+    e = d["turns"][0]["t_offset_end"]
+    import math as _m
+    assert _m.isfinite(e) and e > d["turns"][0]["t_offset"]
+
+
+def test_to_srt_parses():
+    d = _doc()
+    srt = to_srt(d)
+    blocks = [b for b in srt.strip().split("\n\n") if b.strip()]
+    text_turns = [t for t in d["turns"] if t["text"].strip()]
+    assert len(blocks) == len(text_turns)
+    ts_re = re.compile(r"^\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}$")
+    for i, block in enumerate(blocks, start=1):
+        lines = block.splitlines()
+        assert int(lines[0]) == i                # sequential integer indices, 1-based
+        assert ts_re.match(lines[1]), lines[1]   # valid SRT timestamp line
+        assert lines[2].strip()                  # cue text present
+
+
+def test_to_srt_skips_empty_text():
+    evs = [{"t": 1.0, "kind": "session", "phase": "start", "model": "m", "language": "en"},
+           {"t": 2.0, "kind": "text", "speaker": "a", "speaker_id": 1, "text": "   ",
+            "confidence": "", "overlap": False, "audio_offset": 1.0, "audio_end": 2.0},
+           {"t": 3.0, "kind": "text", "speaker": "a", "speaker_id": 1, "text": "real",
+            "confidence": "", "overlap": False, "audio_offset": 2.0, "audio_end": 3.0},
+           {"t": 4.0, "kind": "session", "phase": "end"}]
+    d = build(evs, session_id="s", source_stream="x")
+    srt = to_srt(d)
+    blocks = [b for b in srt.strip().split("\n\n") if b.strip()]
+    assert len(blocks) == 1
+    assert blocks[0].splitlines()[0] == "1"
+    assert "real" in blocks[0]
+
+
+def test_to_srt_peer_label():
+    d = _doc()
+    srt = to_srt(d)
+    assert "Sam (peer):" in srt
+
+
+def test_to_vtt_header_and_separator():
+    d = _doc()
+    vtt = to_vtt(d)
+    assert vtt.startswith("WEBVTT")
+    # uses "." ms separator and never the SRT comma separator in cue times
+    cue_lines = [ln for ln in vtt.splitlines() if "-->" in ln]
+    assert cue_lines
+    ts_re = re.compile(r"^\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}$")
+    for ln in cue_lines:
+        assert ts_re.match(ln), ln
+        assert "," not in ln
+
+
+def test_subtitle_end_gt_start_min_span():
+    # a turn whose end <= start must be bumped to start+0.5 in the cue
+    t0 = 1000.0
+    evs = [{"t": t0, "kind": "session", "phase": "start", "model": "m", "language": "en"},
+           {"t": t0 + 1, "kind": "text", "speaker": "a", "speaker_id": 1, "text": "zero-span",
+            "confidence": "", "overlap": False, "audio_offset": 5.0, "audio_end": 5.0}]
+    d = build(evs, session_id="s", source_stream="x")
+    srt = to_srt(d)
+    line = [ln for ln in srt.splitlines() if "-->" in ln][0]
+    start, end = line.split(" --> ")
+    assert start == "00:00:05,000" and end == "00:00:05,500"
+
+
+def test_fmt_ts_edges():
+    assert _fmt_ts(0, ",") == "00:00:00,000"
+    assert _fmt_ts(0, ".") == "00:00:00.000"
+    assert _fmt_ts(3661.5, ",") == "01:01:01,500"
+    assert _fmt_ts(3661.5, ".") == "01:01:01.500"
+    # negative/non-finite clamp to zero
+    assert _fmt_ts(-5, ",") == "00:00:00,000"
+    assert _fmt_ts(float("nan"), ".") == "00:00:00.000"
+
+
+def test_json_sidecar_includes_t_offset_end():
+    d = _doc()
+    parsed = json.loads(render_json(d))
+    for t in parsed["turns"]:
+        assert "t_offset_end" in t
 
 
 if __name__ == "__main__":

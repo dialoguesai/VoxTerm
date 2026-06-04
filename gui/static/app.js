@@ -34,6 +34,10 @@ function fmtClock(sec) {
            : `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 function colorFor(sid) { return PALETTE[((sid || 0) % PALETTE.length + PALETTE.length) % PALETTE.length]; }
+// localStorage wrappers — private/incognito mode can throw on access, so swallow it.
+const LS_MODEL = "voxterm.model", LS_LANG = "voxterm.language";
+function lsGet(key) { try { return localStorage.getItem(key); } catch { return null; } }
+function lsSet(key, val) { try { localStorage.setItem(key, val); } catch { /* private mode */ } }
 // Sidebar drawer (mobile): keep body class + aria-expanded in sync.
 function setNav(open) {
   document.body.classList.toggle("nav-open", open);
@@ -53,6 +57,15 @@ async function init() {
   OPTS.models.forEach((m) => { const o = document.createElement("option"); o.value = m; o.textContent = m; if (m === "fw-small") o.selected = true; mSel.appendChild(o); });
   Object.entries(OPTS.languages).forEach(([code, name]) => { const o = document.createElement("option"); o.value = code; o.textContent = name; if (code === "en") o.selected = true; lSel.appendChild(o); });
 
+  // Restore remembered Model/Language (keep the fw-small/en defaults if nothing saved
+  // or the saved value is no longer offered by the server).
+  const savedModel = lsGet(LS_MODEL);
+  if (savedModel && OPTS.models.includes(savedModel)) mSel.value = savedModel;
+  const savedLang = lsGet(LS_LANG);
+  if (savedLang && Object.prototype.hasOwnProperty.call(OPTS.languages, savedLang)) lSel.value = savedLang;
+  mSel.addEventListener("change", () => lsSet(LS_MODEL, mSel.value));
+  lSel.addEventListener("change", () => lsSet(LS_LANG, lSel.value));
+
   $("recBtn").addEventListener("click", toggleRecord);
   $("refreshSessions").addEventListener("click", loadSessions);
   $("navToggle").addEventListener("click", () => setNav(!document.body.classList.contains("nav-open")));
@@ -60,6 +73,8 @@ async function init() {
   $("summarizeAi").addEventListener("click", summarizeForAI);
   $("dlMd").addEventListener("click", () => { if (!CUR) return; download(buildMarkdown(), `${CUR.session.id}-agent.md`, "text/markdown"); });
   $("dlJson").addEventListener("click", () => { if (!CUR) return; download(buildJson(), `${CUR.session.id}-agent.json`, "application/json"); });
+  $("dlSrt").addEventListener("click", () => { if (!CUR) return; download(buildSrt(), `${CUR.session.id}.srt`, "application/x-subrip"); });
+  $("dlVtt").addEventListener("click", () => { if (!CUR) return; download(buildVtt(), `${CUR.session.id}.vtt`, "text/vtt"); });
   setExportEnabled(false);
 
   // close the mobile drawer when clicking outside it (the toggle handles its own click)
@@ -92,7 +107,7 @@ function onKeydown(e) {
 
 // Export/copy actions are meaningless without a loaded transcript — disable them outright.
 function setExportEnabled(on) {
-  ["copyAgent", "summarizeAi", "dlJson", "dlMd"].forEach((id) => { $(id).disabled = !on; });
+  ["copyAgent", "summarizeAi", "dlJson", "dlMd", "dlSrt", "dlVtt"].forEach((id) => { $(id).disabled = !on; });
 }
 
 // ---------- live status (SSE) ----------
@@ -120,23 +135,30 @@ function applyStatus(s) {
     if (lastJobState === "idle" && s.job.state === "idle") { $("recState").textContent = "Ready to record"; $("timer").textContent = "00:00"; }
   }
   const job = s.job || { state: "idle" };
-  if (job.state === "transcribing") {
+  const working = job.state === "transcribing";
+  // While transcribing: the calm "working" affordance + a hard-disabled record button
+  // (recording can't begin until the job resolves). The progress bar shows precise state.
+  document.body.classList.toggle("working", working);
+  if (working) {
     $("progress").classList.remove("hidden");
     $("progressMsg").textContent = job.msg || "Transcribing…";
     const pct = Math.round((job.frac || 0) * 100);
     $("progressPct").textContent = pct + "%";
     $("barFill").style.width = pct + "%";
     $("recState").textContent = "Transcribing…";
+    $("recBtn").disabled = true;
   }
   if (job.state === "done" && lastJobState !== "done") {
     $("progress").classList.add("hidden");
     $("recState").textContent = "Ready to record";
+    $("recBtn").disabled = false;
     toast(`Done — ${job.n_turns} turns, ${job.n_speakers} speaker(s)`);
     if (job.stem) loadSession(job.stem);
     loadSessions();
   }
   if (job.state === "error" && lastJobState !== "error") {
     $("progress").classList.add("hidden");
+    $("recBtn").disabled = false;
     toast("Error: " + (job.error || "transcription failed"));
     $("recState").textContent = "Ready to record";
   }
@@ -277,6 +299,51 @@ function buildMarkdown() {
   });
   return fm + body.join("\n").trim() + "\n";
 }
+// ---------- subtitles (client-side, rename-aware) ----------
+// End of a turn: prefer the contract's t_offset_end; else fall back to the next turn's
+// start; else +2s. Always clamp to be strictly after the start so cues stay well-formed.
+function turnEnd(t, next) {
+  let end = (typeof t.t_offset_end === "number") ? t.t_offset_end
+          : (next && typeof next.t_offset === "number") ? next.t_offset
+          : (t.t_offset || 0) + 2.0;
+  const start = t.t_offset || 0;
+  if (!(end > start)) end = start + 2.0;
+  return end;
+}
+// label for a cue: the speaker name, peers shown as "name (peer)".
+function cueLabel(t) {
+  return t.peer ? `${nameFor(t)} (peer)` : nameFor(t);
+}
+// seconds -> "HH:MM:SS" + sep + "mmm" (sep is "," for SRT, "." for VTT).
+function tsParts(sec, sep) {
+  sec = Math.max(0, sec || 0);
+  const ms = Math.round(sec * 1000);
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  const millis = ms % 1000;
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${p2(h)}:${p2(m)}:${p2(s)}${sep}${String(millis).padStart(3, "0")}`;
+}
+function buildSrt() {
+  const out = [];
+  CUR.turns.forEach((t, i) => {
+    const start = tsParts(t.t_offset || 0, ",");
+    const end = tsParts(turnEnd(t, CUR.turns[i + 1]), ",");
+    out.push(String(i + 1), `${start} --> ${end}`, `${cueLabel(t)}: ${t.text}`, "");
+  });
+  return out.join("\n");
+}
+function buildVtt() {
+  const out = ["WEBVTT", ""];
+  CUR.turns.forEach((t, i) => {
+    const start = tsParts(t.t_offset || 0, ".");
+    const end = tsParts(turnEnd(t, CUR.turns[i + 1]), ".");
+    out.push(`${start} --> ${end}`, `${cueLabel(t)}: ${t.text}`, "");
+  });
+  return out.join("\n");
+}
+
 async function copyForAI() {
   if (!CUR) return toast("Load a transcript first");
   const md = buildMarkdown();
