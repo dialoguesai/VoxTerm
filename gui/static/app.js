@@ -310,3 +310,8 @@ function download(text, filename, mime) {
 }
 
 init().catch((e) => toast("Init failed: " + e));
+
+// PWA: register the offline app-shell service worker (script-src 'self' allows this).
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}

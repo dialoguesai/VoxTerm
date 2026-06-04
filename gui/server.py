@@ -44,9 +44,11 @@ ENGINE = Engine()
 # ring, the progress bar) and per-speaker color dots; all interpolated values are
 # escaped (app.js escapeHtml) and the data is local, so the exposure is minimal.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-       "img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'")
+       "img-src 'self' data:; connect-src 'self'; font-src 'self'; manifest-src 'self'; "
+       "worker-src 'self'; base-uri 'none'; form-action 'none'")
 _CTYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-           ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json"}
+           ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json",
+           ".png": "image/png", ".webmanifest": "application/manifest+json"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -96,6 +98,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "unauthorized"}, 401)
         if p == "/" or p == "/index.html":
             return self._serve_static("index.html")
+        if p == "/sw.js":                          # served at root so its SW scope is "/"
+            return self._serve_static("sw.js")
+        if p == "/manifest.webmanifest":
+            return self._serve_static("manifest.webmanifest")
         if p.startswith("/static/"):
             return self._serve_static(p[len("/static/"):])
         if p == "/api/options":
