@@ -1,7 +1,7 @@
 "use strict";
-// VoxTerm pairing page. Externalized from index.html so the Content-Security-Policy can
-// use `script-src 'self'` with no 'unsafe-inline'. The phone never records — it connects
-// to a VoxTerm desktop on your LAN, which does all capture and transcription.
+// VoxTerm mobile entry. Externalized from index.html so the CSP can use `script-src 'self'`.
+// Two modes: ON-DEVICE (the Android app transcribes locally via the sherpa-onnx plugin — no
+// relay, no network) and PAIRING (a plain browser connects to a VoxTerm desktop on the LAN).
 
 const $ = (id) => document.getElementById(id);
 
@@ -24,11 +24,21 @@ const PAGE_TOKEN = new URLSearchParams(location.search).get("token") || "";
 // form-flash before the desktop shell navigates away.
 const IS_TAURI = !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
 let _revealed = false;
-function revealForm() {
+function revealMobileHome() {
   if (_revealed) return;
   _revealed = true;
   if ($("loader")) $("loader").hidden = true;
-  if ($("pairform")) $("pairform").hidden = false;
+  // On the Android app the device transcribes locally → offer that first. In a plain browser
+  // (no native plugin) only desktop-pairing is possible, so show the form.
+  if (IS_TAURI && window.__TAURI__ && window.__TAURI__.core) {
+    $("ondevice").hidden = false;
+  } else {
+    $("pairform").hidden = false;
+  }
+}
+function showPairForm() {   // "connect to a desktop instead"
+  $("ondevice").hidden = true;
+  $("pairform").hidden = false;
 }
 
 // Dev/test convenience: if a VoxTerm backend answers on this device's localhost
@@ -46,10 +56,10 @@ function revealForm() {
       if (r.ok) {
         window.location.href = base + "/" + (PAGE_TOKEN ? "?token=" + encodeURIComponent(PAGE_TOKEN) : "");
       } else {
-        setTimeout(revealForm, IS_TAURI ? 3000 : 0);   // no engine here → show the pairing form
+        setTimeout(revealMobileHome, IS_TAURI ? 1500 : 0);   // no loopback engine → show the mobile home
       }
     })
-    .catch(() => setTimeout(revealForm, IS_TAURI ? 3000 : 0))
+    .catch(() => setTimeout(revealMobileHome, IS_TAURI ? 1500 : 0))
     .finally(() => clearTimeout(timer));
 })();
 
@@ -77,3 +87,42 @@ function forgetPairing() {
 $("go").addEventListener("click", connect);
 $("token").addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
 $("forget").addEventListener("click", forgetPairing);
+
+// ---------- on-device transcription (Android app, via the voxasr plugin) ----------
+let _listenersReady = false;
+async function ensureListeners() {
+  if (_listenersReady) return;
+  const core = window.__TAURI__.core;
+  // The native plugin emits these as it decodes the mic locally.
+  await core.addPluginListener("voxasr", "partial", (p) => { $("odPartial").textContent = p.text || ""; });
+  await core.addPluginListener("voxasr", "final", (p) => {
+    if (p.text) {
+      const d = document.createElement("div");
+      d.className = "od-line";
+      d.textContent = p.text;
+      $("odLines").appendChild(d);
+    }
+    $("odPartial").textContent = "";
+  });
+  await core.addPluginListener("voxasr", "error", (p) => { $("err").textContent = p.message || "transcription error"; });
+  _listenersReady = true;
+}
+async function startOnDevice() {
+  $("err").textContent = "";
+  try {
+    await ensureListeners();
+    await window.__TAURI__.core.invoke("plugin:voxasr|start_transcribe");
+    $("odStart").hidden = true;
+    $("odStop").hidden = false;
+  } catch (e) {
+    $("err").textContent = "could not start: " + e;
+  }
+}
+async function stopOnDevice() {
+  try { await window.__TAURI__.core.invoke("plugin:voxasr|stop_transcribe"); } catch (_) {}
+  $("odStart").hidden = false;
+  $("odStop").hidden = true;
+}
+if ($("odStart")) $("odStart").addEventListener("click", startOnDevice);
+if ($("odStop")) $("odStop").addEventListener("click", stopOnDevice);
+if ($("odPair")) $("odPair").addEventListener("click", showPairForm);

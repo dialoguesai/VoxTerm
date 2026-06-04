@@ -43,6 +43,10 @@
   .ghost { width:auto; min-height:0; margin-top:14px; padding:8px 12px; font-size:13px;
            font-weight:500; background:transparent; color:var(--faint); border:1px solid var(--line);
            border-radius:10px; }
+  .linkish { width:auto; min-height:0; margin:0; padding:0; background:none; border:none;
+             color:var(--accent-dim); text-decoration:underline; font:inherit; cursor:pointer; }
+  #odPartial { min-height:24px; margin-top:16px; color:var(--accent); }
+  .od-line { padding:9px 0; border-bottom:1px solid var(--line); }
 </style>
 </head>
 <body>
@@ -52,6 +56,17 @@
     <!-- Shown first. On the desktop app the Rust shell navigates to the running engine within
          ~1s, so the user sees this and then the GUI — never the phone form below. -->
     <div id="loader" class="sub">Connecting to VoxTerm…</div>
+
+    <!-- On-device transcription (Android app): the phone records + transcribes locally via the
+         bundled sherpa-onnx model. Revealed by pair.js when the native plugin is available. -->
+    <div id="ondevice" hidden>
+      <p class="sub">Transcribe on this device — fully offline, nothing leaves your phone.</p>
+      <button id="odStart">Start transcribing</button>
+      <button id="odStop" class="ghost" type="button" hidden>Stop</button>
+      <div id="odPartial" aria-live="polite"></div>
+      <div id="odLines"></div>
+      <p class="hint">No desktop needed. Or <button id="odPair" class="linkish" type="button">connect to a desktop</button> instead.</p>
+    </div>
 
     <!-- The pairing form is for a phone with no local engine; revealed by pair.js only when no
          loopback engine answers (see revealForm). -->

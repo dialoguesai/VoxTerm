@@ -4,19 +4,10 @@
 //! `voxasr://final` events the native plugin emits. Desktop/iOS get an honest "unsupported"
 //! error (desktop uses the full Python engine; iOS is a future native port).
 
-use serde::{Deserialize, Serialize};
 use tauri::{
     plugin::{Builder, TauriPlugin},
     AppHandle, Manager, Runtime,
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StartArgs {
-    /// Absolute path to the unpacked sherpa streaming model dir on the device (encoder/decoder/
-    /// joiner .int8.onnx + tokens.txt). The webview resolves it after the model is staged from
-    /// the bundled assets on first launch.
-    pub model_dir: String,
-}
 
 /// Holds the Android plugin handle (the bridge to the Kotlin `VoxasrPlugin`). On non-Android
 /// targets it just carries the app handle so the commands can return a clean error.
@@ -28,17 +19,18 @@ struct Voxasr<R: Runtime> {
 }
 
 #[tauri::command]
-async fn start_transcribe<R: Runtime>(app: AppHandle<R>, args: StartArgs) -> Result<(), String> {
+async fn start_transcribe<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
+        // The native plugin uses the bundled, staged model — no args needed.
         app.state::<Voxasr<R>>()
             .handle
-            .run_mobile_plugin::<()>("startTranscribe", args)
+            .run_mobile_plugin::<()>("startTranscribe", ())
             .map_err(|e| e.to_string())
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (app, args);
+        let _ = app;
         Err("on-device transcription is Android-only; use the desktop engine elsewhere".into())
     }
 }
