@@ -35,7 +35,7 @@ See the measured [benchmark](./streaming-asr-benchmark.md).
 - **GUI:** pick the model in the dropdown, then record/transcribe as usual. The **live
   transcript** view automatically prefers `sherpa-stream-en` (when installed) and streams the
   text in word-by-word, finalizing a line on a pause.
-- **CLI / TUI:** pass the key like any model (e.g. `python -m gui.transcribe rec.wav --model sherpa-nemotron-en`).
+- **TUI:** pass the key like any model: `python -m tui.app -m sherpa-nemotron-en`.
 
 The default model is unchanged (`fw-small` on Linux/Intel, MLX on Apple Silicon) — streaming
 is something you opt into per use.

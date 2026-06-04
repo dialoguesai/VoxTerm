@@ -44,7 +44,7 @@ real time.*
 - RTF is single-clip per-call (`tr.transcribe`); the true *streaming* live path feeds frames
   incrementally, so perceived latency is lower than these batch-style RTF numbers suggest.
 - nemotron-EN here is the **English sibling**; the multilingual nemotron-3.5 (`.nemo`) needs a
-  custom ONNX export before it can be benchmarked (see `~/voxterm-plans/crossplatform-streaming-plan.md`).
+  custom ONNX export before it can be benchmarked (the same backend would carry it once exported).
 
 ## Methodology
 

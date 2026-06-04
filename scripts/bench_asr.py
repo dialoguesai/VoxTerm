@@ -24,7 +24,19 @@ import numpy as np  # noqa: E402
 
 import config  # noqa: E402
 from audio.transcriber import get_transcriber  # noqa: E402
-from gui.transcribe import load_wav_16k_mono  # noqa: E402
+
+
+def load_wav_16k_mono(path) -> "np.ndarray":
+    """Load any WAV as float32 mono @ 16 kHz. Self-contained (no gui/ dependency) so the
+    benchmark is shippable with the streaming backend. Needs soundfile + scipy."""
+    import soundfile as sf
+    data, sr = sf.read(str(path), dtype="float32", always_2d=False)
+    if getattr(data, "ndim", 1) > 1:
+        data = data.mean(axis=1)
+    if sr != 16000:
+        from scipy.signal import resample_poly
+        data = resample_poly(data, 16000, sr).astype(np.float32)
+    return np.ascontiguousarray(data, dtype=np.float32)
 
 
 def _norm(s: str) -> list[str]:

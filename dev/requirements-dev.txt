@@ -1,3 +1,4 @@
 pytest>=8.0
 pytest-timeout>=2.0
 websocket-client>=1.0  # scripts/gui_e2e.py (CDP)
+soundfile>=0.12  # scripts/bench_asr.py (WAV loading)

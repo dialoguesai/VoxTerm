@@ -462,7 +462,7 @@ def _ensure_sherpa_model(repo: str) -> "Path":
     staging = cache / (repo + ".extracting")
     shutil.rmtree(staging, ignore_errors=True)
     with tarfile.open(tarball, "r:bz2") as tf:
-        tf.extractall(staging)                              # produces staging/<repo>/
+        tf.extractall(staging, filter="data")               # produces staging/<repo>/ (safe filter)
     extracted = staging / repo
     if not _model_complete(extracted):
         shutil.rmtree(staging, ignore_errors=True)
@@ -507,7 +507,7 @@ class SherpaStreamingTranscriber(_DeduplicatorMixin):
             )
 
         enc = _pick("*encoder*.int8.onnx", "*encoder*.onnx")
-        dec = _pick("*decoder*.onnx")
+        dec = _pick("*decoder*.int8.onnx", "*decoder*.onnx")
         joi = _pick("*joiner*.int8.onnx", "*joiner*.onnx")
         tokens = _pick("tokens.txt")
         self._rec = sherpa_onnx.OnlineRecognizer.from_transducer(
@@ -530,8 +530,10 @@ class SherpaStreamingTranscriber(_DeduplicatorMixin):
         while self._rec.is_ready(s):
             self._rec.decode_stream(s)
         text = (self._rec.get_result(s) or "").strip()
-        if text:
-            text = text.capitalize()        # this zipformer emits ALL-CAPS, no punct → sentence-case
+        if text and text.isupper():
+            # only sentence-case models that emit ALL-CAPS (zipformer); leave models with native
+            # casing + punctuation (nemotron) untouched.
+            text = text.capitalize()
         if not text or _is_hallucination(text, self._language) or self._is_duplicate(text):
             return {"text": "", "speaker": "", "speaker_id": 0}
         return {"text": text, "speaker": "", "speaker_id": 0}

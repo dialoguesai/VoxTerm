@@ -6,8 +6,10 @@ small thread-safe object the HTTP server calls. No transcription/diarization log
 lives here; recording reuses ``audio.capture.AudioCapture`` and the heavy lifting is
 ``gui.transcribe`` + ``gui.export`` (the reviewed, tested pipeline).
 
-v1 model: record -> stop -> transcribe (robust, reuses the tested pipeline). Live
-word-by-word streaming is a planned fast-follow.
+Core flow: record -> stop -> transcribe (robust, reuses the tested pipeline). The live
+monitor (_live_loop) tails the in-progress WAV: VAD-chunked for batch backends
+(_live_chunk_loop), or true word-by-word streaming via _live_stream_loop when the optional
+sherpa-onnx backend is installed.
 """
 from __future__ import annotations
 
@@ -281,6 +283,7 @@ class Engine:
         # tail raw PCM of the (still-growing) WAV; dispatch to streaming or chunked transcription
         from gui.transcribe import _get_engines, _fmt_hms
         from gui.eot import is_incomplete
+        from audio.transcriber import SherpaStreamingTranscriber
         try:
             # Prefer the sherpa streaming backend for the live view when it's installed (opt-in)
             # — it streams word-by-word. Else fw-base (light, where it exists), else the platform
@@ -302,7 +305,7 @@ class Engine:
         f.seek(0, 2)  # tail from the CURRENT end — only NEW speech (true live, no slow backlog replay)
         abs_start = max(0, (f.tell() - 44) // 2)  # samples already recorded before we started (for timestamps)
         try:
-            if type(tr).__name__ == "SherpaStreamingTranscriber":
+            if isinstance(tr, SherpaStreamingTranscriber):
                 self._live_stream_loop(tr, f, abs_start, _fmt_hms)
             else:
                 self._live_chunk_loop(tr, vad, f, abs_start, _fmt_hms, is_incomplete)
@@ -381,7 +384,7 @@ class Engine:
                         rec.decode_stream(st)
             text = (rec.get_result(st) or "").strip()
             if rec.is_endpoint(st):
-                final = text.capitalize() if text else ""
+                final = (text.capitalize() if text.isupper() else text) if text else ""
                 rec.reset(st)
                 # parity with the chunked/batch backends: drop hallucinations + consecutive dupes
                 if final and (_is_hallucination(final, "en") or tr._is_duplicate(final)):
@@ -393,7 +396,8 @@ class Engine:
                     self._live["partial"] = None
                 line_start = fed
             else:
-                partial = ({"t": _fmt_hms(line_start / SR), "stable": "", "volatile": text.capitalize()}
+                partial = ({"t": _fmt_hms(line_start / SR), "stable": "",
+                            "volatile": (text.capitalize() if text.isupper() else text)}
                            if text else None)
                 with self._lock:
                     self._live["partial"] = partial

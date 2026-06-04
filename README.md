@@ -39,7 +39,7 @@ git clone https://github.com/dmarzzz/VoxTerm.git
 cd voxterm
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .                 # add ".[streaming]" for the optional streaming ASR backend
 python3 -m tui.app
 ```
 
@@ -128,6 +128,14 @@ Press `P` to manage your speaker profile library (rename, delete, wipe all data)
 - Whisper variants (tiny through large-v3) available via `M` menu
 
 Models download automatically on first use.
+
+### Optional: streaming ASR (cross-platform, CPU)
+
+`pip install "voxterm[streaming]"` adds a sherpa-onnx **streaming** backend (word-by-word,
+CPU-only, Linux/macOS-arm64/Windows) with two model keys — `sherpa-stream-en` (zipformer-20M,
+ultra-fast) and `sherpa-nemotron-en` (NeMo 0.6B, accurate). Fully opt-in: absent, nothing
+changes. See [docs/streaming-asr.md](docs/streaming-asr.md) and the
+[benchmark](docs/streaming-asr-benchmark.md).
 
 ## Project Structure
 
