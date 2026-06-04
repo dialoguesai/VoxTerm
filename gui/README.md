@@ -22,11 +22,30 @@ A single linear flow:
 5. **History** — every past session is listed in the sidebar; click to reopen.
 6. **Rename** — relabel a diarized speaker; the rename flows into your copy/download.
 
-Review extras: a speaker legend, per-turn timestamps and uncertainty markers, and
-client-side exports built from the loaded session (so your renames are included) —
+Review extras: a speaker legend, per-turn timestamps and markers, and exports rendered
+**server-side by `export.py`** (the single formatter) with your speaker renames applied —
 **Copy for AI**, **Summarize for AI** (transcript prefixed with a ready-to-paste LLM
-summarization task), and `.md` / `.json` / `.srt` / `.vtt` downloads. The subtitle
-output is byte-identical to the server-written files.
+summarization task), and `.md` / `.json` / `.srt` / `.vtt` downloads. Because the server
+renders them, a download byte-matches the on-disk artifact (only your renames differ).
+
+## Scope & parity with the TUI
+
+The GUI drives the **same engine** as the TUI — `get_transcriber` (incl. the faster-whisper
+and sherpa backends plus the dedup / hallucination filters), Silero VAD (identical windowing),
+the diarizer, and the `EventLogger` — so the saved transcript is produced by the same code, and
+the model list + CPU-aware default match the TUI. Some TUI features are intentionally **out of
+scope** for a personal record→review web app:
+
+- **P2P party / hivemind / system-audio capture** — live-collaboration / aggregation concerns.
+- **Cross-session speaker recognition** (the SQLite `SpeakerStore` biometric identity layer) —
+  the GUI offers per-session manual **rename** instead, not persisted across sessions, and
+  honestly labeled "diarization clusters / your renames, not verified identities" in exports.
+  (Because that identity layer is absent, the `[~]` *uncertain-attribution* marker it would
+  drive does not appear in GUI-produced transcripts.)
+- **Mid-session language switching** — language is chosen up front.
+
+The GUI also *adds* value the TUI lacks: the rich `.md`/`.json`/`.srt`/`.vtt` export and a
+two-backend live monitor.
 
 It's also a **PWA** — install it to your phone/desktop home screen for an app-like,
 offline-capable shell. Your model + language picks are remembered (localStorage), and

@@ -188,6 +188,10 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/session/delete":
             b = self._read_json()
             return self._json(ENGINE.delete_session(b.get("stem", ""), dir=b.get("dir")))
+        if p == "/api/export":
+            b = self._read_json()
+            return self._json(ENGINE.export_session(b.get("stem", ""), b.get("kind", "md"),
+                                                    renames=b.get("renames") or {}, dir=b.get("dir")))
         return self._json({"error": "not found"}, 404)
 
     def _serve_static(self, rel: str):

@@ -472,6 +472,10 @@ def _ensure_sherpa_model(repo: str) -> "Path":
     return target
 
 
+# Public alias so external callers (the GUI live loop) don't import the private name.
+is_hallucination = _is_hallucination
+
+
 class SherpaStreamingTranscriber(_DeduplicatorMixin):
     """Cross-platform CPU streaming ASR via sherpa-onnx (k2-fsa). Optional backend — only
     reachable when sherpa-onnx is installed (config gates the model key). Per-call
@@ -485,6 +489,20 @@ class SherpaStreamingTranscriber(_DeduplicatorMixin):
         self._rec = None
         self._loaded = False
         self._init_dedup()
+
+    # Public surface for the GUI live loop, so it never reaches into underscore-privates.
+    @property
+    def recognizer(self):
+        """The underlying sherpa OnlineRecognizer (valid after load())."""
+        return self._rec
+
+    def reset_dedup(self):
+        """Clear consecutive-duplicate state — call when (re)starting a live stream."""
+        self._init_dedup()
+
+    def is_duplicate(self, text: str) -> bool:
+        """True if `text` repeats the immediately-preceding finalized text."""
+        return self._is_duplicate(text)
 
     def load(self):
         try:

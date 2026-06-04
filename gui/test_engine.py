@@ -367,6 +367,38 @@ def test_status_elapsed_zero_even_with_started_at():
     assert eng.status()["elapsed"] == 0
 
 
+# --- server-side export (single source of truth) -----------------------------
+
+def test_export_session_single_source_and_renames():
+    """export_session rebuilds from the events log and renders via export.py, so a download
+    equals the on-disk artifact (one formatter, no client fork to drift), and renames apply."""
+    import export as export_mod
+    eng, out, *_ = _isolated_engine()
+    stem = "20260101-zzz"
+    events = [
+        {"t": 0.0, "kind": "session", "phase": "start", "model": "fw-small", "language": "en"},
+        {"t": 1.0, "kind": "text", "speaker": "Speaker 1", "speaker_id": 1, "color": "#5eead4",
+         "text": "hello world", "confidence": "", "overlap": False, "audio_offset": 0.0, "audio_end": 1.0},
+        {"t": 2.0, "kind": "text", "speaker": "Speaker 2", "speaker_id": 2, "color": "#f0566a",
+         "text": "goodbye now", "confidence": "", "overlap": False, "audio_offset": 1.0, "audio_end": 2.0},
+        {"t": 3.0, "kind": "session", "phase": "end"},
+    ]
+    ev = out / f"{stem}-events.jsonl"
+    ev.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+
+    for kind in ("md", "json", "srt", "vtt"):           # all four formats render
+        r = eng.export_session(stem, kind, renames={}, dir=None)
+        assert r["ok"] and r["text"], (kind, r)
+
+    # single source of truth: md == a direct build()+render_md of the same events
+    doc = export_mod.build(export_mod.load_events(ev), session_id=stem, source_stream=ev.name)
+    assert eng.export_session(stem, "md", renames={}, dir=None)["text"] == export_mod.render_md(doc)
+
+    assert "Alice" in eng.export_session(stem, "md", renames={"1": "Alice"}, dir=None)["text"]
+    assert eng.export_session(stem, "xml")["ok"] is False            # bad kind
+    assert eng.export_session("does-not-exist", "md")["ok"] is False  # missing session
+
+
 # --- standalone runner (no pytest needed) ------------------------------------
 
 if __name__ == "__main__":

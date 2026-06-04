@@ -83,12 +83,12 @@ class Engine:
 
     # ---- static option lists for the UI ----
     def models(self) -> list[str]:
-        # the host's usable model set: fw-* on Linux/Intel mac; MLX (qwen3/parakeet) on Apple
-        # Silicon (where FASTER_WHISPER_MODELS is empty); PLUS the optional sherpa streaming
-        # models when installed (they live in AVAILABLE_MODELS but not FASTER_WHISPER_MODELS,
-        # so they'd otherwise never appear in the dropdown on Linux/Intel/Windows).
-        base = config.FASTER_WHISPER_MODELS or set(config.AVAILABLE_MODELS)
-        return sorted(base | config.SHERPA_MODELS)
+        # Offer exactly what the TUI offers: every model the engine supports on this host.
+        # config.py's platform branches + sherpa gate register them all in AVAILABLE_MODELS
+        # (fw-* on Linux/Intel; qwen3 on Linux/Win when qwen-asr is installed; MLX qwen3/parakeet
+        # on Apple Silicon; sherpa-* when the [streaming] extra is installed). Earlier this read
+        # FASTER_WHISPER_MODELS and silently hid installed qwen3 on Linux — fixed to match the TUI.
+        return sorted(config.AVAILABLE_MODELS)
 
     def default_model(self) -> str:
         # CPU-friendly default (fw-small on Linux/Intel; MLX on Apple Silicon) — not the raw
@@ -281,7 +281,7 @@ class Engine:
 
     def _live_loop(self, wav: Path):
         # tail raw PCM of the (still-growing) WAV; dispatch to streaming or chunked transcription
-        from gui.transcribe import _get_engines, _fmt_hms
+        from gui.transcribe import _get_engines, _fmt_hms, gui_default_model
         from gui.eot import is_incomplete
         from audio.transcriber import SherpaStreamingTranscriber
         try:
@@ -294,7 +294,7 @@ class Engine:
             elif "fw-base" in config.AVAILABLE_MODELS:
                 live_model = "fw-base"
             else:
-                live_model = config.DEFAULT_MODEL
+                live_model = gui_default_model()   # CPU-aware default, never the raw qwen3-0.6b that's unusable on CPU
             tr, vad, _d = _get_engines(live_model, "en", dedicated="live")
         except Exception as e:
             with self._lock:
@@ -366,9 +366,9 @@ class Engine:
         is fed the freshly-tailed PCM; the running decode is the volatile partial; sherpa's own
         endpoint detection finalizes a line. Tighter cadence than the chunked path for low
         latency. Same lock discipline on the live-state writes."""
-        from audio.transcriber import _is_hallucination
-        tr._init_dedup()           # tr is cached + reused across live sessions; clear stale dedup state
-        rec = tr._rec
+        from audio.transcriber import is_hallucination
+        tr.reset_dedup()           # tr is cached + reused across live sessions; clear stale dedup state
+        rec = tr.recognizer
         st = rec.create_stream()
         fed = abs_start            # total samples fed (for the current line's start timestamp)
         line_start = abs_start
@@ -388,7 +388,7 @@ class Engine:
                 final = (text.capitalize() if text.isupper() else text) if text else ""
                 rec.reset(st)
                 # parity with the chunked/batch backends: drop hallucinations + consecutive dupes
-                if final and (_is_hallucination(final, "en") or tr._is_duplicate(final)):
+                if final and (is_hallucination(final, "en") or tr.is_duplicate(final)):
                     final = ""
                 with self._lock:
                     if final:
@@ -487,3 +487,32 @@ class Engine:
         if not p:
             return {"ok": False, "error": "not found"}
         return {"ok": True, "stem": stem, "kind": kind, "path": str(p), "text": p.read_text(encoding="utf-8")}
+
+    def export_session(self, stem: str, kind: str, renames: dict | None = None, dir: str | None = None) -> dict:
+        """Render a saved session to md/json/srt/vtt with the client's speaker renames applied.
+
+        Rebuilds the doc from the events log via export.build() — the SAME path that produced the
+        on-disk -agent.* artifacts — then renders with export.py's formatters. So a download
+        byte-matches the on-disk file except for the (intentional) renames, and there is ONE
+        formatter implementation (the client no longer reimplements it)."""
+        render = {"md": export.render_md, "json": export.render_json,
+                  "srt": export.to_srt, "vtt": export.to_vtt}.get(kind)
+        ext = {"md": "-agent.md", "json": "-agent.json", "srt": ".srt", "vtt": ".vtt"}.get(kind)
+        if not render:
+            return {"ok": False, "error": "bad kind"}
+        ev = self._resolve(stem, "-events.jsonl", only_dir=dir)
+        if not ev:
+            return {"ok": False, "error": "no events log for this session"}
+        try:
+            doc = export.build(export.load_events(ev), session_id=stem, source_stream=ev.name)
+        except Exception as e:
+            return {"ok": False, "error": f"export build failed: {e}"}
+        renames = {str(k): str(v) for k, v in (renames or {}).items()}
+        if renames:  # mirror the client view: rename local (non-peer) turns + speakers by id
+            for t in doc.get("turns", []):
+                if not t.get("peer") and str(t.get("speaker_id")) in renames:
+                    t["speaker"] = renames[str(t["speaker_id"])]
+            for sp in doc.get("speakers", []):
+                if not sp.get("peer") and str(sp.get("id")) in renames:
+                    sp["label"] = renames[str(sp["id"])]
+        return {"ok": True, "text": render(doc), "filename": f"{stem}{ext}"}

@@ -108,10 +108,10 @@ async function init() {
   $("navToggle").addEventListener("click", () => setNav(!document.body.classList.contains("nav-open")));
   $("copyAgent").addEventListener("click", copyForAI);
   $("summarizeAi").addEventListener("click", summarizeForAI);
-  $("dlMd").addEventListener("click", () => { if (!CUR) return; download(buildMarkdown(), `${CUR.session.id}-agent.md`, "text/markdown"); });
-  $("dlJson").addEventListener("click", () => { if (!CUR) return; download(buildJson(), `${CUR.session.id}-agent.json`, "application/json"); });
-  $("dlSrt").addEventListener("click", () => { if (!CUR) return; download(buildSrt(), `${CUR.session.id}.srt`, "application/x-subrip"); });
-  $("dlVtt").addEventListener("click", () => { if (!CUR) return; download(buildVtt(), `${CUR.session.id}.vtt`, "text/vtt"); });
+  $("dlMd").addEventListener("click", async () => { if (!CUR) return; const t = await serverExport("md"); if (t != null) download(t, `${CUR.session.id}-agent.md`, "text/markdown"); });
+  $("dlJson").addEventListener("click", async () => { if (!CUR) return; const t = await serverExport("json"); if (t != null) download(t, `${CUR.session.id}-agent.json`, "application/json"); });
+  $("dlSrt").addEventListener("click", async () => { if (!CUR) return; const t = await serverExport("srt"); if (t != null) download(t, `${CUR.session.id}.srt`, "application/x-subrip"); });
+  $("dlVtt").addEventListener("click", async () => { if (!CUR) return; const t = await serverExport("vtt"); if (t != null) download(t, `${CUR.session.id}.vtt`, "text/vtt"); });
   setExportEnabled(false);
 
   // close the mobile drawer when clicking outside it (the toggle handles its own click)
@@ -299,6 +299,7 @@ async function loadSession(stem, dir) {
     return toast("Could not load session");
   }
   try { CUR = JSON.parse(res.text); } catch { return toast("Bad session JSON"); }
+  CUR._dir = dir || null;   // remember the session's dir so server-side export can resolve it
   RENAMES = {};
   render();
   document.querySelectorAll(".session").forEach((el) => el.classList.toggle("active", el.dataset.stem === stem));
@@ -374,96 +375,32 @@ function renameSpeaker(sid) {
 }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
-// ---------- export (rename-aware, built from the JSON source of truth) ----------
-function buildJson() {
-  const d = JSON.parse(JSON.stringify(CUR));
-  d.turns.forEach((t) => { if (!t.peer && RENAMES[t.speaker_id]) t.speaker = RENAMES[t.speaker_id]; });
-  d.speakers.forEach((sp) => { if (!sp.peer && RENAMES[sp.id]) sp.label = RENAMES[sp.id]; });
-  return JSON.stringify(d, null, 2) + "\n";
-}
-function buildMarkdown() {
-  const s = CUR.session;
-  // JSON.stringify of a string is a valid YAML double-quoted scalar — mirrors the
-  // server's _yaml_scalar so a rename/peer_name with a quote or newline can't break
-  // the front-matter or inject keys.
-  const y = (v) => JSON.stringify(String(v == null ? "" : v));
-  const spk = CUR.speakers.map((sp) => sp.peer
-    ? `  - { id: 0, label: ${y(sp.label)}, turns: ${sp.turns}, peer: true, peer_name: ${y(sp.peer_name)} }`
-    : `  - { id: ${sp.id}, label: ${y(RENAMES[sp.id] || sp.label)}, turns: ${sp.turns}, peer: false }`).join("\n");
-  const fm = ["---", "voxterm_export_version: 1", "kind: voxterm-transcript",
-    `session_id: ${y(s.id)}`, `date: ${(s.started_at || "").slice(0, 10) || "null"}`,
-    `duration: ${y(s.duration_hms || "")}`, `model: ${y(s.model || "")}`, `language: ${y(s.language || "")}`,
-    "speakers:", spk, `turns: ${CUR.turns.length}`,
-    "notes:", '  - "Speaker labels are diarization clusters / your renames, not verified identities."', "---", ""].join("\n");
-  const body = ["> VoxTerm session — timestamps are [mm:ss] into the recording; [~]=uncertain, [overlap], [new-voice], [peer].", "", "## Transcript", ""];
-  CUR.turns.forEach((t) => {
-    const who = t.peer ? `**${nameFor(t)}** (peer: ${t.peer_name})`
-      : (t.speaker_id ? `**${nameFor(t)}** (#${t.speaker_id})` : "**(unattributed)**");
-    let line = `[${t.t_offset_hms}] ${who}: ${t.text}`;
-    if (t.markers && t.markers.length) line += "  " + t.markers.map((m) => `[${m}]`).join(" ");
-    body.push(line, "");
+// ---------- export ----------
+// One implementation, server-side (gui/export.py). The client sends the session + its speaker
+// renames; the server rebuilds the doc from the events log and renders md/json/srt/vtt with the
+// SAME formatter that wrote the on-disk artifacts — so a download byte-matches the on-disk file
+// (only the intentional renames differ). No client-side formatter to drift out of sync.
+async function serverExport(kind) {
+  if (!CUR) return null;
+  const r = await getJSON("/api/export", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stem: CUR.session.id, dir: CUR._dir || null, kind, renames: RENAMES }),
   });
-  return fm + body.join("\n").trim() + "\n";
-}
-// ---------- subtitles (client-side, rename-aware) — must byte-match the server's to_srt/to_vtt ----------
-// Single-line, cue-safe text (mirror export.py _cue_text): collapse newlines/blank lines
-// + neutralize the "-->" marker, either of which would corrupt SRT/VTT cue boundaries.
-function cueText(s) { return String(s == null ? "" : s).trim().replace(/\s*\n\s*/g, " ").replace(/-->/g, "->"); }
-// End of a turn: prefer t_offset_end; else the next (filtered) turn's start; else +2s.
-// Clamp end>start with a 0.5s minimum span — matches the backend _cue_times exactly.
-function turnEnd(t, next) {
-  let end = (typeof t.t_offset_end === "number") ? t.t_offset_end
-          : (next && typeof next.t_offset === "number") ? next.t_offset
-          : (t.t_offset || 0) + 2.0;
-  const start = t.t_offset || 0;
-  if (!(end > start)) end = start + 0.5;
-  return end;
-}
-// Mirror the backend _cue_label exactly: peer = "<speaker> (peer)" (NOT nameFor's
-// "speaker · peer_name"); local = the rename-aware speaker name. Keeps client downloads
-// byte-identical to the server artifact (renames are an intentional client-only delta).
-function cueLabel(t) { return cueText(t.peer ? `${t.speaker || "(unattributed)"} (peer)` : nameFor(t)); }
-// seconds -> "HH:MM:SS" + sep + "mmm" (sep is "," for SRT, "." for VTT).
-function tsParts(sec, sep) {
-  sec = Math.max(0, sec || 0);
-  const ms = Math.round(sec * 1000);
-  const h = Math.floor(ms / 3600000);
-  const m = Math.floor((ms % 3600000) / 60000);
-  const s = Math.floor((ms % 60000) / 1000);
-  const millis = ms % 1000;
-  const p2 = (n) => String(n).padStart(2, "0");
-  return `${p2(h)}:${p2(m)}:${p2(s)}${sep}${String(millis).padStart(3, "0")}`;
-}
-// Only turns with non-empty cue text become cues — exactly like the backend, so the
-// downloaded file matches the server artifact (no blank cues / index drift).
-function cueTurns() { return CUR.turns.filter((t) => cueText(t.text)); }
-function buildSrt() {
-  const cues = cueTurns(), out = [];
-  cues.forEach((t, i) => {
-    const start = tsParts(t.t_offset || 0, ",");
-    const end = tsParts(turnEnd(t, cues[i + 1]), ",");
-    out.push(String(i + 1), `${start} --> ${end}`, `${cueLabel(t)}: ${cueText(t.text)}`, "");
-  });
-  return out.join("\n");
-}
-function buildVtt() {
-  const cues = cueTurns(), out = ["WEBVTT", ""];
-  cues.forEach((t, i) => {
-    const start = tsParts(t.t_offset || 0, ".");
-    const end = tsParts(turnEnd(t, cues[i + 1]), ".");
-    out.push(`${start} --> ${end}`, `${cueLabel(t)}: ${cueText(t.text)}`, "");
-  });
-  return out.join("\n");
+  if (!r || r.ok === false) { toast("Export failed — is the session still on disk?"); return null; }
+  return r.text;
 }
 
 async function copyForAI() {
   if (!CUR) return toast("Load a transcript first");
-  const md = buildMarkdown();
+  const md = await serverExport("md");
+  if (md == null) return;
   try { await navigator.clipboard.writeText(md); toast("Copied AI transcript to clipboard"); }
   catch { download(md, `${CUR.session.id}-agent.md`, "text/markdown"); toast("Clipboard blocked — downloaded instead"); }
 }
 // A ready-to-paste prompt: a strong summarization instruction followed by the transcript.
-function summaryPrompt() {
+async function summaryPrompt() {
+  const md = await serverExport("md");
+  if (md == null) return null;
   return [
     "## Task",
     "",
@@ -479,12 +416,13 @@ function summaryPrompt() {
     "",
     "---",
     "",
-    buildMarkdown(),
+    md,
   ].join("\n");
 }
 async function summarizeForAI() {
   if (!CUR) return toast("Load a transcript first");
-  const text = summaryPrompt();
+  const text = await summaryPrompt();
+  if (text == null) return;
   try { await navigator.clipboard.writeText(text); toast("Copied summary prompt to clipboard"); }
   catch { download(text, `${CUR.session.id}-summarize.md`, "text/markdown"); toast("Clipboard blocked — downloaded instead"); }
 }
