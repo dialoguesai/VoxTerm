@@ -1,0 +1,7 @@
+# Large native deps — not committed; fetched by ./fetch-deps.sh before an Android build.
+android/libs/*.aar
+android/src/main/assets/voxterm-model/
+# Gradle/build artifacts
+android/build/
+android/.gradle/
+target/

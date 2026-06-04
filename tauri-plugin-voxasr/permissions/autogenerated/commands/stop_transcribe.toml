@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-stop-transcribe"
+description = "Enables the stop_transcribe command without any pre-configured scope."
+commands.allow = ["stop_transcribe"]
+
+[[permission]]
+identifier = "deny-stop-transcribe"
+description = "Denies the stop_transcribe command without any pre-configured scope."
+commands.deny = ["stop_transcribe"]

@@ -129,6 +129,10 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_shell::init());
 
+    // On-device ASR is mobile-only — the phone transcribes locally via sherpa-onnx (no relay).
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_voxasr::init());
+
     let builder = builder.setup(|app| {
         if cfg!(debug_assertions) {
             app.handle().plugin(

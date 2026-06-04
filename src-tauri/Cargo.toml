@@ -24,6 +24,10 @@ log = "0.4"
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 rand = "0.8"
+# On-device streaming ASR (sherpa-onnx). The Android plugin carries the native engine; on
+# desktop/iOS the crate is a no-op stub (so it's a plain dep the Tauri CLI can discover + wire
+# the Android module). Only registered on mobile (see lib.rs #[cfg(mobile)]).
+tauri-plugin-voxasr = { path = "../tauri-plugin-voxasr" }
 
 # Desktop only: spawn the Python engine as a scoped sidecar. Mobile is a thin client
 # (no local engine), so the shell plugin isn't compiled there.
