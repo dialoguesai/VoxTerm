@@ -269,6 +269,7 @@ class Engine:
     def _live_loop(self, wav: Path):
         # tail raw PCM of the (still-growing) WAV, transcribe finalized speech windows
         from gui.transcribe import _get_engines, _fmt_hms
+        from gui.eot import is_incomplete
         try:
             # dedicated="live" → the live monitor gets its OWN transcriber, never sharing
             # CTranslate2 decode state with the post-stop batch job.
@@ -298,8 +299,16 @@ class Engine:
                             break
                         txt = (tr.transcribe(buf[s:e]).get("text") or "").strip()
                         if txt:
-                            self._live["lines"].append({"t": _fmt_hms((abs_start + s) / SR), "text": txt})
-                            self._live["lines"] = self._live["lines"][-200:]
+                            lines = self._live["lines"]
+                            # If the previous line ended mid-clause ("…and", "…the"), this VAD
+                            # segment is the same sentence continuing after a breath — merge it
+                            # in rather than emitting a choppy second line. (Live view is
+                            # text-only/unattributed, so there's no speaker boundary to cross.)
+                            if lines and is_incomplete(lines[-1]["text"]):
+                                lines[-1]["text"] = (lines[-1]["text"] + " " + txt).strip()
+                            else:
+                                lines.append({"t": _fmt_hms((abs_start + s) / SR), "text": txt})
+                            self._live["lines"] = lines[-200:]
                         consumed = e
                     if consumed:
                         abs_start += consumed
