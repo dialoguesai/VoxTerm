@@ -49,14 +49,17 @@ def _isolated_engine():
 
 # --- option lists ------------------------------------------------------------
 
-def test_models_returns_only_fw_keys():
+def test_models_are_valid_keys():
     eng, *_ = _isolated_engine()
     models = eng.models()
     assert isinstance(models, list) and models, "models() must be a non-empty list"
-    assert all(m.startswith("fw-") for m in models), f"non-fw key leaked: {models}"
-    # it's exactly the faster-whisper set, sorted
-    assert models == sorted(config.FASTER_WHISPER_MODELS)
-    assert "fw-small" in models  # the documented default model
+    # every offered key is a real, sorted, de-duped AVAILABLE_MODELS key
+    assert models == sorted(set(models)), "models() must be sorted + de-duped"
+    assert all(m in config.AVAILABLE_MODELS for m in models), f"unknown key leaked: {models}"
+    # the platform's faster-whisper set is included (Linux/Intel mac)
+    assert set(config.FASTER_WHISPER_MODELS).issubset(set(models))
+    # optional sherpa streaming keys appear iff installed (additive, never on their own)
+    assert set(models) & config.SHERPA_MODELS == config.SHERPA_MODELS
 
 
 def test_languages_is_nonempty_dict():

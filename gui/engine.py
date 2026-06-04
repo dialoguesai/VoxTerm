@@ -82,8 +82,11 @@ class Engine:
     # ---- static option lists for the UI ----
     def models(self) -> list[str]:
         # the host's usable model set: fw-* on Linux/Intel mac; MLX (qwen3/parakeet) on Apple
-        # Silicon, where FASTER_WHISPER_MODELS is empty — fall back so the dropdown isn't blank.
-        return sorted(config.FASTER_WHISPER_MODELS or set(config.AVAILABLE_MODELS))
+        # Silicon (where FASTER_WHISPER_MODELS is empty); PLUS the optional sherpa streaming
+        # models when installed (they live in AVAILABLE_MODELS but not FASTER_WHISPER_MODELS,
+        # so they'd otherwise never appear in the dropdown on Linux/Intel/Windows).
+        base = config.FASTER_WHISPER_MODELS or set(config.AVAILABLE_MODELS)
+        return sorted(base | config.SHERPA_MODELS)
 
     def default_model(self) -> str:
         # CPU-friendly default (fw-small on Linux/Intel; MLX on Apple Silicon) — not the raw
