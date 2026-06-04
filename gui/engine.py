@@ -152,6 +152,10 @@ class Engine:
         # the lock to append, so holding it here would deadlock). Once joined, no more
         # appends can race the final drain/concat/clear.
         self._stop.set()
+        # The live monitor is bound to this recording's lifetime: stop it before we finalize
+        # the file, so its reader is gone and it can't re-decode the finalized WAV forever or
+        # run inference concurrently with the post-stop transcribe job. Best-effort (idempotent).
+        self.live_stop()
         if self._poll_thread:
             self._poll_thread.join(timeout=5)
         with self._lock:
@@ -167,15 +171,19 @@ class Engine:
                 pass
             wav = self._rec_wav_path
             n_bytes = self._rec_bytes
+            patched = False
             try:                                  # patch the header with the real size → valid WAV
                 self._rec_file.flush()
                 self._rec_file.seek(0)
                 self._rec_file.write(_wav_header(n_bytes))
                 self._rec_file.flush()
                 self._rec_file.close()
-            except Exception:
-                pass
+                patched = True
+            except Exception as e:                # surface I/O failure — don't transcribe a broken file
+                self.job = {"state": "error", "error": f"could not finalize recording: {e}"}
             self._rec_file = None
+        if not patched:
+            return {"ok": False, "error": "could not finalize the recording file"}
         if n_bytes < SR:  # < 0.5s of s16 mono (SR*2 bytes/s → 0.5s = SR bytes)
             try:
                 wav.unlink()
@@ -214,13 +222,15 @@ class Engine:
         return {"ok": True}
 
     def status(self) -> dict:
+        with self._lock:                          # consistent snapshot vs the live thread's writes
+            live = {"active": self._live["active"], "wav": self._live["wav"],
+                    "lines": self._live["lines"][-120:], "partial": self._live.get("partial")}
         return {
             "recording": self.recording,
             "level": round(self.level, 4),
             "elapsed": round(time.time() - self.started_at, 1) if (self.recording and self.started_at) else 0,
             "job": self.job,
-            "live": {"active": self._live["active"], "wav": self._live["wav"],
-                     "lines": self._live["lines"][-120:], "partial": self._live.get("partial")},
+            "live": live,
         }
 
     # ---- live (near-real-time) monitor: tail an in-progress recording's file ----
@@ -230,6 +240,8 @@ class Engine:
 
     def live_start(self, wav: str | None = None) -> dict:
         with self._lock:
+            if self._live_thread and self._live_thread.is_alive():
+                return {"ok": False, "error": "live monitor is still stopping; try again"}
             if self._live["active"]:
                 return {"ok": True, "already": True, "wav": self._live["wav"]}
             target = Path(wav) if wav else self._newest_wav()
@@ -245,8 +257,11 @@ class Engine:
 
     def live_stop(self) -> dict:
         self._live_stop.set()
-        if self._live_thread:
+        if self._live_thread and self._live_thread.is_alive():
             self._live_thread.join(timeout=3)
+            if self._live_thread.is_alive():     # still decoding — don't claim it stopped
+                return {"ok": False, "error": "live monitor still stopping"}
+        self._live_thread = None
         self._live["active"] = False
         self._live["partial"] = None
         return {"ok": True}
@@ -255,7 +270,9 @@ class Engine:
         # tail raw PCM of the (still-growing) WAV, transcribe finalized speech windows
         from gui.transcribe import _get_engines, _fmt_hms
         try:
-            tr, vad, _d = _get_engines("fw-base", "en")
+            # dedicated="live" → the live monitor gets its OWN transcriber, never sharing
+            # CTranslate2 decode state with the post-stop batch job.
+            tr, vad, _d = _get_engines("fw-base", "en", dedicated="live")
         except Exception as e:
             self._live["lines"].append({"t": "", "text": f"(live engine error: {e})"})
             self._live["active"] = False

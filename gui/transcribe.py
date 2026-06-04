@@ -44,10 +44,14 @@ _VAD = None
 _DIAR = None
 
 
-def _get_engines(model: str, language: str):
+def _get_engines(model: str, language: str, dedicated: str | None = None):
+    """Return (transcriber, vad, diarizer), cached. ``dedicated`` tags a SEPARATE
+    transcriber instance (e.g. "live"): CTranslate2 is not safe for concurrent decode on
+    one model object, so the live monitor must not share its transcriber with the post-stop
+    batch job. VAD/diarizer stay shared (each serializes internally)."""
     global _VAD, _DIAR
     with _ENGINE_LOCK:
-        key = (model, language)
+        key = (model, language, dedicated)
         tr = _TR_CACHE.get(key)
         if tr is None:
             tr = get_transcriber(model, language=language)

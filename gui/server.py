@@ -37,6 +37,11 @@ _sse_count = 0
 # transcripts. None = loopback (no token required). Set in main().
 TOKEN = None
 
+# Host-header allowlist (loopback mode) to block DNS-rebinding: a malicious site can't
+# point its DNS at 127.0.0.1 and drive the tokenless local API, because the browser still
+# sends Host: evil.com. None = no host check (LAN mode, which is token-gated instead). Set in main().
+ALLOWED_HOSTS = None
+
 ENGINE = Engine()
 
 # Strict CSP: same-origin only, no external anything (the UI is fully self-hosted).
@@ -45,7 +50,7 @@ ENGINE = Engine()
 # escaped (app.js escapeHtml) and the data is local, so the exposure is minimal.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data:; connect-src 'self'; font-src 'self'; manifest-src 'self'; "
-       "worker-src 'self'; base-uri 'none'; form-action 'none'")
+       "worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 _CTYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
            ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json",
            ".png": "image/png", ".webmanifest": "application/manifest+json"}
@@ -59,6 +64,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Security-Policy", CSP)
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
@@ -88,10 +94,36 @@ class Handler(BaseHTTPRequestHandler):
         given = (self.headers.get("X-VoxTerm-Token")
                  or (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
                  or (q.get("token") or [""])[0])
-        return bool(given) and secrets.compare_digest(given, TOKEN)
+        try:  # compare on bytes so a non-ASCII token yields a clean False (401), not a TypeError
+            return bool(given) and secrets.compare_digest(given.encode("utf-8"), TOKEN.encode("utf-8"))
+        except Exception:
+            return False
+
+    def _host_ok(self) -> bool:
+        """Reject DNS-rebinding: in loopback mode the Host header must be a known local name.
+        LAN mode skips this (the token is the gate; the LAN IP/hostname varies)."""
+        if ALLOWED_HOSTS is None:
+            return True
+        return (self.headers.get("Host") or "").lower() in ALLOWED_HOSTS
+
+    def _same_origin(self) -> bool:
+        """Block cross-origin state-changing requests (CSRF). Modern browsers send
+        Sec-Fetch-Site (our own fetch() is 'same-origin'); when an Origin is present it must
+        match Host. Non-browser clients (curl) send neither and are allowed for local tooling."""
+        sfs = self.headers.get("Sec-Fetch-Site")
+        if sfs is not None and sfs not in ("same-origin", "none"):
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            netloc = urlparse(origin).netloc.lower()
+            if netloc != (self.headers.get("Host") or "").lower():
+                return False
+        return True
 
     # ---- GET ----
     def do_GET(self):
+        if not self._host_ok():
+            return self._json({"error": "bad host"}, 403)
         u = urlparse(self.path)
         p, q = u.path, parse_qs(u.query)
         if p.startswith("/api/") and not self._authed(q):
@@ -121,8 +153,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- POST ----
     def do_POST(self):
+        if not self._host_ok():
+            return self._json({"error": "bad host"}, 403)
         u = urlparse(self.path)
         p, q = u.path, parse_qs(u.query)
+        if not self._same_origin():
+            return self._json({"error": "cross-origin"}, 403)
         if p.startswith("/api/") and not self._authed(q):
             return self._json({"error": "unauthorized"}, 401)
         if p == "/api/record/start":
@@ -180,13 +216,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(argv=None) -> int:
-    global TOKEN
+    global TOKEN, ALLOWED_HOSTS
     lan = os.environ.get("VOXTERM_GUI_LAN") == "1"
     host = "0.0.0.0" if lan else "127.0.0.1"
     port = int(os.environ.get("VOXTERM_GUI_PORT", DEFAULT_PORT))
     if lan:
         # Records a real room — never expose to the wifi without a secret.
         TOKEN = os.environ.get("VOXTERM_GUI_TOKEN") or secrets.token_urlsafe(24)
+        ALLOWED_HOSTS = None  # token-gated; LAN IP/hostname varies, so no host allowlist
+    else:
+        # Loopback: enforce a Host allowlist so a rebinding site can't drive the tokenless API.
+        ALLOWED_HOSTS = {f"127.0.0.1:{port}", f"localhost:{port}", "127.0.0.1", "localhost"}
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
     if lan:

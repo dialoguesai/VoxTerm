@@ -83,6 +83,28 @@ def _json_get(host, port, path, headers=None):
     return status, json.loads(body.decode("utf-8"))
 
 
+def _post(host, port, path, headers=None, body=b""):
+    """POST path; return (status, body_bytes)."""
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        conn.request("POST", path, body=body, headers=headers or {})
+        resp = conn.getresponse()
+        return resp.status, resp.read()
+    finally:
+        conn.close()
+
+
+@contextmanager
+def _allowed_hosts(value):
+    """Temporarily set server.ALLOWED_HOSTS (loopback host allowlist)."""
+    old = server.ALLOWED_HOSTS
+    server.ALLOWED_HOSTS = value
+    try:
+        yield
+    finally:
+        server.ALLOWED_HOSTS = old
+
+
 @contextmanager
 def temp_engine():
     """A fresh Engine rooted at a temp dir (keeps tests off ~/voxterm-live)."""
@@ -215,6 +237,38 @@ def test_static_open_even_when_token_set():
         status, ctype, _ = _get(h, p, "/")
         assert status == 200, status
         assert ctype is not None and ctype.startswith("text/html"), ctype
+
+
+# --------------------------------------------------------------------------- #
+# security: DNS-rebinding host allowlist, CSRF, token-crash hardening
+# --------------------------------------------------------------------------- #
+def test_host_allowlist_rejects_foreign_host():
+    """Loopback mode: a request whose Host isn't a known local name is 403 (DNS-rebinding)."""
+    with running_server(token=None) as (h, p):
+        with _allowed_hosts({f"127.0.0.1:{p}", f"localhost:{p}", "127.0.0.1", "localhost"}):
+            ok, _, _ = _get(h, p, "/api/status")                       # auto Host = 127.0.0.1:p
+            assert ok == 200, ok
+            bad, _, _ = _get(h, p, "/api/status", headers={"Host": "evil.example:80"})
+            assert bad == 403, bad
+
+
+def test_post_cross_origin_rejected_but_same_origin_ok():
+    """State-changing POST from a cross-site context is 403; non-browser/same-origin passes."""
+    with temp_engine() as eng, running_server(token=None, engine=eng) as (h, p):
+        bad, _ = _post(h, p, "/api/live/stop", headers={"Sec-Fetch-Site": "cross-site"})
+        assert bad == 403, bad
+        cross_origin, _ = _post(h, p, "/api/live/stop", headers={"Origin": "http://evil.example"})
+        assert cross_origin == 403, cross_origin
+        ok, _ = _post(h, p, "/api/live/stop")                          # curl-like: no fetch headers
+        assert ok == 200, ok
+
+
+def test_non_ascii_token_yields_401_not_crash():
+    """A non-ASCII token must compare cleanly to False (401), not raise in _authed."""
+    with running_server(token="s3cret-tok") as (h, p):
+        # 'café' is non-ASCII (triggers the old compare_digest TypeError) yet latin-1-sendable
+        status, _, _ = _get(h, p, "/api/status", headers={"X-VoxTerm-Token": "café"})
+        assert status == 401, status
 
 
 # --------------------------------------------------------------------------- #
