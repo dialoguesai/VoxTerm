@@ -104,18 +104,19 @@ async function ensureListeners() {
     }
     $("odPartial").textContent = "";
   });
-  await core.addPluginListener("voxasr", "error", (p) => { $("err").textContent = p.message || "transcription error"; });
+  await core.addPluginListener("voxasr", "error", (p) => { $("odErr").textContent = p.message || "transcription error"; });
   _listenersReady = true;
 }
 async function startOnDevice() {
-  $("err").textContent = "";
+  $("odErr").textContent = "";
   try {
     await ensureListeners();
     await window.__TAURI__.core.invoke("plugin:voxasr|start_transcribe");
     $("odStart").hidden = true;
     $("odStop").hidden = false;
   } catch (e) {
-    $("err").textContent = "could not start: " + e;
+    console.error("[voxasr] start failed:", e);   // visible via chrome://inspect when debugging on a device
+    $("odErr").textContent = "could not start: " + e;
   }
 }
 async function stopOnDevice() {
