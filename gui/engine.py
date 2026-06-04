@@ -367,6 +367,7 @@ class Engine:
         endpoint detection finalizes a line. Tighter cadence than the chunked path for low
         latency. Same lock discipline on the live-state writes."""
         from audio.transcriber import _is_hallucination
+        tr._init_dedup()           # tr is cached + reused across live sessions; clear stale dedup state
         rec = tr._rec
         st = rec.create_stream()
         fed = abs_start            # total samples fed (for the current line's start timestamp)

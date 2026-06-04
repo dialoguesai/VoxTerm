@@ -18,6 +18,19 @@ try {
 // desktop requires a token.
 const PAGE_TOKEN = new URLSearchParams(location.search).get("token") || "";
 
+// The form starts hidden behind a "Connecting…" loader (index.html). On the desktop app the
+// Tauri shell navigates this window to the running engine within ~1s, so the form never appears
+// there; on a phone (no local engine) we fall back to it. Hold briefly under Tauri to avoid a
+// form-flash before the desktop shell navigates away.
+const IS_TAURI = !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
+let _revealed = false;
+function revealForm() {
+  if (_revealed) return;
+  _revealed = true;
+  if ($("loader")) $("loader").hidden = true;
+  if ($("pairform")) $("pairform").hidden = false;
+}
+
 // Dev/test convenience: if a VoxTerm backend answers on this device's localhost
 // (`adb reverse tcp:8740`, or the desktop shell before it navigates), connect to it —
 // carrying any page token so it works whether or not loopback is token-gated. On a normal
@@ -32,9 +45,11 @@ const PAGE_TOKEN = new URLSearchParams(location.search).get("token") || "";
     .then((r) => {
       if (r.ok) {
         window.location.href = base + "/" + (PAGE_TOKEN ? "?token=" + encodeURIComponent(PAGE_TOKEN) : "");
+      } else {
+        setTimeout(revealForm, IS_TAURI ? 3000 : 0);   // no engine here → show the pairing form
       }
     })
-    .catch(() => {})
+    .catch(() => setTimeout(revealForm, IS_TAURI ? 3000 : 0))
     .finally(() => clearTimeout(timer));
 })();
 

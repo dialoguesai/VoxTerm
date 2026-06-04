@@ -12,10 +12,7 @@ import sys
 
 
 def check(path: str) -> tuple[bool, str]:
-    try:
-        from PIL import Image
-    except ImportError:
-        return True, "Pillow not installed — skipping render check (treat as pass)"
+    from PIL import Image  # guaranteed present: main() returns exit 3 (SKIP) before calling check() if absent
     try:
         im = Image.open(path).convert("L").resize((64, 128))
     except Exception as e:

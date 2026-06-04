@@ -2353,8 +2353,12 @@ class VoxTerm(App):
         event loop, audio-device ownership, and the MLX/torch C++ runtime (see CLAUDE.md).
         """
         tp = self.query_one(TranscriptPanel)
+        prior = getattr(self, "_gui_proc", None)
+        if prior is not None and prior.poll() is None:   # still running — don't spawn a 2nd engine
+            tp.system_message("web GUI already running — check your browser", Log.SYS)
+            return
         try:
-            subprocess.Popen(
+            self._gui_proc = subprocess.Popen(
                 [sys.executable, "-m", "gui.launcher"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

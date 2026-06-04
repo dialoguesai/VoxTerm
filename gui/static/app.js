@@ -13,11 +13,11 @@ let SESSIONS = [];         // last-fetched session list (filtered by the search 
 // default (backend-remote.js) speaks HTTP+SSE to a VoxTerm server, same-origin, with the
 // optional ?token= auth — exactly the behavior shipped before this seam. A future on-device
 // (in-webview) engine sets window.VOX_BACKEND before this script and the UI is unchanged.
-const BACKEND = window.VOX_BACKEND || new RemoteBackend();
+const BACKEND = window.VOX_BACKEND;   // set by backend-remote.js (loaded first), or any replacement backend
 async function getJSON(url, opts) {
   try {
     return await BACKEND.getJSON(url, opts);
-  } catch (e) {                                  // server down / non-JSON / offline
+  } catch {                                      // server down / non-JSON / offline
     toast("Network error — is the server running?");
     return { ok: false, error: "network" };
   }
@@ -157,6 +157,7 @@ function openEvents() {
   es.onerror = () => {/* browser auto-reconnects */};
 }
 function applyStatus(s) {
+  const job = s.job || { state: "idle" };   // a status frame may omit job; guard before any deref
   document.body.classList.toggle("recording", !!s.recording);
   $("recBtn").setAttribute("aria-label", s.recording ? "Stop recording" : "Start recording");
   if (s.recording) {
@@ -171,9 +172,8 @@ function applyStatus(s) {
     $("ring").style.background = "";
     if (_wave.length) clearWave();
     $("model").disabled = $("language").disabled = false;
-    if (lastJobState === "idle" && s.job.state === "idle") { $("recState").textContent = "Ready to record"; $("timer").textContent = "00:00"; }
+    if (lastJobState === "idle" && job.state === "idle") { $("recState").textContent = "Ready to record"; $("timer").textContent = "00:00"; }
   }
-  const job = s.job || { state: "idle" };
   const working = job.state === "transcribing";
   // While transcribing: the calm "working" affordance + a hard-disabled record button
   // (recording can't begin until the job resolves). The progress bar shows precise state.

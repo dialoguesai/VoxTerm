@@ -6,7 +6,15 @@
 // no UI change. A different backend just sets window.VOX_BACKEND before app.js loads.
 class RemoteBackend {
   constructor() {
-    this.token = new URLSearchParams(location.search).get("token") || "";
+    const params = new URLSearchParams(location.search);
+    this.token = params.get("token") || "";
+    // Keep the token in memory (for the X-VoxTerm-Token header + the SSE URL) but strip it from
+    // the address bar/history so it can't leak via bookmarks, back/forward, or shoulder-surfing.
+    if (this.token && window.history && history.replaceState) {
+      params.delete("token");
+      const qs = params.toString();
+      history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+    }
   }
   // Append the token to a URL — used for EventSource, which can't send custom headers.
   authUrl(u) {

@@ -48,11 +48,19 @@
 <body>
   <div class="wrap">
     <h1>VoxTerm<span class="dot">.</span></h1>
+
+    <!-- Shown first. On the desktop app the Rust shell navigates to the running engine within
+         ~1s, so the user sees this and then the GUI — never the phone form below. -->
+    <div id="loader" class="sub">Connecting to VoxTerm…</div>
+
+    <!-- The pairing form is for a phone with no local engine; revealed by pair.js only when no
+         loopback engine answers (see revealForm). -->
+    <div id="pairform" hidden>
     <p class="sub">Connect to VoxTerm running on your computer — over your own Wi‑Fi, no cloud.</p>
 
     <label for="host">Desktop address</label>
     <div class="row">
-      <input class="host" id="host" inputmode="decimal" autocomplete="off"
+      <input class="host" id="host" inputmode="url" autocomplete="off"
              autocapitalize="off" spellcheck="false" placeholder="192.168.1.50" />
       <input class="port" id="port" inputmode="numeric" autocomplete="off" placeholder="8740" value="8740" />
     </div>
@@ -67,6 +75,7 @@
     <p class="hint">On your computer run <code>VOXTERM_GUI_LAN=1 python -m gui.server</code> —
       it prints the address and token to paste here. The phone never records; your desktop does.</p>
     <button id="forget" class="ghost" type="button">Forget this pairing</button>
+    </div>
   </div>
 
 <script src="pair.js"></script>

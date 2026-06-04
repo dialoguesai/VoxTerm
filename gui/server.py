@@ -132,6 +132,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "bad host"}, 403)
         u = urlparse(self.path)
         p, q = u.path, parse_qs(u.query)
+        if p.startswith("/api/") and not self._same_origin():
+            return self._json({"error": "cross-origin"}, 403)   # CSRF/read-leak guard on reads too
         if p.startswith("/api/") and not self._authed(q):
             return self._json({"error": "unauthorized"}, 401)
         if p == "/" or p == "/index.html":
@@ -210,7 +212,11 @@ class Handler(BaseHTTPRequestHandler):
             _sse_count += 1
         try:
             self._hdr(200, "text/event-stream", {"Cache-Control": "no-cache"})
-            while True:
+            # Cap a single stream at 10 min so an abandoned-but-silent client (no RST) can't
+            # hold one of the MAX_SSE slots forever; EventSource auto-reconnects, so the live
+            # view is unaffected and the slot is freed on the next status write.
+            deadline = time.monotonic() + 600
+            while time.monotonic() < deadline:
                 payload = json.dumps(ENGINE.status(), ensure_ascii=False)
                 self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                 self.wfile.flush()

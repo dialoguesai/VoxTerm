@@ -83,6 +83,10 @@ fn start_engine(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let port = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
     let token = random_token();
     // Release: the frozen, per-target-triple engine, resolved + scoped by the shell plugin.
+    // NOTE: a release build also needs `bundle.externalBin: ["binaries/voxterm-engine"]` in
+    // tauri.conf.json plus a PyInstaller step producing binaries/voxterm-engine-<triple>. That
+    // freeze/packaging is the deferred milestone (see ~/voxterm-plans/CEILING.md, R4); until it
+    // lands, run the DEV build (`cargo tauri dev`), which spawns python directly (no externalBin).
     let (_rx, child) = app
         .shell()
         .sidecar("voxterm-engine")?

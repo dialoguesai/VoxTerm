@@ -14,10 +14,13 @@ consumers ignore the extra fields.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+
+log = logging.getLogger("voxterm.gui.transcribe")
 
 # VoxTerm package root (this file lives in <root>/gui/).
 _ROOT = str(Path(__file__).resolve().parent.parent)
@@ -177,11 +180,16 @@ def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str | None = No
                 n_turns += 1
             ev.emit("vad", on=False)
     finally:
-        for _c in (lambda: ev.emit("recording", on=False), lambda: ev.emit("session", phase="end"), ev.close, md.close):
+        # Best-effort cleanup, but DON'T silently lose a transcript-file close failure (e.g. disk
+        # full → a truncated .md) — that would make a corrupt artifact look complete.
+        for _what, _c in (("emit recording-off", lambda: ev.emit("recording", on=False)),
+                          ("emit session-end", lambda: ev.emit("session", phase="end")),
+                          ("close event log", ev.close),
+                          ("close transcript file", md.close)):
             try:
                 _c()
             except Exception:
-                pass
+                log.warning("transcribe cleanup failed: %s", _what, exc_info=True)
     if progress:
         progress(1.0, "done")
     return {"events_path": str(events_path), "transcript_path": str(md_path),

@@ -72,6 +72,7 @@ def main(argv=None) -> int:
     refs = dict(line.split(" ", 1) for line in trans.read_text().splitlines() if " " in line)
     clips = [(zip_dir / "test_wavs" / n, t) for n, t in refs.items() if (zip_dir / "test_wavs" / n).exists()]
 
+    total_audio_s = sum(len(load_wav_16k_mono(w)) / 16000 for w, _ in clips)
     rows = []
     for key in models:
         tr = get_transcriber(key)
@@ -93,7 +94,7 @@ def main(argv=None) -> int:
     print("|---|---|---|---|---|")
     for key, w, rtf, load_s in rows:
         print(f"| `{key}` | {config.AVAILABLE_MODELS[key]} | {w:.1%} | {rtf:.3f} | {load_s:.1f}s |")
-    print(f"\n(clips: {len(clips)} labeled, {sum(len(load_wav_16k_mono(w))/16000 for w,_ in clips):.1f}s total; "
+    print(f"\n(clips: {len(clips)} labeled, {total_audio_s:.1f}s total; "
           f"host: {sys.platform}, CPU)")
     return 0
 
