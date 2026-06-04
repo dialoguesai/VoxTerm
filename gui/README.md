@@ -128,6 +128,13 @@ Models offered are VoxTerm's faster-whisper keys (`fw-tiny`, `fw-base`, `fw-smal
 come from VoxTerm's `AVAILABLE_LANGUAGES` (default `en`). On CPU, the smaller `fw-*`
 models are the practical choices.
 
+**Optional streaming backend.** Installing the extra (`pip install "voxterm[streaming]"`)
+adds two cross-platform CPU streaming models to the dropdown — `sherpa-stream-en`
+(zipformer-20M, ultra-fast/rough) and `sherpa-nemotron-en` (NeMo 0.6B, accurate). The live
+view prefers them for true word-by-word streaming. Absent, nothing changes. See
+[`docs/streaming-asr.md`](../docs/streaming-asr.md) and the
+[benchmark](../docs/streaming-asr-benchmark.md).
+
 ## Scope: what this is not (yet)
 
 v1 is deliberately the linear flow above (record → stop → transcribe → export →
