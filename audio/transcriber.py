@@ -415,6 +415,93 @@ class FasterWhisperTranscriber(_DeduplicatorMixin):
         return self._loaded
 
 
+# --- optional cross-platform streaming backend (sherpa-onnx) -----------------
+
+_SHERPA_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+    "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2"
+)
+
+
+def _ensure_sherpa_model(repo: str) -> "Path":
+    """Return a local dir holding the streaming-zipformer ONNX files, downloading + extracting
+    the published tarball on first use. Cached under ~/.cache/voxterm/sherpa/<repo>/."""
+    from pathlib import Path
+    import tarfile
+    import urllib.request
+
+    cache = Path.home() / ".cache" / "voxterm" / "sherpa"
+    target = cache / repo
+    if target.is_dir() and any(target.glob("*encoder*.onnx")):
+        return target
+    cache.mkdir(parents=True, exist_ok=True)
+    tarball = cache / (repo + ".tar.bz2")
+    if not tarball.exists():
+        tmp = tarball.with_suffix(".part")
+        urllib.request.urlretrieve(_SHERPA_MODEL_URL, tmp)  # noqa: S310 (pinned github release URL)
+        tmp.rename(tarball)
+    with tarfile.open(tarball, "r:bz2") as tf:
+        tf.extractall(cache)                                # extracts to cache/<repo>/
+    return target
+
+
+class SherpaStreamingTranscriber(_DeduplicatorMixin):
+    """Cross-platform CPU streaming ASR via sherpa-onnx (k2-fsa). Optional backend — only
+    reachable when sherpa-onnx is installed (config gates the model key). Per-call
+    create_stream makes it a drop-in for the existing chunked callers; the live loop can also
+    drive it as a true streaming recognizer."""
+
+    def __init__(self, model: str = "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+                 language: str | None = "en"):
+        self.model_id = model
+        self._language = language
+        self._rec = None
+        self._loaded = False
+        self._init_dedup()
+
+    def load(self):
+        try:
+            import sherpa_onnx
+        except ImportError as e:
+            raise RuntimeError(
+                'sherpa-onnx is not installed; install it to use streaming models '
+                '(pip install "voxterm[streaming]" or pip install sherpa-onnx).'
+            ) from e
+        d = _ensure_sherpa_model(self.model_id)
+        enc = next(iter(sorted(d.glob("*encoder*.int8.onnx")) or sorted(d.glob("*encoder*.onnx"))))
+        dec = next(iter(sorted(d.glob("*decoder*.onnx"))))
+        joi = next(iter(sorted(d.glob("*joiner*.int8.onnx")) or sorted(d.glob("*joiner*.onnx"))))
+        tokens = next(iter(sorted(d.glob("tokens.txt"))))
+        self._rec = sherpa_onnx.OnlineRecognizer.from_transducer(
+            tokens=str(tokens), encoder=str(enc), decoder=str(dec), joiner=str(joi),
+            num_threads=2, provider="cpu", enable_endpoint_detection=True,
+            rule1_min_trailing_silence=2.4, rule2_min_trailing_silence=1.2,
+            rule3_min_utterance_length=20.0,
+        )
+        self._loaded = True
+
+    def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
+        rms = float(np.sqrt(np.mean(audio ** 2)))
+        if rms < 0.005:
+            return {"text": "", "speaker": "", "speaker_id": 0}
+        s = self._rec.create_stream()
+        s.accept_waveform(16000, np.ascontiguousarray(audio, dtype=np.float32))
+        while self._rec.is_ready(s):
+            self._rec.decode_stream(s)
+        s.input_finished()
+        while self._rec.is_ready(s):
+            self._rec.decode_stream(s)
+        text = (self._rec.get_result(s) or "").strip()
+        if text:
+            text = text.capitalize()        # this zipformer emits ALL-CAPS, no punct → sentence-case
+        if not text or _is_hallucination(text, self._language) or self._is_duplicate(text):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+        return {"text": text, "speaker": "", "speaker_id": 0}
+
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+
 def get_transcriber(model_name: str, *, language: str | None = "en"):
     """Construct the transcriber backend for a model key.
 
@@ -429,6 +516,7 @@ def get_transcriber(model_name: str, *, language: str | None = "en"):
         FASTER_WHISPER_MODELS,
         PARAKEET_MODELS,
         QWEN3_MODELS,
+        SHERPA_MODELS,
     )
 
     model_repo = AVAILABLE_MODELS[model_name]
@@ -436,6 +524,8 @@ def get_transcriber(model_name: str, *, language: str | None = "en"):
         return Qwen3Transcriber(model=model_repo, language=language)
     if model_name in PARAKEET_MODELS:
         return ParakeetTranscriber(model=model_repo, language=language)
+    if model_name in SHERPA_MODELS:
+        return SherpaStreamingTranscriber(model=model_repo, language=language)
     if model_name in FASTER_WHISPER_MODELS:
         return FasterWhisperTranscriber(model=model_repo, language=language)
     return WhisperTranscriber(model=model_repo)
