@@ -234,6 +234,14 @@ def main(argv=None) -> int:
     else:
         # Loopback: enforce a Host allowlist so a rebinding site can't drive the tokenless API.
         ALLOWED_HOSTS = {f"127.0.0.1:{port}", f"localhost:{port}", "127.0.0.1", "localhost"}
+        # Defense-in-depth: when a launcher / Tauri shell mints a token, require it even on
+        # loopback — this closes the co-resident local-process hole. Bare
+        # `python -m gui.server` sets no token, so loopback stays open exactly as before
+        # (zero regression). A same-UID process can still read the token from the
+        # environment; that is conceded, not defended.
+        _loopback_token = os.environ.get("VOXTERM_GUI_TOKEN")
+        if _loopback_token:
+            TOKEN = _loopback_token
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
     if lan:

@@ -40,6 +40,9 @@
   .hint { color:var(--faint); font-size:12.5px; margin-top:18px; }
   .hint code { color:var(--accent-dim); background:var(--bg-elev); padding:1px 6px; border-radius:6px; }
   .err { color:#ff7a85; font-size:13.5px; min-height:18px; margin-top:12px; }
+  .ghost { width:auto; min-height:0; margin-top:14px; padding:8px 12px; font-size:13px;
+           font-weight:500; background:transparent; color:var(--faint); border:1px solid var(--line);
+           border-radius:10px; }
 </style>
 </head>
 <body>
@@ -63,47 +66,9 @@
 
     <p class="hint">On your computer run <code>VOXTERM_GUI_LAN=1 python -m gui.server</code> —
       it prints the address and token to paste here. The phone never records; your desktop does.</p>
+    <button id="forget" class="ghost" type="button">Forget this pairing</button>
   </div>
 
-<script>
-  const $ = (id) => document.getElementById(id);
-  // prefill from last successful pairing (kept only on this device)
-  try {
-    const s = JSON.parse(localStorage.getItem("voxterm.pair") || "{}");
-    if (s.host) $("host").value = s.host;
-    if (s.port) $("port").value = s.port;
-    if (s.token) $("token").value = s.token;
-  } catch (_) {}
-
-  // Dev/test convenience: if a VoxTerm backend answers on THIS device's localhost
-  // (e.g. `adb reverse tcp:8740` during dev, or the smoke-test harness), connect to it
-  // automatically. On a normal phone this fails fast and the pairing form just stays.
-  // Loopback is tokenless on the desktop, so no secret is needed.
-  (function probeLoopback() {
-    const p = (document.getElementById("port").value.trim() || "8740");
-    const base = "http://localhost:" + p;
-    const c = new AbortController();
-    const timer = setTimeout(() => c.abort(), 800);
-    fetch(base + "/api/options", { signal: c.signal })
-      .then((r) => { if (r.ok) window.location.href = base + "/"; })
-      .catch(() => {})
-      .finally(() => clearTimeout(timer));
-  })();
-
-  function connect() {
-    const host = $("host").value.trim();
-    const port = ($("port").value.trim() || "8740");
-    const token = $("token").value.trim();
-    if (!host) { $("err").textContent = "Enter your desktop's address."; return; }
-    if (!token) { $("err").textContent = "Enter the access token VoxTerm printed."; return; }
-    if (!/^[0-9]+$/.test(port)) { $("err").textContent = "Port must be a number."; return; }
-    try { localStorage.setItem("voxterm.pair", JSON.stringify({ host, port, token })); } catch (_) {}
-    // The desktop serves the full UI + API + SSE from this one origin, and app.js reads
-    // the token from the query string — so everything works once we land there.
-    window.location.href = "http://" + host + ":" + port + "/?token=" + encodeURIComponent(token);
-  }
-  $("go").addEventListener("click", connect);
-  $("token").addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
-</script>
+<script src="pair.js"></script>
 </body>
 </html>

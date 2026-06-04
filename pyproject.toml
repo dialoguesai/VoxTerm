@@ -55,6 +55,7 @@ streaming = ["sherpa-onnx>=1.13.0; sys_platform != 'darwin' or platform_machine 
 [project.scripts]
 voxterm = "tui.app:main"
 voxterm-dictate = "dictation.app:main"
+voxterm-gui = "gui.launcher:main"
 
 [project.urls]
 Homepage = "https://github.com/dmarzzz/VoxTerm"
@@ -66,7 +67,13 @@ packages = [
     "config.py",
     "diagnostics.py",
     "dictation",
+    "gui",
     "network",
     "summarizer",
     "tui",
 ]
+
+# The web GUI ships static assets (HTML/CSS/JS/SW/manifest/icons) that aren't .py
+# files, so they must be force-included into the wheel alongside the gui package.
+[tool.hatch.build.targets.wheel.force-include]
+"gui/static" = "gui/static"

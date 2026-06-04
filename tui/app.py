@@ -546,6 +546,7 @@ class VoxTerm(App):
         Binding("p", "toggle_party", "Party"),
         Binding("v", "toggle_merged_view", "View"),
         Binding("h", "show_hivemind", "Hivemind"),
+        Binding("g", "launch_gui", "GUI"),
         Binding("?", "show_help", "Help", key_display="?"),
         Binding("q", "quit", "Quit"),
         Binding("escape", "quit", show=False),
@@ -2344,6 +2345,26 @@ class VoxTerm(App):
         except Exception:
             log.warning("could not open hivemind screen", exc_info=True)
 
+    def action_launch_gui(self):
+        """Open the VoxTerm web GUI in the browser, out-of-process.
+
+        A separate process is mandatory here: the GUI runs its own blocking server and its
+        own audio + transcription engine, and sharing this process would fight the TUI's
+        event loop, audio-device ownership, and the MLX/torch C++ runtime (see CLAUDE.md).
+        """
+        tp = self.query_one(TranscriptPanel)
+        try:
+            subprocess.Popen(
+                [sys.executable, "-m", "gui.launcher"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            tp.system_message("launching the web GUI in your browser…", Log.SYS)
+        except Exception:
+            log.warning("could not launch GUI", exc_info=True)
+            tp.system_message("could not launch the GUI", Log.SYS)
+
     def action_toggle_debug(self):
         self._debug = not self._debug
         state = "ON" if self._debug else "OFF"
@@ -2504,6 +2525,11 @@ class VoxTerm(App):
 
 def main():
     import argparse
+
+    # `voxterm gui` → open the web GUI (keeps the flat CLI; no argparse subparsers needed).
+    if sys.argv[1:2] == ["gui"]:
+        from gui.launcher import main as gui_main
+        raise SystemExit(gui_main())
 
     # Resolve defaults: saved preferences > config defaults
     _cfg = _get_config()

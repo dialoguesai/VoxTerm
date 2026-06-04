@@ -1,11 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "enables the default permissions",
-  "windows": [
-    "main"
-  ],
+  "description": "VoxTerm desktop: core window/webview/event/app, plus spawning the engine sidecar — and nothing else.",
+  "platforms": ["linux", "macOS", "windows"],
+  "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:window:default",
+    "core:webview:default",
+    "core:event:default",
+    "core:app:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [{ "name": "voxterm-engine", "sidecar": true, "args": false }]
+    }
   ]
 }

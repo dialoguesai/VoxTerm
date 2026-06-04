@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "VoxTerm mobile thin client: window/webview/event only. No shell, no sidecar — the phone pairs to a desktop on the LAN.",
+  "platforms": ["android", "iOS"],
+  "windows": ["main"],
+  "permissions": ["core:window:default", "core:webview:default", "core:event:default"]
+}
