@@ -216,16 +216,101 @@ def test_session_dirs_excludes_nonexistent_and_dedups():
     assert out in dirs and sess in dirs and live in dirs
 
 
+# --- delete_session ----------------------------------------------------------
+
+def test_delete_session_removes_only_its_artifacts():
+    eng, out, *_ = _isolated_engine()
+    # every text artifact kind for the target stem
+    for suf in ["-transcript.md", "-agent.md", "-agent.json", "-agent.srt", "-agent.vtt", "-events.jsonl"]:
+        _touch(out / f"s1{suf}")
+    # things that must SURVIVE: this session's audio, and another whole session
+    _touch(out / "s1.wav", text="AUDIO")
+    _touch(out / "s2-transcript.md", text="other")
+    _touch(out / "s2.wav", text="OTHER AUDIO")
+    r = eng.delete_session("s1")
+    assert r["ok"] is True
+    assert set(r["deleted"]) == {
+        "s1-transcript.md", "s1-agent.md", "s1-agent.json",
+        "s1-agent.srt", "s1-agent.vtt", "s1-events.jsonl",
+    }, r["deleted"]
+    # all six artifacts are gone
+    for suf in ["-transcript.md", "-agent.md", "-agent.json", "-agent.srt", "-agent.vtt", "-events.jsonl"]:
+        assert not (out / f"s1{suf}").exists()
+    # audio + other session untouched
+    assert (out / "s1.wav").exists() and (out / "s1.wav").read_text() == "AUDIO"
+    assert (out / "s2-transcript.md").exists() and (out / "s2.wav").exists()
+
+
+def test_delete_session_only_existing_files():
+    eng, out, *_ = _isolated_engine()
+    _touch(out / "s1-transcript.md")
+    _touch(out / "s1-agent.json", text="{}")
+    # the other four suffixes don't exist -> only the present two are reported/removed
+    r = eng.delete_session("s1")
+    assert r["ok"] is True
+    assert set(r["deleted"]) == {"s1-transcript.md", "s1-agent.json"}, r["deleted"]
+    assert not (out / "s1-transcript.md").exists()
+    assert not (out / "s1-agent.json").exists()
+
+
+def test_delete_session_missing_stem_is_ok_empty():
+    eng, *_ = _isolated_engine()
+    r = eng.delete_session("does-not-exist")
+    assert r["ok"] is True and r["deleted"] == []
+
+
+def test_delete_session_rejects_path_traversal():
+    eng, out, sess, _live = _isolated_engine()
+    # plant a real file we must NOT be able to reach via traversal
+    _touch(out / "secret-transcript.md", text="SECRET")
+    for bad in ("../secret", "a/b", "..", "sub/secret"):
+        r = eng.delete_session(bad)
+        assert r["ok"] is False and r["deleted"] == [], (bad, r)
+    # the planted file is still there (never touched)
+    assert (out / "secret-transcript.md").exists()
+
+
+def test_delete_session_honors_dir_restriction():
+    eng, out, sess, _live = _isolated_engine()
+    # same stem lives in BOTH known dirs
+    _touch(out / "dup-transcript.md", text="from-out")
+    _touch(sess / "dup-transcript.md", text="from-sess")
+    # restricting to SESSIONS_DIR deletes only that dir's copy
+    r = eng.delete_session("dup", dir=str(sess))
+    assert r["ok"] is True and r["deleted"] == ["dup-transcript.md"], r
+    assert not (sess / "dup-transcript.md").exists()
+    assert (out / "dup-transcript.md").exists() and (out / "dup-transcript.md").read_text() == "from-out"
+    # a dir that is NOT a known session dir -> nothing resolves/deleted, even though
+    # the file physically exists there
+    bogus = Path(tempfile.mkdtemp(prefix="voxeng_bogus_"))
+    _touch(bogus / "dup-transcript.md", text="from-bogus")
+    r2 = eng.delete_session("dup", dir=str(bogus))
+    assert r2["ok"] is True and r2["deleted"] == [], r2
+    assert (bogus / "dup-transcript.md").exists()
+
+
+def test_delete_session_never_touches_wav():
+    eng, out, *_ = _isolated_engine()
+    _touch(out / "rec-transcript.md")
+    _touch(out / "rec.wav", text="AUDIO")
+    _touch(out / "rec-agent.wav", text="NOT A TEXT ARTIFACT")  # adversarial name
+    r = eng.delete_session("rec")
+    assert r["deleted"] == ["rec-transcript.md"], r
+    assert (out / "rec.wav").exists()
+    assert (out / "rec-agent.wav").exists()  # .wav suffix is never in the artifact list
+
+
 # --- status (idle) -----------------------------------------------------------
 
 def test_status_idle_shape():
     eng, *_ = _isolated_engine()
     st = eng.status()
-    assert set(st) == {"recording", "level", "elapsed", "job"}
+    assert set(st) == {"recording", "level", "elapsed", "job", "live"}
     assert st["recording"] is False
     assert st["level"] == 0.0
     assert st["elapsed"] == 0           # not recording -> zero, never time.time()
     assert st["job"] == {"state": "idle"}
+    assert st["live"] == {"active": False, "wav": None, "lines": []}
 
 
 def test_status_elapsed_zero_even_with_started_at():

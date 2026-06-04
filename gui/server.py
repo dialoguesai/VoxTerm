@@ -140,6 +140,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(ENGINE.live_start(b.get("wav")))
         if p == "/api/live/stop":
             return self._json(ENGINE.live_stop())
+        if p == "/api/session/delete":
+            b = self._read_json()
+            return self._json(ENGINE.delete_session(b.get("stem", ""), dir=b.get("dir")))
         return self._json({"error": "not found"}, 404)
 
     def _serve_static(self, rel: str):

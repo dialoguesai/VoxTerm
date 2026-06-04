@@ -226,10 +226,15 @@ function renderSessions(query) {
     const li = document.createElement("li"); li.className = "session"; li.dataset.stem = s.stem;
     li.tabIndex = 0; li.setAttribute("role", "button");
     const has = []; if (s.agent_md) has.push("AI"); if (s.transcript) has.push("md");
-    li.innerHTML = `<div class="s-title">${escapeHtml(prettyStem(s.stem))}</div>
-      <div class="s-sub">${has.map((h) => `<span class="tag">${h}</span>`).join("")}</div>`;
+    li.innerHTML = `<div class="s-main"><div class="s-title">${escapeHtml(prettyStem(s.stem))}</div>
+      <div class="s-sub">${has.map((h) => `<span class="tag">${h}</span>`).join("")}</div></div>
+      <button class="session-del" title="Delete" aria-label="Delete session">✕</button>`;
     li.addEventListener("click", () => loadSession(s.stem, s.dir));
     li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); loadSession(s.stem, s.dir); } });
+    const del = li.querySelector(".session-del");
+    // a focused ✕ must not let Space/Enter bubble up to the row (which would loadSession)
+    del.addEventListener("keydown", (e) => { e.stopPropagation(); });
+    del.addEventListener("click", (e) => { e.stopPropagation(); deleteSession(s.stem, s.dir); });
     ul.appendChild(li);
   });
 }
@@ -253,6 +258,26 @@ async function loadSession(stem, dir) {
   render();
   document.querySelectorAll(".session").forEach((el) => el.classList.toggle("active", el.dataset.stem === stem));
   setNav(false);
+}
+
+// Delete a session's transcript files (audio is kept). Confirm, POST, then refresh
+// the list and clear the transcript view if the deleted session was the one open.
+async function deleteSession(stem, dir) {
+  if (!confirm("Delete this session's transcript files? (audio is kept)")) return;
+  const r = await getJSON("/api/session/delete", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stem: stem, dir: dir || null }),
+  });
+  if (!r || r.ok === false) return toast("Could not delete session");
+  const wasOpen = CUR && CUR.session && CUR.session.id === stem;
+  toast(r.deleted && r.deleted.length ? `Deleted ${r.deleted.length} file(s)` : "Nothing to delete");
+  await loadSessions();
+  if (wasOpen) {
+    CUR = null; RENAMES = {};
+    setExportEnabled(false);
+    $("transcriptView").classList.add("hidden");
+    $("empty").classList.remove("hidden");
+  }
 }
 
 // ---------- render ----------

@@ -282,6 +282,32 @@ class Engine:
                 return p
         return None
 
+    # text artifacts a session owns (audio .wav is managed separately and never touched)
+    _ARTIFACT_SUFFIXES = ["-transcript.md", "-agent.md", "-agent.json",
+                          "-agent.srt", "-agent.vtt", "-events.jsonl"]
+
+    def delete_session(self, stem: str, dir: str | None = None) -> dict:
+        """Remove ONLY this session's text artifacts for ``stem``.
+
+        Reuses _resolve's traversal guard (reject '/' or '..' in the stem) and resolves
+        strictly within _session_dirs() (honoring the optional ``dir`` like _resolve's
+        only_dir). Deletes only files that exist; never touches .wav audio or anything
+        outside a known session dir. Returns the list of deleted filenames.
+        """
+        # SAME guard as _resolve: stem must be a bare name (no traversal)
+        if "/" in stem or ".." in stem:
+            return {"ok": False, "error": "bad stem", "deleted": []}
+        deleted: list[str] = []
+        for suffix in self._ARTIFACT_SUFFIXES:
+            p = self._resolve(stem, suffix, only_dir=dir)  # resolves within known dirs only
+            if p and p.is_file():
+                try:
+                    p.unlink()
+                    deleted.append(p.name)
+                except OSError:
+                    pass
+        return {"ok": True, "deleted": deleted}
+
     def read_artifact(self, stem: str, kind: str, dir: str | None = None) -> dict:
         suffix = {"transcript": "-transcript.md", "agent_md": "-agent.md", "agent_json": "-agent.json",
                   "srt": "-agent.srt", "vtt": "-agent.vtt"}.get(kind)

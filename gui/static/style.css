@@ -56,11 +56,21 @@ body {
 .session {
   padding: 10px 12px; border-radius: 10px; cursor: pointer; border: 1px solid transparent;
   transition: background .15s, border-color .15s;
+  display: flex; align-items: center; gap: 8px;
 }
 .session:hover { background: var(--bg-elev-2); }
 .session.active { background: var(--bg-elev-2); border-color: var(--line); }
+.session .s-main { flex: 1; min-width: 0; }
 .session .s-title { font-size: 13.5px; font-weight: 550; }
 .session .s-sub { font-size: 11.5px; color: var(--faint); margin-top: 2px; display: flex; gap: 6px; }
+/* subtle ✕ — muted until the row is hovered/focused, then it pops; hover -> record color */
+.session-del {
+  flex: none; background: none; border: none; cursor: pointer; color: var(--muted);
+  font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 7px;
+  opacity: 0; transition: opacity .15s, color .15s, background .15s;
+}
+.session:hover .session-del, .session:focus-within .session-del { opacity: .55; }
+.session-del:hover, .session-del:focus-visible { opacity: 1; color: var(--rec); background: var(--bg-elev); }
 .tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: #1f2630; color: var(--accent-dim); border: 1px solid var(--line); }
 .sessions-empty { color: var(--faint); font-size: 12.5px; line-height: 1.5; padding: 14px 12px; border: 1px dashed var(--line); border-radius: 10px; text-align: center; }
 .session-search { width: 100%; box-sizing: border-box; margin: 0 0 10px; background: var(--bg-elev); color: var(--text); border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px; font-size: 13px; }
