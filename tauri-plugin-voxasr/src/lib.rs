@@ -1,8 +1,9 @@
 //! VoxTerm on-device ASR plugin (Android). The phone records + transcribes locally via the
 //! sherpa-onnx Android AAR — no pairing, no relay, no network. The webview drives it through
-//! two commands (`start_transcribe`/`stop_transcribe`) and listens for `voxasr://partial` and
-//! `voxasr://final` events the native plugin emits. Desktop/iOS get an honest "unsupported"
-//! error (desktop uses the full Python engine; iOS is a future native port).
+//! three commands: `start_transcribe` / `stop_transcribe`, and `poll_transcript`, which it calls
+//! on an interval while recording to read `{ partial, finals }` (polling — no plugin events).
+//! Desktop/iOS get an honest "unsupported" error (desktop uses the full Python engine; iOS is a
+//! future native port).
 
 use tauri::{
     plugin::{Builder, TauriPlugin},

@@ -109,6 +109,13 @@ ok "device: $DEV"
 # ── C — build ──
 if [ "$NO_BUILD" = 0 ]; then
   say "C build ($PROFILE)"
+  # Native AAR + bundled model are gitignored (large); fetch them if missing so a fresh checkout
+  # builds. Honors VOXASR_MODEL (zipformer-70m default | nemotron-0.6b).
+  aar_present=0; for f in tauri-plugin-voxasr/android/libs/*.aar; do [ -f "$f" ] && aar_present=1; done
+  if [ "$aar_present" = 0 ] || [ ! -f tauri-plugin-voxasr/android/src/main/assets/voxterm-model/encoder.int8.onnx ]; then
+    say "fetching native deps (sherpa AAR + model)"
+    ./tauri-plugin-voxasr/fetch-deps.sh || die 30 "fetch-deps failed"
+  fi
   [ -d src-tauri/gen/android ] || cargo tauri android init || die 30 "android init failed"
   if [ "$PROFILE" = release ]; then cargo tauri android build --apk || die 30 "build failed"
   else cargo tauri android build --debug --apk || die 30 "build failed"; fi

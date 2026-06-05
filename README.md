@@ -137,6 +137,15 @@ ultra-fast) and `sherpa-nemotron-en` (NeMo 0.6B, accurate). Fully opt-in: absent
 changes. See [docs/streaming-asr.md](docs/streaming-asr.md) and the
 [benchmark](docs/streaming-asr-benchmark.md).
 
+### Android: on-device transcription (offline)
+
+The experimental Tauri mobile shell can transcribe **entirely on the phone** — no pairing, no
+relay, no network — via a native sherpa-onnx plugin
+([`tauri-plugin-voxasr/`](tauri-plugin-voxasr/)). Build it with `scripts/android-dev.sh --debug`
+(it fetches the bundled model on first run). A lightweight streaming model ships by default; set
+`VOXASR_MODEL=nemotron-0.6b` for a larger, punctuation-capable model. Mic-only, no network
+permission. See [tauri-plugin-voxasr/README.md](tauri-plugin-voxasr/README.md).
+
 ## Project Structure
 
 ```
