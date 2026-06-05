@@ -35,4 +35,5 @@ cp "$CACHE/encoder-epoch-99-avg-1.int8.onnx" "$ASSETS/encoder.int8.onnx"
 cp "$CACHE/decoder-epoch-99-avg-1.int8.onnx" "$ASSETS/decoder.int8.onnx"
 cp "$CACHE/joiner-epoch-99-avg-1.int8.onnx"  "$ASSETS/joiner.int8.onnx"
 cp "$CACHE/tokens.txt"                        "$ASSETS/tokens.txt"
+cp "$CACHE/test_wavs/0.wav"                   "$ASSETS/test.wav"   # debug self-test clip (offline decode check)
 echo "voxasr native deps ready ($(du -sh "$ASSETS" | cut -f1) model, $(du -h "$AAR" | cut -f1) aar)."

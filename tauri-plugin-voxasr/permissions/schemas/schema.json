@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the poll_transcript command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-poll-transcript",
+          "markdownDescription": "Enables the poll_transcript command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the poll_transcript command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-poll-transcript",
+          "markdownDescription": "Denies the poll_transcript command without any pre-configured scope."
+        },
+        {
           "description": "Enables the start_transcribe command without any pre-configured scope.",
           "type": "string",
           "const": "allow-start-transcribe",
@@ -319,10 +331,10 @@
           "markdownDescription": "Denies the stop_transcribe command without any pre-configured scope."
         },
         {
-          "description": "Allows VoxTerm to start and stop on-device transcription.\n#### This default permission set includes:\n\n- `allow-start-transcribe`\n- `allow-stop-transcribe`",
+          "description": "Allows VoxTerm to start/stop on-device transcription and poll its transcript.\n#### This default permission set includes:\n\n- `allow-start-transcribe`\n- `allow-stop-transcribe`\n- `allow-poll-transcript`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows VoxTerm to start and stop on-device transcription.\n#### This default permission set includes:\n\n- `allow-start-transcribe`\n- `allow-stop-transcribe`"
+          "markdownDescription": "Allows VoxTerm to start/stop on-device transcription and poll its transcript.\n#### This default permission set includes:\n\n- `allow-start-transcribe`\n- `allow-stop-transcribe`\n- `allow-poll-transcript`"
         }
       ]
     }

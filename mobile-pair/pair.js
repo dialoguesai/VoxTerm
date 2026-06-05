@@ -89,38 +89,41 @@ $("token").addEventListener("keydown", (e) => { if (e.key === "Enter") connect()
 $("forget").addEventListener("click", forgetPairing);
 
 // ---------- on-device transcription (Android app, via the voxasr plugin) ----------
-let _listenersReady = false;
-async function ensureListeners() {
-  if (_listenersReady) return;
-  const core = window.__TAURI__.core;
-  // The native plugin emits these as it decodes the mic locally.
-  await core.addPluginListener("voxasr", "partial", (p) => { $("odPartial").textContent = p.text || ""; });
-  await core.addPluginListener("voxasr", "final", (p) => {
-    if (p.text) {
+// Polling model: start the native recognizer, then poll the transcript every 500ms. Simpler
+// and more robust than plugin-event listeners (which need an extra listener permission).
+let _pollTimer = null;
+async function pollOnce() {
+  try {
+    const r = await window.__TAURI__.core.invoke("plugin:voxasr|poll_transcript");
+    if (r && r.error) $("odErr").textContent = r.error;
+    (r && r.finals || []).forEach((t) => {
       const d = document.createElement("div");
       d.className = "od-line";
-      d.textContent = p.text;
+      d.textContent = t;
       $("odLines").appendChild(d);
-    }
-    $("odPartial").textContent = "";
-  });
-  await core.addPluginListener("voxasr", "error", (p) => { $("odErr").textContent = p.message || "transcription error"; });
-  _listenersReady = true;
+    });
+    $("odPartial").textContent = (r && r.partial) || "";
+  } catch (e) {
+    console.error("[voxasr] poll failed:", e);
+  }
 }
 async function startOnDevice() {
   $("odErr").textContent = "";
   try {
-    await ensureListeners();
     await window.__TAURI__.core.invoke("plugin:voxasr|start_transcribe");
     $("odStart").hidden = true;
     $("odStop").hidden = false;
+    if (_pollTimer) clearInterval(_pollTimer);
+    _pollTimer = setInterval(pollOnce, 500);
   } catch (e) {
     console.error("[voxasr] start failed:", e);   // visible via chrome://inspect when debugging on a device
     $("odErr").textContent = "could not start: " + e;
   }
 }
 async function stopOnDevice() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
   try { await window.__TAURI__.core.invoke("plugin:voxasr|stop_transcribe"); } catch (_) {}
+  await pollOnce();                          // flush any lines finalized right before stop
   $("odStart").hidden = false;
   $("odStop").hidden = true;
 }

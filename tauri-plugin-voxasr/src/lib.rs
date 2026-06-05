@@ -25,7 +25,8 @@ async fn start_transcribe<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         // The native plugin uses the bundled, staged model — no args needed.
         app.state::<Voxasr<R>>()
             .handle
-            .run_mobile_plugin::<()>("startTranscribe", ())
+            .run_mobile_plugin::<serde_json::Value>("startTranscribe", ())
+            .map(|_| ())
             .map_err(|e| e.to_string())
     }
     #[cfg(not(target_os = "android"))]
@@ -41,7 +42,8 @@ async fn stop_transcribe<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     {
         app.state::<Voxasr<R>>()
             .handle
-            .run_mobile_plugin::<()>("stopTranscribe", ())
+            .run_mobile_plugin::<serde_json::Value>("stopTranscribe", ())
+            .map(|_| ())
             .map_err(|e| e.to_string())
     }
     #[cfg(not(target_os = "android"))]
@@ -51,9 +53,27 @@ async fn stop_transcribe<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     }
 }
 
+/// Poll the latest transcript: `{ partial: string, finals: string[] }`. The webview calls this
+/// on an interval while recording (simple + robust — avoids the plugin-event listener path).
+#[tauri::command]
+async fn poll_transcript<R: Runtime>(app: AppHandle<R>) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "android")]
+    {
+        app.state::<Voxasr<R>>()
+            .handle
+            .run_mobile_plugin::<serde_json::Value>("pollTranscript", ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(serde_json::json!({ "partial": "", "finals": [] }))
+    }
+}
+
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("voxasr")
-        .invoke_handler(tauri::generate_handler![start_transcribe, stop_transcribe])
+        .invoke_handler(tauri::generate_handler![start_transcribe, stop_transcribe, poll_transcript])
         .setup(|app, _api| {
             #[cfg(target_os = "android")]
             {
