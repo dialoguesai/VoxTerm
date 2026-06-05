@@ -109,6 +109,8 @@ async function pollOnce() {
 }
 async function startOnDevice() {
   $("odErr").textContent = "";
+  $("odLines").replaceChildren();   // each session starts clean — no cross-session concat / unbounded growth
+  $("odPartial").textContent = "";
   try {
     await window.__TAURI__.core.invoke("plugin:voxasr|start_transcribe");
     $("odStart").hidden = true;

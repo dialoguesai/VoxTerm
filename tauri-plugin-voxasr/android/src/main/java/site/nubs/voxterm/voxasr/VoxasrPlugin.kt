@@ -3,14 +3,15 @@ package site.nubs.voxterm.voxasr
 import android.Manifest
 import android.app.Activity
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
 import android.webkit.WebView
-import androidx.core.content.ContextCompat
+import app.tauri.PermissionState
 import app.tauri.annotation.Command
+import app.tauri.annotation.Permission
+import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
@@ -30,11 +31,16 @@ import kotlin.concurrent.thread
  * sherpa-onnx OnlineRecognizer, and the running decode is emitted as `partial`; sherpa's
  * endpoint detection finalizes a line as `final`. Everything is local — no network.
  */
-@TauriPlugin
+@TauriPlugin(
+    permissions = [Permission(strings = [Manifest.permission.RECORD_AUDIO], alias = "microphone")],
+)
 class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
     @Volatile private var running = false
     private var worker: Thread? = null
-    // @Volatile: built lazily from both the mic worker and the debug self-test thread.
+    // Bumped per capture session so a worker that outlives stop's join can neither reset state on
+    // nor run the mic alongside a newer session.
+    @Volatile private var generation = 0
+    // Built once via ensureRecognizer(); shared by the mic worker and the debug self-test.
     @Volatile private var recognizer: OnlineRecognizer? = null
     private val modelFiles = listOf("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
     // Transcript state the webview polls (avoids the plugin-event listener path).
@@ -86,19 +92,39 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
         return OnlineRecognizer(config = config)
     }
 
+    // Build the recognizer once, lazily. @Synchronized so the mic worker and the debug self-test
+    // thread can't both pass the null check and each build (then leak) a native recognizer.
+    @Synchronized
+    private fun ensureRecognizer(dir: File): OnlineRecognizer =
+        recognizer ?: buildRecognizer(dir).also { recognizer = it }
+
     @Command
     fun startTranscribe(invoke: Invoke) {
-        if (ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            invoke.reject("microphone permission not granted")
+        // The plugin owns the mic, so it owns acquiring the permission: on a fresh install the
+        // first Start prompts (and resumes in micPermissionCallback) instead of hard-failing.
+        if (getPermissionState("microphone") != PermissionState.GRANTED) {
+            requestPermissionForAlias("microphone", invoke, "micPermissionCallback")
             return
         }
+        beginCapture(invoke)
+    }
+
+    @PermissionCallback
+    fun micPermissionCallback(invoke: Invoke) {
+        if (getPermissionState("microphone") == PermissionState.GRANTED) {
+            beginCapture(invoke)
+        } else {
+            invoke.reject("microphone permission is required for on-device transcription")
+        }
+    }
+
+    private fun beginCapture(invoke: Invoke) {
         if (running) {
             invoke.resolve(JSObject())
             return
         }
         running = true
+        val gen = ++generation
         synchronized(finalLines) { finalLines.clear() }
         partial = ""
         lastError = null
@@ -106,7 +132,7 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
             var audio: AudioRecord? = null
             var stream: OnlineStream? = null
             try {
-                val rec = recognizer ?: buildRecognizer(stagedModelDir()).also { recognizer = it }
+                val rec = ensureRecognizer(stagedModelDir())
                 val s = rec.createStream()
                 stream = s                                  // tracked for release in finally
                 val sampleRate = 16000
@@ -127,7 +153,7 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
                 }
                 val buf = ShortArray(minBuf)
                 audio.startRecording()
-                while (running) {
+                while (running && generation == gen) {
                     val n = audio.read(buf, 0, buf.size)
                     if (n <= 0) continue
                     val samples = FloatArray(n) { buf[it] / 32768.0f }
@@ -147,7 +173,7 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
                 try { audio?.stop() } catch (_: Exception) {}
                 audio?.release()
                 try { stream?.release() } catch (_: Exception) {}   // never leak the native stream on a failed start
-                running = false                                     // any exit path leaves a clean stopped state
+                if (generation == gen) running = false              // only the owning session resets state
             }
         }
         invoke.resolve(JSObject())
@@ -158,6 +184,7 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
         running = false
         worker?.join(2000)
         worker = null
+        partial = ""                // don't keep returning a never-finalized partial after stop
         invoke.resolve(JSObject())
     }
 
@@ -203,7 +230,7 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
             val dir = stagedModelDir()
             val test = File(dir, "test.wav")
             if (!test.exists()) { Log.i("voxasr", "SELFTEST_SKIP no test.wav"); return }
-            val rec = recognizer ?: buildRecognizer(dir).also { recognizer = it }
+            val rec = ensureRecognizer(dir)
             val samples = readWav16kMono(test)
             val audioSec = (samples.size + 8000) / 16000.0   // clip + trailing-silence flush
             val stream = rec.createStream()
