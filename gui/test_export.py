@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import re
 
 from export import (build, export, render_md, render_json, to_srt, to_vtt,
-                    _coerce_sid, _fmt_hms, _fmt_ts)
+                    _coerce_sid, _fmt_ts)
+from _timefmt import fmt_hms
 
 
 def _evs():
@@ -160,7 +161,7 @@ def test_malformed_lines_skipped():
 
 
 def test_fmt_hms():
-    assert _fmt_hms(65) == "01:05" and _fmt_hms(3661) == "1:01:01" and _fmt_hms(0) == "00:00"
+    assert fmt_hms(65) == "01:05" and fmt_hms(3661) == "1:01:01" and fmt_hms(0) == "00:00"
 
 
 # --- regression tests for the adversarial-review findings ---

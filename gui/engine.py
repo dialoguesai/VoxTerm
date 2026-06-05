@@ -18,7 +18,6 @@ import struct
 import sys
 import threading
 import time
-import wave
 from datetime import datetime
 from pathlib import Path
 
@@ -29,20 +28,12 @@ if _ROOT not in sys.path:
 import numpy as np  # noqa: E402
 
 import config  # noqa: E402
+from audio.mix import mix_chunks  # noqa: E402
+from gui._timefmt import fmt_hms  # noqa: E402
 from gui import transcribe, export  # noqa: E402
 
 OUT_DIR = Path.home() / "voxterm-live"
 SR = config.SAMPLE_RATE
-
-
-def _write_wav(path: Path, audio: np.ndarray) -> None:
-    pcm = np.clip(audio, -1.0, 1.0)
-    pcm = (pcm * 32767.0).astype("<i2")
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(SR)
-        w.writeframes(pcm.tobytes())
 
 
 def _wav_header(data_len: int, sr: int = SR) -> bytes:
@@ -55,18 +46,8 @@ def _wav_header(data_len: int, sr: int = SR) -> bytes:
 
 
 def _pcm_bytes(chunk: np.ndarray) -> bytes:
-    """float32 [-1,1] → little-endian s16 bytes (the same mapping as ``_write_wav``)."""
+    """float32 [-1,1] → little-endian s16 bytes (the recording's PCM encoding)."""
     return (np.clip(chunk, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
-
-
-def _mix_chunks(mic: list, sysaud: list) -> list:
-    """Time-aligned addition of mic + system-audio chunks (mirrors tui.app.VoxTerm._mix_chunks):
-    sum the first n=min(len) chunks (clipped), then append each stream's leftover tail."""
-    n = min(len(mic), len(sysaud))
-    mixed = [np.clip(mic[i] + sysaud[i], -1.0, 1.0) for i in range(n)]
-    mixed.extend(mic[n:])
-    mixed.extend(sysaud[n:])
-    return mixed
 
 
 class Engine:
@@ -108,7 +89,7 @@ class Engine:
         return sorted(config.AVAILABLE_MODELS)
 
     def default_model(self) -> str:
-        # CPU-friendly default (fw-small on Linux/Intel; MLX on Apple Silicon) — not the raw
+        # CPU-friendly default (fw-base on Linux/Intel, fw-small fallback; MLX on Apple Silicon) — not the raw
         # config.DEFAULT_MODEL, which is qwen3-0.6b when qwen-asr is installed (slow on CPU).
         return transcribe.gui_default_model()
 
@@ -236,7 +217,7 @@ class Engine:
         while not self._stop.is_set():
             mic = self._drain(self._cap)
             sysa = self._drain(self._sys)
-            fresh = _mix_chunks(mic, sysa) if (mic and sysa) else (mic or sysa)
+            fresh = mix_chunks(mic, sysa) if (mic and sysa) else (mic or sysa)
             if fresh:
                 with self._lock:                       # serialize with stop's finalize
                     if self._rec_file:
@@ -269,7 +250,7 @@ class Engine:
             try:
                 mic = self._drain(self._cap)          # any frames still queued in either stream
                 sysa = self._drain(self._sys)
-                for c in (_mix_chunks(mic, sysa) if (mic and sysa) else (mic or sysa)):
+                for c in (mix_chunks(mic, sysa) if (mic and sysa) else (mic or sysa)):
                     b = _pcm_bytes(c)
                     self._rec_file.write(b)
                     self._rec_bytes += len(b)
@@ -392,7 +373,7 @@ class Engine:
 
     def _live_loop(self, wav: Path):
         # tail raw PCM of the (still-growing) WAV; dispatch to streaming or chunked transcription
-        from gui.transcribe import _get_engines, _fmt_hms, gui_default_model
+        from gui.transcribe import _get_engines, gui_default_model
         from gui.eot import is_incomplete
         from audio.transcriber import SherpaStreamingTranscriber
         try:
@@ -417,15 +398,15 @@ class Engine:
         abs_start = max(0, (f.tell() - 44) // 2)  # samples already recorded before we started (for timestamps)
         try:
             if isinstance(tr, SherpaStreamingTranscriber):
-                self._live_stream_loop(tr, f, abs_start, _fmt_hms)
+                self._live_stream_loop(tr, f, abs_start)
             else:
-                self._live_chunk_loop(tr, vad, f, abs_start, _fmt_hms, is_incomplete)
+                self._live_chunk_loop(tr, vad, f, abs_start, is_incomplete)
         finally:
             f.close()
             with self._lock:
                 self._live["active"] = False
 
-    def _live_chunk_loop(self, tr, vad, f, abs_start, _fmt_hms, is_incomplete):
+    def _live_chunk_loop(self, tr, vad, f, abs_start, is_incomplete):
         """VAD-windowed transcription for batch backends (fw-*/MLX/qwen3/parakeet). The
         original live path, unchanged — finalize speech windows past a tail guard, merge
         mid-clause fragments, publish a LocalAgreement-stabilized volatile partial."""
@@ -453,7 +434,7 @@ class Engine:
                             if lines and is_incomplete(lines[-1]["text"]):
                                 lines[-1]["text"] = (lines[-1]["text"] + " " + txt).strip()
                             else:
-                                lines.append({"t": _fmt_hms((abs_start + s) / SR), "text": txt})
+                                lines.append({"t": fmt_hms((abs_start + s) / SR), "text": txt})
                             self._live["lines"] = lines[-200:]
                     consumed = e
                 if consumed:
@@ -464,7 +445,7 @@ class Engine:
             if self._stab is not None and len(buf) >= int(SR * 0.4):
                 ptxt = (tr.transcribe(buf).get("text") or "").strip()
                 st = self._stab.push(ptxt)
-                partial = ({"t": _fmt_hms(abs_start / SR), **st}
+                partial = ({"t": fmt_hms(abs_start / SR), **st}
                            if (st["stable"] or st["volatile"]) else None)
                 with self._lock:
                     self._live["partial"] = partial
@@ -472,7 +453,7 @@ class Engine:
                 with self._lock:
                     self._live["partial"] = None
 
-    def _live_stream_loop(self, tr, f, abs_start, _fmt_hms):
+    def _live_stream_loop(self, tr, f, abs_start):
         """True word-by-word streaming for the sherpa-onnx backend. One persistent OnlineStream
         is fed the freshly-tailed PCM; the running decode is the volatile partial; sherpa's own
         endpoint detection finalizes a line. Tighter cadence than the chunked path for low
@@ -503,12 +484,12 @@ class Engine:
                     final = ""
                 with self._lock:
                     if final:
-                        self._live["lines"].append({"t": _fmt_hms(line_start / SR), "text": final})
+                        self._live["lines"].append({"t": fmt_hms(line_start / SR), "text": final})
                         self._live["lines"] = self._live["lines"][-200:]
                     self._live["partial"] = None
                 line_start = fed
             else:
-                partial = ({"t": _fmt_hms(line_start / SR), "stable": "",
+                partial = ({"t": fmt_hms(line_start / SR), "stable": "",
                             "volatile": (text.capitalize() if text.isupper() else text)}
                            if text else None)
                 with self._lock:

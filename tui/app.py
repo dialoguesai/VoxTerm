@@ -70,6 +70,7 @@ from tui.widgets.transcript_explorer import TranscriptExplorerScreen
 from tui.widgets.recording_pulse import RecordingPulse
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
+from audio.mix import mix_chunks
 from audio.system_capture import SystemCapture
 from audio.transcriber import configure_mlx_memory, get_transcriber
 from audio.diarization.proxy import DiarizationProxy
@@ -943,17 +944,6 @@ class VoxTerm(App):
             self._write_crash_dump("_process_audio", e)
             raise
 
-    @staticmethod
-    def _mix_chunks(mic: list[np.ndarray], sys: list[np.ndarray]) -> list[np.ndarray]:
-        """Time-aligned addition of mic and system audio chunks."""
-        mixed = []
-        n = min(len(mic), len(sys))
-        for i in range(n):
-            mixed.append(np.clip(mic[i] + sys[i], -1.0, 1.0))
-        mixed.extend(mic[n:])
-        mixed.extend(sys[n:])
-        return mixed
-
     def _process_audio_inner(self):
         waveform = self.query_one(WaveformWidget)
 
@@ -999,14 +989,14 @@ class VoxTerm(App):
                     )
                     self._party.audio_send_seq += 1
 
-        chunks = self._mix_chunks(mic_chunks, sys_chunks) if sys_chunks else mic_chunks
+        chunks = mix_chunks(mic_chunks, sys_chunks) if sys_chunks else mic_chunks
         if not chunks:
             waveform.tick()
             return
 
         # Build a mic-only stream aligned 1:1 with `chunks` so the
         # diarizer sees only the local microphone, never the system-audio
-        # mix. _mix_chunks emits: n=min(len(mic),len(sys)) summed entries,
+        # mix. mix_chunks emits: n=min(len(mic),len(sys)) summed entries,
         # then any mic tail, then any sys tail. Pad sys-only tail with
         # silence so indices line up with `chunks`.
         if sys_chunks:

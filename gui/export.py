@@ -33,6 +33,8 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from gui._timefmt import fmt_hms
+
 EXPORT_VERSION = 1
 DOC_KIND = "voxterm-transcript"
 
@@ -94,13 +96,6 @@ def _coerce_sid(raw) -> int:
             m = re.search(r"\d+", raw)
             return int(m.group()) if m else 0
     return 0
-
-
-def _fmt_hms(seconds: float) -> str:
-    s = int(round(seconds))
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
 
 
 def _fmt_ts(seconds: float, sep: str) -> str:
@@ -185,7 +180,7 @@ def build(events: list[dict], *, session_id: str, source_stream: str) -> dict:
         turns.append({
             "index": idx,
             "t_offset": round(t_off, 2),
-            "t_offset_hms": _fmt_hms(t_off),
+            "t_offset_hms": fmt_hms(t_off),
             "t_unix": _num(e.get("t"), None),
             "speaker_id": sid,
             "speaker": speaker,
@@ -261,7 +256,7 @@ def build(events: list[dict], *, session_id: str, source_stream: str) -> dict:
             "started_at_unix": (t0 if has_anchor else None),
             "ended_at": (_iso_local(t_end) if (has_anchor and not incomplete) else None),
             "duration_seconds": duration_seconds,
-            "duration_hms": _fmt_hms(duration_seconds),
+            "duration_hms": fmt_hms(duration_seconds),
             "source": "VoxTerm",
             "source_stream": source_stream,
             "model": model,

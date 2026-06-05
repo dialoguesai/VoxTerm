@@ -30,7 +30,7 @@ import numpy as np
 
 import config
 import engine as engine_mod
-from engine import Engine, _write_wav, _wav_header, _pcm_bytes, SR
+from engine import Engine, _wav_header, _pcm_bytes, SR
 
 
 # --- isolation helpers -------------------------------------------------------
@@ -71,34 +71,6 @@ def test_languages_is_nonempty_dict():
     assert langs is not config.AVAILABLE_LANGUAGES
 
 
-# --- WAV writer --------------------------------------------------------------
-
-def test_write_wav_is_valid_16k_mono():
-    eng, out, *_ = _isolated_engine()
-    n = SR  # exactly 1 second
-    audio = (np.sin(np.linspace(0, 6.28, n)) * 0.5).astype(np.float32)
-    wav = out / "tone.wav"
-    _write_wav(wav, audio)
-    assert wav.exists()
-    with wave.open(str(wav), "rb") as w:
-        assert w.getnchannels() == 1
-        assert w.getsampwidth() == 2          # 16-bit PCM
-        assert w.getframerate() == SR == 16000
-        assert w.getnframes() == n            # one frame per sample (mono)
-
-
-def test_write_wav_clips_out_of_range():
-    eng, out, *_ = _isolated_engine()
-    audio = np.array([5.0, -5.0, 0.0], dtype=np.float32)  # beyond [-1, 1]
-    wav = out / "clip.wav"
-    _write_wav(wav, audio)
-    with wave.open(str(wav), "rb") as w:
-        assert w.getnframes() == 3
-        frames = w.readframes(3)
-    samples = np.frombuffer(frames, dtype="<i2")
-    assert samples[0] == 32767 and samples[1] == -32767  # clipped, not wrapped
-
-
 # --- streaming-WAV path (record-while-live): header + incremental write ------
 
 def test_wav_header_is_44_bytes_and_parses():
@@ -113,14 +85,19 @@ def test_wav_header_is_44_bytes_and_parses():
         assert w.getnframes() == n
 
 
-def test_pcm_bytes_matches_write_wav_mapping():
-    # _pcm_bytes must encode identically to _write_wav (same clip→int16 LE)
+def test_pcm_bytes_encodes_clipped_int16_le():
+    # The recording path's sole encoder: float32[-1,1] → s16-LE, CLIPPED (not wrapped).
     audio = np.array([0.0, 0.5, -0.5, 5.0, -5.0], dtype=np.float32)
-    out = Path(tempfile.mkdtemp())
-    _write_wav(out / "ref.wav", audio)
-    with wave.open(str(out / "ref.wav"), "rb") as w:
-        ref = w.readframes(w.getnframes())
-    assert _pcm_bytes(audio) == ref
+    samples = np.frombuffer(_pcm_bytes(audio), dtype="<i2")
+    assert samples[0] == 0
+    assert samples[3] == 32767 and samples[4] == -32767  # out-of-range clipped, not wrapped
+    # …and it round-trips through a real WAV built the shipped way (_wav_header + _pcm_bytes).
+    data = _pcm_bytes(audio)
+    p = Path(tempfile.mkdtemp()) / "ref.wav"
+    p.write_bytes(_wav_header(len(data)) + data)
+    with wave.open(str(p), "rb") as w:
+        assert w.getnchannels() == 1 and w.getsampwidth() == 2 and w.getframerate() == SR
+        assert np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").tolist() == samples.tolist()
 
 
 def test_growing_wav_is_tailable_then_finalizes_valid():

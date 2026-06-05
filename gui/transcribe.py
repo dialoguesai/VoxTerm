@@ -30,6 +30,7 @@ if _ROOT not in sys.path:
 import numpy as np  # noqa: E402
 
 import config  # noqa: E402
+from gui._timefmt import fmt_hms  # noqa: E402
 from audio.transcriber import get_transcriber  # noqa: E402
 from audio.vad import SileroVAD  # noqa: E402
 from audio.diarization.proxy import DiarizationProxy  # noqa: E402
@@ -110,13 +111,6 @@ def load_wav_16k_mono(path: Path) -> np.ndarray:
         from scipy.signal import resample_poly
         data = resample_poly(data, SR, sr).astype(np.float32)
     return np.ascontiguousarray(data, dtype=np.float32)
-
-
-def _fmt_hms(seconds: float) -> str:
-    s = int(seconds)
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
 
 
 def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str | None = None,
@@ -201,7 +195,7 @@ def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str | None = No
                     last_sid = sid
                 ev.emit("text", speaker=label, speaker_id=sid, color=color, text=seg_text,
                         confidence="", overlap=False, audio_offset=audio_offset, audio_end=audio_end)
-                stamp = _fmt_hms(audio_offset)
+                stamp = fmt_hms(audio_offset)
                 md.write(f"**[{stamp}]** **{label}:** {seg_text}\n\n" if label else f"**[{stamp}]** {seg_text}\n\n")
                 n_turns += 1
             ev.emit("vad", on=False)

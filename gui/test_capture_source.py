@@ -2,15 +2,16 @@
 
 import numpy as np
 
-from gui.engine import Engine, _mix_chunks
+from audio.mix import mix_chunks
+from gui.engine import Engine
 
 
-# ── _mix_chunks: time-aligned add + tails (mirrors tui.app.VoxTerm._mix_chunks) ──
+# ── mix_chunks (audio/mix.py): time-aligned add + tails ──
 
 def test_mix_chunks_sums_overlap_and_clips():
     mic = [np.array([0.5, 0.5], dtype=np.float32)]
     sysa = [np.array([0.6, -0.6], dtype=np.float32)]
-    out = _mix_chunks(mic, sysa)
+    out = mix_chunks(mic, sysa)
     assert len(out) == 1
     # 0.5+0.6 = 1.1 -> clipped to 1.0 ; 0.5-0.6 = -0.1 -> unchanged
     np.testing.assert_allclose(out[0], [1.0, -0.1], atol=1e-6)
@@ -19,7 +20,7 @@ def test_mix_chunks_sums_overlap_and_clips():
 def test_mix_chunks_keeps_mic_tail():
     mic = [np.array([0.1], dtype=np.float32), np.array([0.2], dtype=np.float32)]
     sysa = [np.array([0.1], dtype=np.float32)]
-    out = _mix_chunks(mic, sysa)
+    out = mix_chunks(mic, sysa)
     assert len(out) == 2
     np.testing.assert_allclose(out[0], [0.2], atol=1e-6)   # summed overlap
     np.testing.assert_allclose(out[1], [0.2], atol=1e-6)   # mic-only tail preserved
@@ -28,7 +29,7 @@ def test_mix_chunks_keeps_mic_tail():
 def test_mix_chunks_keeps_system_tail():
     mic = [np.array([0.1], dtype=np.float32)]
     sysa = [np.array([0.1], dtype=np.float32), np.array([0.3], dtype=np.float32)]
-    out = _mix_chunks(mic, sysa)
+    out = mix_chunks(mic, sysa)
     assert len(out) == 2
     np.testing.assert_allclose(out[1], [0.3], atol=1e-6)   # system-only tail preserved
 

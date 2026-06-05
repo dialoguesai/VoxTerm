@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id);
 // Muted, desaturated speaker dots — distinct enough to tell speakers apart at a glance
 // without breaking the monochrome chrome (no neon). The dot is the only color in a turn row.
 const PALETTE = ["#9ba3ad", "#b58f8f", "#b0a98a", "#8fa6b5", "#a397b3", "#8fb3a0", "#b59c8a", "#a98fa9"];
+const PEER_COLOR = "#8fa6b5";   // P2P peer turns — a fixed muted slate (not a PALETTE slot, which rotates per speaker)
 
 let OPTS = { models: [], languages: {}, default_model: "", input_devices: [] };
 let CUR = null;            // current doc (agent_json parsed) or null for raw-markdown view
@@ -424,7 +425,7 @@ function render() {
     prevSid = t.peer ? null : t.speaker_id;
     const row = document.createElement("div");
     row.className = "turn" + (t.confidence_uncertain ? " uncertain" : "") + (same ? " same-speaker" : "");
-    const c = t.peer ? "#8fa6b5" : colorFor(t.speaker_id);
+    const c = t.peer ? PEER_COLOR : colorFor(t.speaker_id);
     const mk = (t.markers || []).map((m) => `<span class="mk">${escapeHtml(m)}</span>`).join("");
     const spk = t.peer
       ? `<span class="t-spk"><span class="dot" style="background:${c}"></span>${escapeHtml(nameFor(t))}</span>`
@@ -471,12 +472,16 @@ async function serverExport(kind) {
   if (!r || r.ok === false) { toast("Export failed — is the session still on disk?"); return null; }
   return r.text;
 }
+// Copy `text` to the clipboard, or download it as markdown if the clipboard is blocked.
+async function copyOrDownload(text, filename, copiedMsg) {
+  try { await navigator.clipboard.writeText(text); toast(copiedMsg); }
+  catch { download(text, filename, "text/markdown"); toast("Clipboard blocked — downloaded instead"); }
+}
 async function copyForAI() {
   if (!CUR) return toast("Load a transcript first");
   const md = await serverExport("md");
   if (md == null) return;
-  try { await navigator.clipboard.writeText(md); toast("Copied AI transcript to clipboard"); }
-  catch { download(md, `${CUR.session.id}-agent.md`, "text/markdown"); toast("Clipboard blocked — downloaded instead"); }
+  await copyOrDownload(md, `${CUR.session.id}-agent.md`, "Copied AI transcript to clipboard");
 }
 async function summaryPrompt() {
   const md = await serverExport("md");
@@ -497,8 +502,7 @@ async function summarizeForAI() {
   const text = await summaryPrompt();
   if (text == null) return;
   $("exportMenu").removeAttribute("open");
-  try { await navigator.clipboard.writeText(text); toast("Copied summary prompt to clipboard"); }
-  catch { download(text, `${CUR.session.id}-summarize.md`, "text/markdown"); toast("Clipboard blocked — downloaded instead"); }
+  await copyOrDownload(text, `${CUR.session.id}-summarize.md`, "Copied summary prompt to clipboard");
 }
 // Run the summary locally via the engine's summarizer (MLX on Apple Silicon, or an
 // `ollama:<model>` backend set in settings). Shows the result inline, or a clear error
