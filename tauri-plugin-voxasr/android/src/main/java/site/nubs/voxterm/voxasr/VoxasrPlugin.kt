@@ -75,7 +75,10 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
                 ),
                 tokens = File(dir, "tokens.txt").absolutePath,
                 numThreads = 2,
-                modelType = "zipformer",
+                // Empty = auto-detect the architecture (zipformer / zipformer2 / …) from the
+                // model's ONNX `model_type` metadata, so the bundled model in fetch-deps.sh is
+                // the single source of truth — no architecture string to keep in sync here.
+                modelType = "",
             ),
             endpointConfig = EndpointConfig(),
             enableEndpoint = true,
@@ -201,14 +204,21 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
             val test = File(dir, "test.wav")
             if (!test.exists()) { Log.i("voxasr", "SELFTEST_SKIP no test.wav"); return }
             val rec = recognizer ?: buildRecognizer(dir).also { recognizer = it }
+            val samples = readWav16kMono(test)
+            val audioSec = (samples.size + 8000) / 16000.0   // clip + trailing-silence flush
             val stream = rec.createStream()
-            stream.acceptWaveform(readWav16kMono(test), 16000)
+            val t0 = System.nanoTime()
+            stream.acceptWaveform(samples, 16000)
             stream.acceptWaveform(FloatArray(8000), 16000)   // trailing silence to flush the decode
             stream.inputFinished()
             while (rec.isReady(stream)) rec.decode(stream)
+            val decodeSec = (System.nanoTime() - t0) / 1e9
             val text = rec.getResult(stream).text
             stream.release()
-            Log.i("voxasr", "SELFTEST_RESULT=[$text]")
+            // xRT < 1.0 = faster than real-time (the streaming budget); logged so on-device
+            // latency is a measured number, not an assumption.
+            val xrt = decodeSec / audioSec
+            Log.i("voxasr", "SELFTEST_RESULT=[$text] xRT=%.2f (%.2fs decode / %.2fs audio)".format(xrt, decodeSec, audioSec))
         } catch (e: Exception) {
             Log.e("voxasr", "SELFTEST_ERROR", e)
         }
