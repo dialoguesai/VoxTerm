@@ -59,11 +59,23 @@ def _pcm_bytes(chunk: np.ndarray) -> bytes:
     return (np.clip(chunk, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
 
 
+def _mix_chunks(mic: list, sysaud: list) -> list:
+    """Time-aligned addition of mic + system-audio chunks (mirrors tui.app.VoxTerm._mix_chunks):
+    sum the first n=min(len) chunks (clipped), then append each stream's leftover tail."""
+    n = min(len(mic), len(sysaud))
+    mixed = [np.clip(mic[i] + sysaud[i], -1.0, 1.0) for i in range(n)]
+    mixed.extend(mic[n:])
+    mixed.extend(sysaud[n:])
+    return mixed
+
+
 class Engine:
     def __init__(self, out_dir: Path = OUT_DIR):
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        self._cap = None
+        self._cap = None        # mic (audio.capture.AudioCapture)
+        self._sys = None        # system/loopback audio (audio.system_capture.SystemCapture)
+        self._source = "mic"    # "mic" | "system" | "both" — chosen at start_recording
         # Recording streams straight to a growing WAV on disk (so the live monitor can tail
         # THIS recording, and so a long session doesn't sit entirely in RAM).
         self._rec_file = None
@@ -131,37 +143,59 @@ class Engine:
                           daemon=True, name="gui-warm").start()
 
     # ---- recording ----
-    def start_recording(self, device: int | None = None) -> dict:
+    def start_recording(self, device: int | None = None, source: str = "mic") -> dict:
         with self._lock:
             if self.recording:
                 return {"ok": True, "already": True}
-            from audio.capture import AudioCapture
-            try:                                   # tolerate a malformed device value from the client
-                dev = int(device) if device is not None else -1
-            except (ValueError, TypeError):
-                dev = -1
-            # steer AudioCapture's input to the chosen mic; -1 = system default. We mutate the
-            # global sd.default.device, so remember the OS default once and restore it when the
-            # user re-selects "System default" (otherwise a prior explicit choice stays pinned).
-            try:
-                import sounddevice as sd
-                if not self._sd_captured:
-                    cur0 = sd.default.device
-                    self._sd_default_in = list(cur0)[0] if isinstance(cur0, (list, tuple)) else cur0
-                    self._sd_captured = True
-                cur = sd.default.device
-                pair = list(cur) if isinstance(cur, (list, tuple)) else [cur, cur]
-                pair[0] = dev if dev >= 0 else self._sd_default_in
-                sd.default.device = tuple(pair)
-            except Exception:
-                pass
-            try:
-                self._cap = AudioCapture()
-                self._cap.start()
-            except Exception as e:  # no input device / busy / permission
-                self._cap = None
-                self.recording = False
-                return {"ok": False, "error": f"could not open the microphone: {e}"}
+            # source: "mic" (default), "system" (loopback / what's playing), or "both" (mixed).
+            self._source = source if source in ("mic", "system", "both") else "mic"
+            self._cap = None
+            self._sys = None
+            if self._source in ("mic", "both"):
+                from audio.capture import AudioCapture
+                try:                                   # tolerate a malformed device value from the client
+                    dev = int(device) if device is not None else -1
+                except (ValueError, TypeError):
+                    dev = -1
+                # steer AudioCapture's input to the chosen mic; -1 = system default. We mutate the
+                # global sd.default.device, so remember the OS default once and restore it when the
+                # user re-selects "System default" (otherwise a prior explicit choice stays pinned).
+                try:
+                    import sounddevice as sd
+                    if not self._sd_captured:
+                        cur0 = sd.default.device
+                        self._sd_default_in = list(cur0)[0] if isinstance(cur0, (list, tuple)) else cur0
+                        self._sd_captured = True
+                    cur = sd.default.device
+                    pair = list(cur) if isinstance(cur, (list, tuple)) else [cur, cur]
+                    pair[0] = dev if dev >= 0 else self._sd_default_in
+                    sd.default.device = tuple(pair)
+                except Exception:
+                    pass
+                try:
+                    self._cap = AudioCapture()
+                    self._cap.start()
+                except Exception as e:  # no input device / busy / permission
+                    self._cap = None
+                    self.recording = False
+                    return {"ok": False, "error": f"could not open the microphone: {e}"}
+            if self._source in ("system", "both"):
+                try:
+                    from audio.system_capture import SystemCapture
+                    self._sys = SystemCapture()
+                    self._sys.start()
+                    if not self._sys.is_active:        # parec missing, no monitor source, SCK denied…
+                        raise RuntimeError(self._sys.status_message or "system audio capture unavailable")
+                except Exception as e:
+                    try:
+                        if self._cap:
+                            self._cap.stop()
+                    except Exception:
+                        pass
+                    self._cap = None
+                    self._sys = None
+                    self.recording = False
+                    return {"ok": False, "error": f"could not capture system audio: {e}"}
             # open the growing WAV now (placeholder header, patched on stop) so the live
             # monitor can tail this very recording and click-Live follows what you're saying.
             ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -187,13 +221,22 @@ class Engine:
             self._poll_thread.start()
             return {"ok": True, "wav": str(self._rec_wav_path)}
 
+    @staticmethod
+    def _drain(cap) -> list:
+        """Drain a capture's queued chunks as float32 arrays ([] if absent/errored)."""
+        if cap is None:
+            return []
+        try:
+            chunks = cap.drain()
+        except Exception:
+            return []
+        return [np.asarray(c, dtype=np.float32) for c in chunks if c is not None and len(c)]
+
     def _poll(self):
         while not self._stop.is_set():
-            try:
-                chunks = self._cap.drain()
-            except Exception:
-                chunks = []
-            fresh = [np.asarray(c, dtype=np.float32) for c in chunks if c is not None and len(c)]
+            mic = self._drain(self._cap)
+            sysa = self._drain(self._sys)
+            fresh = _mix_chunks(mic, sysa) if (mic and sysa) else (mic or sysa)
             if fresh:
                 with self._lock:                       # serialize with stop's finalize
                     if self._rec_file:
@@ -224,14 +267,20 @@ class Engine:
         with self._lock:
             self.recording = False
             try:
-                for c in self._cap.drain():       # capture any frames still queued
-                    if c is not None and len(c):
-                        b = _pcm_bytes(np.asarray(c, dtype=np.float32))
-                        self._rec_file.write(b)
-                        self._rec_bytes += len(b)
-                self._cap.stop()
+                mic = self._drain(self._cap)          # any frames still queued in either stream
+                sysa = self._drain(self._sys)
+                for c in (_mix_chunks(mic, sysa) if (mic and sysa) else (mic or sysa)):
+                    b = _pcm_bytes(c)
+                    self._rec_file.write(b)
+                    self._rec_bytes += len(b)
             except Exception:
                 pass
+            for cap in (self._cap, self._sys):
+                try:
+                    if cap:
+                        cap.stop()
+                except Exception:
+                    pass
             wav = self._rec_wav_path
             n_bytes = self._rec_bytes
             patched = False

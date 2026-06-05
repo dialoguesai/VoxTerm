@@ -37,7 +37,7 @@ function fmtClock(sec) {
 function colorFor(sid) { return PALETTE[((sid || 0) % PALETTE.length + PALETTE.length) % PALETTE.length]; }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 // localStorage wrappers — private/incognito mode can throw on access, so swallow it.
-const LS_MODEL = "voxterm.model", LS_LANG = "voxterm.language", LS_MIC = "voxterm.mic", LS_DIARIZE = "voxterm.diarize";
+const LS_MODEL = "voxterm.model", LS_LANG = "voxterm.language", LS_MIC = "voxterm.mic", LS_DIARIZE = "voxterm.diarize", LS_SOURCE = "voxterm.source";
 function lsGet(key) { try { return localStorage.getItem(key); } catch { return null; } }
 function lsSet(key, val) { try { localStorage.setItem(key, val); } catch { /* private mode */ } }
 function setNav(open) {
@@ -128,6 +128,9 @@ async function init() {
   dSel.addEventListener("change", () => lsSet(LS_MIC, dSel.value));
   if (lsGet(LS_DIARIZE) === "0") $("diarize").checked = false;
   $("diarize").addEventListener("change", () => lsSet(LS_DIARIZE, $("diarize").checked ? "1" : "0"));
+  const savedSource = lsGet(LS_SOURCE);
+  if (savedSource && [...$("source").options].some((op) => op.value === savedSource)) $("source").value = savedSource;
+  $("source").addEventListener("change", () => lsSet(LS_SOURCE, $("source").value));
 
   $("recBtn").addEventListener("click", toggleRecord);
   $("sessionSearch").addEventListener("input", (e) => renderSessions(e.target.value));
@@ -276,7 +279,7 @@ async function toggleRecord() {
     const device = parseInt($("micDevice").value, 10);
     const r = await getJSON("/api/record/start", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ device: Number.isNaN(device) ? -1 : device }),
+      body: JSON.stringify({ device: Number.isNaN(device) ? -1 : device, source: $("source").value }),
     });
     if (!r.ok) { toast(r.error ? "Mic error: " + r.error : "Could not start (mic busy?)"); return; }
     showRecording();   // no live preview — keep recording light; the accurate transcript appears on stop

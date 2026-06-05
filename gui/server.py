@@ -181,7 +181,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "unauthorized"}, 401)
         if p == "/api/record/start":
             b = self._read_json()
-            return self._json(ENGINE.start_recording(device=b.get("device")))
+            return self._json(ENGINE.start_recording(device=b.get("device"), source=b.get("source", "mic")))
         if p == "/api/record/stop":
             b = self._read_json()
             return self._json(ENGINE.stop_recording(model=b.get("model") or None,

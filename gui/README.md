@@ -14,7 +14,8 @@ duplicated here.
 
 A single linear flow:
 
-1. **Record** — pick a model + language, hit the button, talk.
+1. **Record** — pick a model + language + **audio source** (microphone, system/loopback
+   audio i.e. "what's playing", or both mixed), hit the button, talk.
 2. **Stop** — captured audio is written to a WAV.
 3. **Transcribe + diarize** — runs in the background; a progress bar tracks it.
 4. **Export** — automatically produces an AI-ready `-agent.md` + `-agent.json`, plus
@@ -37,7 +38,11 @@ the diarizer, and the `EventLogger` — so the saved transcript is produced by t
 the model list + CPU-aware default match the TUI. Some TUI features are intentionally **out of
 scope** for a personal record→review web app:
 
-- **P2P party / hivemind / system-audio capture** — live-collaboration / aggregation concerns.
+- **P2P party / hivemind** — live-collaboration / aggregation concerns that need raw UDP
+  sockets + mDNS a browser sandbox can't open. (The GUI still *renders* imported peer
+  transcripts; it just can't host/join a live mesh.)
+- **Dictation mode** (global hotkey + system-wide keystroke injection) — an OS-native
+  capability (Quartz/xdotool/wtype) that can't run from a sandboxed page.
 - **Cross-session speaker recognition** (the SQLite `SpeakerStore` biometric identity layer) —
   the GUI offers per-session manual **rename** instead, not persisted across sessions, and
   honestly labeled "diarization clusters / your renames, not verified identities" in exports.
@@ -48,6 +53,10 @@ scope** for a personal record→review web app:
   accurate, diarized transcript appears when you **stop**. One model, no mid-stream guesses to
   reconcile against the final result. (The streaming-monitor code path remains for the optional
   `[streaming]` backend but is off in the default flow.)
+
+System/loopback audio capture reuses the engine's existing backends (macOS ScreenCaptureKit,
+Linux `parec`); it's unavailable on Windows (no engine support there) and degrades with a clear
+error if the platform tool is missing.
 
 The GUI also *adds* value the TUI lacks: the rich `.md`/`.json`/`.srt`/`.vtt` export, inline
 audio playback + timestamp-seek of the recording, and a clean keyboard-driven review UI.

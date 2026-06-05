@@ -83,6 +83,11 @@
         <summary class="gear-btn" id="gearBtn" aria-label="Settings" aria-haspopup="menu">⚙</summary>
         <div class="menu-pop settings-pop" role="menu">
           <label class="field"><span>Model</span><select id="model" class="select"></select></label>
+          <label class="field"><span>Audio source</span><select id="source" class="select">
+            <option value="mic">Microphone</option>
+            <option value="system">System audio (what's playing)</option>
+            <option value="both">Mic + system</option>
+          </select></label>
           <label class="field"><span>Microphone</span><select id="micDevice" class="select"></select></label>
           <label class="toggle"><input type="checkbox" id="diarize" checked><span>Detect speakers</span></label>
           <div class="menu-sep"></div>
