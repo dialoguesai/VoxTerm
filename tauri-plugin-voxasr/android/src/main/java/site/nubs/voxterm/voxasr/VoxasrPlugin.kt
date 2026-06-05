@@ -20,6 +20,7 @@ import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OnlineModelConfig
 import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OnlineStream
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
 import java.io.File
 import kotlin.concurrent.thread
@@ -33,7 +34,9 @@ import kotlin.concurrent.thread
 class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
     @Volatile private var running = false
     private var worker: Thread? = null
-    private var recognizer: OnlineRecognizer? = null
+    // @Volatile: built lazily from both the mic worker and the debug self-test thread.
+    @Volatile private var recognizer: OnlineRecognizer? = null
+    private val modelFiles = listOf("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
     // Transcript state the webview polls (avoids the plugin-event listener path).
     private val finalLines = java.util.Collections.synchronizedList(mutableListOf<String>())
     @Volatile private var partial = ""
@@ -43,15 +46,21 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
     // use, so transcription is fully offline (no first-run download).
     private fun stagedModelDir(): File {
         val out = File(activity.filesDir, "voxterm-model")
-        if (!File(out, "tokens.txt").exists()) {
-            out.mkdirs()
-            val am = activity.assets
-            for (name in am.list("voxterm-model") ?: arrayOf()) {
-                am.open("voxterm-model/$name").use { input ->
-                    File(out, name).outputStream().use { input.copyTo(it) }
-                }
+        // Sentinel = ALL required files present (not just tokens.txt) so a half-copied dir
+        // from a mid-copy process kill self-heals instead of wedging.
+        if (modelFiles.all { File(out, it).exists() }) return out
+        // Copy into a temp dir, then atomically swap it in: `out` is only ever a complete dir.
+        val tmp = File(activity.filesDir, "voxterm-model.tmp")
+        tmp.deleteRecursively()
+        tmp.mkdirs()
+        val am = activity.assets
+        for (name in am.list("voxterm-model") ?: arrayOf()) {
+            am.open("voxterm-model/$name").use { input ->
+                File(tmp, name).outputStream().use { input.copyTo(it) }
             }
         }
+        out.deleteRecursively()
+        tmp.renameTo(out)
         return out
     }
 
@@ -92,39 +101,50 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
         lastError = null
         worker = thread(start = true) {
             var audio: AudioRecord? = null
+            var stream: OnlineStream? = null
             try {
                 val rec = recognizer ?: buildRecognizer(stagedModelDir()).also { recognizer = it }
-                val stream = rec.createStream()
+                val s = rec.createStream()
+                stream = s                                  // tracked for release in finally
                 val sampleRate = 16000
                 val minBuf = AudioRecord.getMinBufferSize(
                     sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
                 )
+                if (minBuf <= 0) {                          // ERROR/-1 or ERROR_BAD_VALUE/-2: minBuf*2 would throw
+                    lastError = "audio buffer size unavailable ($minBuf)"
+                    return@thread
+                }
                 audio = AudioRecord(
                     MediaRecorder.AudioSource.MIC, sampleRate,
                     AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf * 2
                 )
+                if (audio.state != AudioRecord.STATE_INITIALIZED) {   // mic busy / denied
+                    lastError = "could not initialize the microphone"
+                    return@thread
+                }
                 val buf = ShortArray(minBuf)
                 audio.startRecording()
                 while (running) {
                     val n = audio.read(buf, 0, buf.size)
                     if (n <= 0) continue
                     val samples = FloatArray(n) { buf[it] / 32768.0f }
-                    stream.acceptWaveform(samples, sampleRate)
-                    while (rec.isReady(stream)) rec.decode(stream)
-                    partial = rec.getResult(stream).text
-                    if (rec.isEndpoint(stream)) {
+                    s.acceptWaveform(samples, sampleRate)
+                    while (rec.isReady(s)) rec.decode(s)
+                    partial = rec.getResult(s).text
+                    if (rec.isEndpoint(s)) {
                         val finalText = partial
                         if (finalText.isNotEmpty()) finalLines.add(finalText)
                         partial = ""
-                        rec.reset(stream)
+                        rec.reset(s)
                     }
                 }
-                stream.release()
             } catch (e: Exception) {
                 lastError = e.message ?: "transcription error"
             } finally {
                 try { audio?.stop() } catch (_: Exception) {}
                 audio?.release()
+                try { stream?.release() } catch (_: Exception) {}   // never leak the native stream on a failed start
+                running = false                                     // any exit path leaves a clean stopped state
             }
         }
         invoke.resolve(JSObject())
