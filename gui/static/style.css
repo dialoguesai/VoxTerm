@@ -184,6 +184,14 @@ body.recording .brand-dot { background: var(--rec); }
 @media (prefers-reduced-motion: reduce) { .rec-ph-dot { animation: none; } }
 .empty strong { color: var(--text); font-weight: 600; }
 
+/* local-LLM summary panel (shown above the transcript after "Summarize with local LLM") */
+.summary-block { margin: 0 0 var(--sp-5); padding: var(--sp-4, 12px) var(--sp-5); background: var(--bg-elev);
+  border: var(--hairline); border-radius: var(--r-lg); animation: menu-in var(--dur) var(--ease); }
+.summary-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+#summaryTitle { font-size: var(--fs-sub); font-weight: 600; color: var(--muted); }
+.summary-actions { display: flex; gap: 6px; }
+.summary-body { white-space: pre-wrap; line-height: 1.6; font-size: var(--fs-body); color: var(--text); }
+
 /* ---------- dock (record + controls, pinned bottom) ---------- */
 .dock { flex: none; display: flex; align-items: center; gap: var(--sp-3);
   padding: var(--sp-2) clamp(16px, 4vw, 28px); min-height: 60px;

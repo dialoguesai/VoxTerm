@@ -204,6 +204,11 @@ class Handler(BaseHTTPRequestHandler):
             b = self._read_json()
             return self._json(ENGINE.export_session(b.get("stem", ""), b.get("kind", "md"),
                                                     renames=b.get("renames") or {}, dir=b.get("dir")))
+        if p == "/api/summarize":
+            b = self._read_json()
+            return self._json(ENGINE.summarize_session(
+                b.get("stem", ""), dir=b.get("dir"), template_id=b.get("template", "tldr"),
+                model=b.get("model", ""), custom_prompt=b.get("custom_prompt", "")))
         return self._json({"error": "not found"}, 404)
 
     def _serve_static(self, rel: str):

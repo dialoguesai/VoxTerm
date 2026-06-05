@@ -37,7 +37,8 @@
           <details class="menu" id="exportMenu">
             <summary class="btn ghost" id="moreBtn" aria-label="More actions" aria-haspopup="menu">•••</summary>
             <div class="menu-pop" role="menu">
-              <button class="menu-item" id="summarizeAi" role="menuitem">Summarize for AI</button>
+              <button class="menu-item" id="summarizeAi" role="menuitem">Summarize for AI (copy prompt)</button>
+              <button class="menu-item" id="summarizeLocal" role="menuitem">Summarize with local LLM</button>
               <button class="menu-item" id="dlWav" role="menuitem">Download audio (WAV)</button>
               <div class="menu-sep"></div>
               <button class="menu-item" id="dlMd" role="menuitem">Download Markdown</button>
@@ -50,6 +51,18 @@
           </details>
         </div>
       </header>
+
+      <!-- LOCAL-LLM SUMMARY (shown after "Summarize with local LLM") -->
+      <section id="summaryBlock" class="summary-block hidden" aria-live="polite">
+        <div class="summary-head">
+          <span id="summaryTitle">Summary</span>
+          <span class="summary-actions">
+            <button id="summaryCopy" class="btn ghost" type="button">Copy</button>
+            <button id="summaryClose" class="btn ghost" type="button" aria-label="Dismiss summary">✕</button>
+          </span>
+        </div>
+        <div id="summaryBody" class="summary-body"></div>
+      </section>
 
       <!-- PROGRESS (while transcribing) -->
       <section id="progress" class="progress hidden" aria-live="polite">
@@ -90,6 +103,7 @@
           </select></label>
           <label class="field"><span>Microphone</span><select id="micDevice" class="select"></select></label>
           <label class="toggle"><input type="checkbox" id="diarize" checked><span>Detect speakers</span></label>
+          <label class="field"><span>Summary model</span><input id="sumModel" class="select" type="text" placeholder="ollama:qwen3:0.6b — blank = MLX (Mac)"></label>
           <div class="menu-sep"></div>
           <p class="kbd-hint">Off is faster for single-voice dictation. Space or R to record · Esc to close</p>
         </div>

@@ -37,7 +37,7 @@ function fmtClock(sec) {
 function colorFor(sid) { return PALETTE[((sid || 0) % PALETTE.length + PALETTE.length) % PALETTE.length]; }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 // localStorage wrappers — private/incognito mode can throw on access, so swallow it.
-const LS_MODEL = "voxterm.model", LS_LANG = "voxterm.language", LS_MIC = "voxterm.mic", LS_DIARIZE = "voxterm.diarize", LS_SOURCE = "voxterm.source";
+const LS_MODEL = "voxterm.model", LS_LANG = "voxterm.language", LS_MIC = "voxterm.mic", LS_DIARIZE = "voxterm.diarize", LS_SOURCE = "voxterm.source", LS_SUMMODEL = "voxterm.summodel";
 function lsGet(key) { try { return localStorage.getItem(key); } catch { return null; } }
 function lsSet(key, val) { try { localStorage.setItem(key, val); } catch { /* private mode */ } }
 function setNav(open) {
@@ -57,7 +57,10 @@ function setView(state) {
   const t = state === "transcript";
   $("tvHead").classList.toggle("hidden", !t);
   $("turns").classList.toggle("hidden", !t);
-  if (!t) { const p = $("player"); if (p && !p.paused) p.pause(); }   // never leave audio playing off-screen
+  if (!t) {
+    const p = $("player"); if (p && !p.paused) p.pause();   // never leave audio playing off-screen
+    $("summaryBlock").classList.add("hidden"); $("summaryBody").textContent = "";   // summary is per-session
+  }
 }
 
 // Live amplitude strip: push each SSE level reading and draw a scrolling bar history.
@@ -131,12 +134,20 @@ async function init() {
   const savedSource = lsGet(LS_SOURCE);
   if (savedSource && [...$("source").options].some((op) => op.value === savedSource)) $("source").value = savedSource;
   $("source").addEventListener("change", () => lsSet(LS_SOURCE, $("source").value));
+  const savedSum = lsGet(LS_SUMMODEL); if (savedSum != null) $("sumModel").value = savedSum;
+  $("sumModel").addEventListener("change", () => lsSet(LS_SUMMODEL, $("sumModel").value.trim()));
 
   $("recBtn").addEventListener("click", toggleRecord);
   $("sessionSearch").addEventListener("input", (e) => renderSessions(e.target.value));
   $("navToggle").addEventListener("click", () => setNav(!document.body.classList.contains("nav-open")));
   $("copyAgent").addEventListener("click", copyForAI);
   $("summarizeAi").addEventListener("click", summarizeForAI);
+  $("summarizeLocal").addEventListener("click", summarizeLocal);
+  $("summaryClose").addEventListener("click", () => { $("summaryBlock").classList.add("hidden"); $("summaryBody").textContent = ""; });
+  $("summaryCopy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText($("summaryBody").textContent); toast("Summary copied"); }
+    catch { toast("Clipboard blocked"); }
+  });
   $("dlWav").addEventListener("click", downloadWav);
   $("dlMd").addEventListener("click", async () => { if (!CUR) return; const t = await serverExport("md"); if (t != null) download(t, `${CUR.session.id}-agent.md`, "text/markdown"); });
   $("dlJson").addEventListener("click", async () => { if (!CUR) return; const t = await serverExport("json"); if (t != null) download(t, `${CUR.session.id}-agent.json`, "application/json"); });
@@ -170,8 +181,9 @@ function onKeydown(e) {
 // Export/copy actions are meaningless without a loaded transcript — disable them outright.
 function setExportEnabled(on) {
   ["copyAgent", "summarizeAi", "dlJson", "dlMd", "dlSrt", "dlVtt"].forEach((id) => { $(id).disabled = !on; });
-  // WAV + delete only need a loaded session (work even in raw-markdown view)
+  // WAV + delete + local-summarize only need a loaded session (work even in raw-markdown view)
   const haveSession = !!CUR_STEM;
+  $("summarizeLocal").disabled = !haveSession;
   $("dlWav").disabled = !haveSession;
   $("deleteSession").disabled = !haveSession;
 }
@@ -487,6 +499,27 @@ async function summarizeForAI() {
   $("exportMenu").removeAttribute("open");
   try { await navigator.clipboard.writeText(text); toast("Copied summary prompt to clipboard"); }
   catch { download(text, `${CUR.session.id}-summarize.md`, "text/markdown"); toast("Clipboard blocked — downloaded instead"); }
+}
+// Run the summary locally via the engine's summarizer (MLX on Apple Silicon, or an
+// `ollama:<model>` backend set in settings). Shows the result inline, or a clear error
+// when no backend is available — distinct from "Summarize for AI" which copies a prompt.
+async function summarizeLocal() {
+  if (!CUR_STEM) return toast("Load a transcript first");
+  $("exportMenu").removeAttribute("open");
+  const body = $("summaryBody"), block = $("summaryBlock");
+  $("summaryTitle").textContent = "Summarizing…";
+  body.textContent = ""; block.classList.remove("hidden");
+  const r = await getJSON("/api/summarize", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stem: CUR_STEM, dir: CUR_DIR, model: $("sumModel").value.trim() }),
+  });
+  if (r && r.ok) {
+    $("summaryTitle").textContent = "Summary" + (r.template ? ` · ${r.template}` : "");
+    body.textContent = r.summary || "(empty summary)";
+  } else {
+    block.classList.add("hidden");
+    toast("Summarize failed: " + ((r && r.error) || "no local LLM backend"));
+  }
 }
 function download(text, filename, mime) {
   const blob = new Blob([text], { type: mime });

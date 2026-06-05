@@ -27,8 +27,11 @@ Review extras: per-turn timestamps and markers, **inline audio playback** of the
 (click a timestamp to seek, or download the WAV), and exports rendered
 **server-side by `export.py`** (the single formatter) with your speaker renames applied —
 **Copy for AI**, **Summarize for AI** (transcript prefixed with a ready-to-paste LLM
-summarization task), and `.md` / `.json` / `.srt` / `.vtt` downloads. Because the server
-renders them, a download byte-matches the on-disk artifact (only your renames differ).
+summarization task), **Summarize with local LLM** (runs the TUI's own summarizer in-app —
+MLX on Apple Silicon, or an `ollama:<model>` backend set in settings — and shows the result
+inline; surfaces a clear message when no backend is present), and `.md` / `.json` / `.srt` /
+`.vtt` downloads. Because the server renders the exports, a download byte-matches the on-disk
+artifact (only your renames differ).
 
 ## Scope & parity with the TUI
 

@@ -635,6 +635,32 @@ class Engine:
             return {"ok": False, "error": "not found"}
         return {"ok": True, "stem": stem, "kind": kind, "path": str(p), "text": p.read_text(encoding="utf-8")}
 
+    def summarize_session(self, stem: str, dir: str | None = None, template_id: str = "tldr",
+                          model: str = "", custom_prompt: str = "") -> dict:
+        """Summarize a saved session's transcript with the local LLM the TUI uses
+        (MLX on Apple Silicon, or an ``ollama:<model>`` backend on any platform).
+        Returns {"ok", "summary"} or a clear {"ok": False, "error"} when no backend is
+        available — never raises to the handler. (read_artifact validates the stem.)"""
+        art = self.read_artifact(stem, "transcript", dir=dir)
+        if not art.get("ok"):
+            art = self.read_artifact(stem, "agent_md", dir=dir)
+        if not art.get("ok"):
+            return {"ok": False, "error": "transcript not found"}
+        body = (art.get("text") or "").strip()
+        if not body:
+            return {"ok": False, "error": "transcript is empty"}
+        try:
+            from summarizer import SummarizerError, get_summarizer, resolve_template
+        except Exception as e:
+            return {"ok": False, "error": f"summarizer unavailable: {e}"}
+        try:
+            summary = get_summarizer(model).summarize(body, resolve_template(template_id), custom_prompt)
+            return {"ok": True, "summary": summary, "template": template_id}
+        except SummarizerError as e:
+            return {"ok": False, "error": str(e)}        # missing/unreachable backend — surfaced to the UI
+        except Exception as e:
+            return {"ok": False, "error": f"summarization failed: {e}"}
+
     def _link_audio(self, wav: str, stem: str) -> None:
         """Hardlink the source WAV to '<stem>-gui.wav' so audio_path() can find a session's
         audio by stem. The WAV is named at record time and the stem at transcribe time, so they
