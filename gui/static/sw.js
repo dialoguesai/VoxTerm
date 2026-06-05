@@ -5,7 +5,7 @@
  * stream. Bumping CACHE drops the old shell on activate.
  */
 "use strict";
-const CACHE = "voxterm-shell-v1";
+const CACHE = "voxterm-shell-v2";   // bump on shell changes so the redesign isn't served stale
 const SHELL = [
   "/",
   "/static/backend-remote.js",

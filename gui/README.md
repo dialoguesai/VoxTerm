@@ -22,7 +22,8 @@ A single linear flow:
 5. **History** — every past session is listed in the sidebar; click to reopen.
 6. **Rename** — relabel a diarized speaker; the rename flows into your copy/download.
 
-Review extras: a speaker legend, per-turn timestamps and markers, and exports rendered
+Review extras: per-turn timestamps and markers, **inline audio playback** of the recording
+(click a timestamp to seek, or download the WAV), and exports rendered
 **server-side by `export.py`** (the single formatter) with your speaker renames applied —
 **Copy for AI**, **Summarize for AI** (transcript prefixed with a ready-to-paste LLM
 summarization task), and `.md` / `.json` / `.srt` / `.vtt` downloads. Because the server
@@ -43,9 +44,13 @@ scope** for a personal record→review web app:
   (Because that identity layer is absent, the `[~]` *uncertain-attribution* marker it would
   drive does not appear in GUI-produced transcripts.)
 - **Mid-session language switching** — language is chosen up front.
+- **Live word-by-word preview** — by design, recording shows a level meter + indicator and the
+  accurate, diarized transcript appears when you **stop**. One model, no mid-stream guesses to
+  reconcile against the final result. (The streaming-monitor code path remains for the optional
+  `[streaming]` backend but is off in the default flow.)
 
-The GUI also *adds* value the TUI lacks: the rich `.md`/`.json`/`.srt`/`.vtt` export and a
-two-backend live monitor.
+The GUI also *adds* value the TUI lacks: the rich `.md`/`.json`/`.srt`/`.vtt` export, inline
+audio playback + timestamp-seek of the recording, and a clean keyboard-driven review UI.
 
 It's also a **PWA** — install it to your phone/desktop home screen for an app-like,
 offline-capable shell. Your model + language picks are remembered (localStorage), and
