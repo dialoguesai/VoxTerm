@@ -31,11 +31,13 @@ ROOT = Path(__file__).resolve().parent.parent
 PORT = 8740
 CDP_PORT = 9222
 
-# injected at document-start so it captures any CSP violation from the very first byte
+# injected at document-start so it captures CSP violations + uncaught JS errors from byte one
 CSP_COLLECTOR = (
-    "window.__csp = [];"
+    "window.__csp = []; window.__err = [];"
     "document.addEventListener('securitypolicyviolation',"
     " e => window.__csp.push(e.violatedDirective + ' ' + (e.blockedURI||'')));"
+    "window.addEventListener('error', e => window.__err.push(String((e && e.message) || e)));"
+    "window.addEventListener('unhandledrejection', e => window.__err.push('promise: ' + String(e.reason)));"
 )
 
 
@@ -159,7 +161,22 @@ def main(argv=None) -> int:
                     if not (isinstance(dur, (int, float)) and dur > 0):
                         fails.append(f"player shows no duration (preload/header issue): {dur}")
 
-                time.sleep(1.0)  # let the fade-in finish so the screenshot is crisp
+                # --- local-LLM summarize: with no backend on CI it MUST fail gracefully (no crash) ---
+                cdp.eval("document.getElementById('summarizeLocal').click()")
+                settled = cdp.poll(
+                    "(document.getElementById('summaryBody').textContent.trim().length > 0) || "
+                    "document.getElementById('summaryBlock').classList.contains('hidden')", timeout=20)
+                got_summary = cdp.eval("document.getElementById('summaryBody').textContent.trim().length > 0")
+                print(f"  summarize settled={settled} (got_summary={got_summary}; no-backend → graceful hide expected)")
+                if not settled:
+                    fails.append("summarize neither produced a summary nor failed gracefully")
+
+                # source selector: all three options present + selectable
+                srcopts = cdp.eval("Array.from(document.getElementById('source').options).map(o=>o.value).join(',')")
+                if srcopts != "mic,system,both":
+                    fails.append(f"audio-source options wrong: {srcopts!r}")
+
+                time.sleep(0.6)  # let the fade-in finish so the screenshot is crisp
                 png = cdp.call("Page.captureScreenshot")["data"]
                 Path(shot).write_bytes(base64.b64decode(png))
                 print(f"  screenshot: {shot}")
@@ -192,6 +209,12 @@ def main(argv=None) -> int:
             fails.append(f"CSP violation(s) fired: {csp}")
         else:
             print("  CSP: no violations")
+        # no uncaught JS errors / unhandled rejections anywhere in the flow
+        errs = cdp.eval("(window.__err||[]).join(' | ')")
+        if errs:
+            fails.append(f"uncaught JS error(s): {errs}")
+        else:
+            print("  JS: no uncaught errors")
     finally:
         browser.terminate()
         server.terminate()
