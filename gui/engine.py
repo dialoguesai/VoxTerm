@@ -13,6 +13,7 @@ sherpa-onnx backend is installed.
 """
 from __future__ import annotations
 
+import os
 import struct
 import sys
 import threading
@@ -80,6 +81,10 @@ class Engine:
         self._live_stop = threading.Event()
         self._live_thread = None
         self._stab = None  # PartialStabilizer for the in-progress (volatile) tail
+        # remember the OS default input device once, so picking "System default" reverts a prior
+        # explicit choice instead of leaving sd.default.device pinned to it
+        self._sd_captured = False
+        self._sd_default_in = None
 
     # ---- static option lists for the UI ----
     def models(self) -> list[str]:
@@ -98,12 +103,58 @@ class Engine:
     def languages(self) -> dict:
         return dict(config.AVAILABLE_LANGUAGES)
 
+    def input_devices(self) -> list[dict]:
+        """Microphones the user can pick from. Skips ALSA resampler/mixer plugins (noise) and
+        de-dupes by name; index -1 means 'system default'."""
+        out = [{"index": -1, "name": "System default"}]
+        try:
+            import sounddevice as sd
+            skip = ("lavrate", "samplerate", "speex", "upmix", "vdownmix", "dmix", "surround", "jack", "null")
+            seen = set()
+            for i, d in enumerate(sd.query_devices()):
+                if d.get("max_input_channels", 0) <= 0:
+                    continue
+                name = (d.get("name") or "").strip()
+                low = name.lower()
+                if not name or name in seen or any(s in low for s in skip):
+                    continue
+                seen.add(name)
+                out.append({"index": i, "name": name})
+        except Exception:
+            pass
+        return out
+
+    def warm(self) -> None:
+        """Preload the default model + VAD + diarizer in the background so the first recording
+        doesn't pay cold-start latency. Best-effort; called once at server startup."""
+        threading.Thread(target=lambda: transcribe.preload(language="en"),
+                          daemon=True, name="gui-warm").start()
+
     # ---- recording ----
-    def start_recording(self) -> dict:
+    def start_recording(self, device: int | None = None) -> dict:
         with self._lock:
             if self.recording:
                 return {"ok": True, "already": True}
             from audio.capture import AudioCapture
+            try:                                   # tolerate a malformed device value from the client
+                dev = int(device) if device is not None else -1
+            except (ValueError, TypeError):
+                dev = -1
+            # steer AudioCapture's input to the chosen mic; -1 = system default. We mutate the
+            # global sd.default.device, so remember the OS default once and restore it when the
+            # user re-selects "System default" (otherwise a prior explicit choice stays pinned).
+            try:
+                import sounddevice as sd
+                if not self._sd_captured:
+                    cur0 = sd.default.device
+                    self._sd_default_in = list(cur0)[0] if isinstance(cur0, (list, tuple)) else cur0
+                    self._sd_captured = True
+                cur = sd.default.device
+                pair = list(cur) if isinstance(cur, (list, tuple)) else [cur, cur]
+                pair[0] = dev if dev >= 0 else self._sd_default_in
+                sd.default.device = tuple(pair)
+            except Exception:
+                pass
             try:
                 self._cap = AudioCapture()
                 self._cap.start()
@@ -156,7 +207,7 @@ class Engine:
                     self.level = float(np.sqrt(np.mean(np.square(last))))
             time.sleep(0.066)  # ~15 Hz
 
-    def stop_recording(self, model: str | None = None, language: str = "en") -> dict:
+    def stop_recording(self, model: str | None = None, language: str = "en", diarize: bool = True) -> dict:
         model = model or transcribe.gui_default_model()
         if not self.recording:
             return {"ok": False, "error": "not recording"}
@@ -206,31 +257,36 @@ class Engine:
         self.job = {"state": "transcribing", "frac": 0.0, "msg": "starting", "wav": str(wav)}
         # load + transcribe off the request thread (matches transcribe_existing)
         threading.Thread(
-            target=lambda: self._do_transcribe(transcribe.load_wav_16k_mono(wav), model, language, str(wav)),
+            target=lambda: self._do_transcribe(transcribe.load_wav_16k_mono(wav), model, language, str(wav), diarize),
             daemon=True, name="gui-transcribe").start()
         return {"ok": True, "wav": str(wav), "seconds": round(n_bytes / (SR * 2), 1)}
 
-    def _do_transcribe(self, audio, model, language, wav):
+    def _do_transcribe(self, audio, model, language, wav, diarize: bool = True):
         try:
             def prog(frac, msg):
                 self.job = {"state": "transcribing", "frac": round(frac, 3), "msg": msg, "wav": wav}
-            r = transcribe.transcribe_audio(audio, self.out_dir, model=model, language=language, progress=prog)
+            r = transcribe.transcribe_audio(audio, self.out_dir, model=model, language=language, progress=prog, diarize=diarize)
             md_path, json_path, srt_path, vtt_path = export.export(Path(r["events_path"]), self.out_dir)
+            stem = Path(r["transcript_path"]).stem.replace("-transcript", "")
+            # The WAV is named at record time (<ts>-gui.wav) but the session stem is the
+            # transcribe time, so they differ — link the audio under the stem so the GUI can
+            # offer Download WAV / playback for this session (see audio_path).
+            self._link_audio(wav, stem)
             self.job = {"state": "done", "wav": wav, **r,
                         "agent_md": str(md_path), "agent_json": str(json_path),
                         "agent_srt": str(srt_path), "agent_vtt": str(vtt_path),
-                        "stem": Path(r["transcript_path"]).stem.replace("-transcript", "")}
+                        "stem": stem}
         except Exception as e:
             self.job = {"state": "error", "error": f"{type(e).__name__}: {e}"}
 
-    def transcribe_existing(self, wav_path: str, model: str | None = None, language: str = "en") -> dict:
+    def transcribe_existing(self, wav_path: str, model: str | None = None, language: str = "en", diarize: bool = True) -> dict:
         """Transcribe an already-recorded WAV (e.g. a prior capture) in the background."""
         model = model or transcribe.gui_default_model()
         p = Path(wav_path)
         if not p.exists():
             return {"ok": False, "error": "no such file"}
         self.job = {"state": "transcribing", "frac": 0.0, "msg": "starting", "wav": str(p)}
-        threading.Thread(target=lambda: self._do_transcribe(transcribe.load_wav_16k_mono(p), model, language, str(p)),
+        threading.Thread(target=lambda: self._do_transcribe(transcribe.load_wav_16k_mono(p), model, language, str(p), diarize),
                          daemon=True, name="gui-transcribe").start()
         return {"ok": True}
 
@@ -270,13 +326,19 @@ class Engine:
 
     def live_stop(self) -> dict:
         self._live_stop.set()
-        if self._live_thread and self._live_thread.is_alive():
-            self._live_thread.join(timeout=3)
-            if self._live_thread.is_alive():     # still decoding — don't claim it stopped
+        # Capture the thread into a local: a concurrent live_stop() (e.g. stop_recording calls
+        # this while a separate /api/live/stop request races it) may null self._live_thread
+        # between our checks. Operating on the local keeps this idempotent and crash-free —
+        # joining the same Thread from two callers is safe.
+        t = self._live_thread
+        if t and t.is_alive():
+            t.join(timeout=3)
+            if t.is_alive():                     # still decoding — don't claim it stopped
                 return {"ok": False, "error": "live monitor still stopping"}
         self._live_thread = None
-        self._live["active"] = False
-        self._live["partial"] = None
+        if isinstance(self._live, dict):
+            self._live["active"] = False
+            self._live["partial"] = None
         return {"ok": True}
 
     def _live_loop(self, wav: Path):
@@ -436,7 +498,43 @@ class Engine:
                 e = out.setdefault((d, stem), {"stem": stem, "dir": str(d), "mtime": f.stat().st_mtime})
                 e["agent_json"] = f.name
         items = sorted(out.values(), key=lambda x: x.get("mtime", 0), reverse=True)
+        for it in items:
+            it["title"] = self._session_title(it)
         return items
+
+    def _session_title(self, entry: dict) -> str:
+        """A clean, content-based title (the first spoken sentence) instead of a raw timestamp —
+        ChatGPT-style. Reads only the head of the transcript file; cached by (path, mtime)."""
+        import re
+        fname = entry.get("transcript") or entry.get("agent_md")
+        if not fname:
+            return ""
+        p = Path(entry["dir"]) / fname
+        try:
+            mt = p.stat().st_mtime
+        except OSError:
+            return ""
+        cache = self.__dict__.setdefault("_title_cache", {})
+        key = (str(p), mt)
+        if key in cache:
+            return cache[key]
+        title = ""
+        try:
+            for s in p.read_text(encoding="utf-8")[:3000].splitlines():
+                s = s.strip()
+                if not s or s[0] in "#>-" or s.lower().startswith("voxterm"):
+                    continue
+                s = re.sub(r"^\*{0,2}\[[^\]]*\]\*{0,2}\s*", "", s)              # drop [timestamp]
+                s = re.sub(r"^\*{0,2}[^*:]{1,30}\*{0,2}\s*(\(#\d+\))?\s*[:：]\s*", "", s)  # drop Speaker:
+                s = re.sub(r"[*_`]", "", s).strip()
+                if len(s) >= 2:                       # keep short first utterances ("Hello.", "Yes.")
+                    s = re.sub(r"\s+", " ", s)
+                    title = (s[:54].rstrip() + "…") if len(s) > 56 else s
+                    break
+        except Exception:
+            title = ""
+        cache[key] = title
+        return title
 
     def _resolve(self, stem: str, suffix: str, only_dir: str | None = None) -> Path | None:
         # prevent traversal: stem must be a bare name
@@ -487,6 +585,54 @@ class Engine:
         if not p:
             return {"ok": False, "error": "not found"}
         return {"ok": True, "stem": stem, "kind": kind, "path": str(p), "text": p.read_text(encoding="utf-8")}
+
+    def _link_audio(self, wav: str, stem: str) -> None:
+        """Hardlink the source WAV to '<stem>-gui.wav' so audio_path() can find a session's
+        audio by stem. The WAV is named at record time and the stem at transcribe time, so they
+        differ; a hardlink costs no extra disk, survives deletion of the original name, and is
+        never touched by delete_session (audio is intentionally kept). Best-effort."""
+        try:
+            src = Path(wav)
+            dst = self.out_dir / f"{stem}-gui.wav"
+            if not src.is_file() or dst.exists() or src.resolve() == dst.resolve():
+                return
+            try:
+                os.link(src, dst)
+            except OSError:        # cross-device, or a filesystem without hardlinks
+                import shutil
+                shutil.copy2(src, dst)
+        except Exception:
+            pass
+
+    def audio_path(self, stem: str, dir: str | None = None) -> Path | None:
+        """Locate the source WAV for a saved session, or None. New recordings are hardlinked to
+        '<stem>-gui.wav' at transcribe time (_link_audio); for legacy sessions we fall back to
+        the in-dir .wav whose mtime is closest to the transcript (recording + transcribe happen
+        within seconds), bounded to a 1-hour window so we never return an unrelated file."""
+        if "/" in stem or ".." in stem:
+            return None
+        for suffix in ("-gui.wav", ".wav"):           # direct link (the normal path)
+            p = self._resolve(stem, suffix, only_dir=dir)
+            if p and p.is_file():
+                return p
+        ref = self._resolve(stem, "-transcript.md", only_dir=dir) or self._resolve(stem, "-agent.json", only_dir=dir)
+        if not ref:
+            return None
+        try:
+            ref_mt = ref.stat().st_mtime
+        except OSError:
+            return None
+        dirs = [d for d in self._session_dirs() if (not dir or d == Path(dir))]
+        best, best_dt = None, 3600.0                  # accept only a match within 1 hour
+        for d in dirs:
+            for w in list(d.glob("*-gui.wav")) + list(d.glob("*.wav")):
+                try:
+                    dt = abs(w.stat().st_mtime - ref_mt)
+                except OSError:
+                    continue
+                if dt < best_dt:
+                    best, best_dt = w, dt
+        return best
 
     def export_session(self, stem: str, kind: str, renames: dict | None = None, dir: str | None = None) -> dict:
         """Render a saved session to md/json/srt/vtt with the client's speaker renames applied.

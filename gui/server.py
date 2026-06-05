@@ -49,11 +49,11 @@ ENGINE = Engine()
 # ring, the progress bar) and per-speaker color dots; all interpolated values are
 # escaped (app.js escapeHtml) and the data is local, so the exposure is minimal.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-       "img-src 'self' data:; connect-src 'self'; font-src 'self'; manifest-src 'self'; "
+       "img-src 'self' data:; media-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; "
        "worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 _CTYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
            ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json",
-           ".png": "image/png", ".webmanifest": "application/manifest+json"}
+           ".png": "image/png", ".webmanifest": "application/manifest+json", ".wav": "audio/wav"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -72,8 +72,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-        self._hdr(code, "application/json")
-        self.wfile.write(body)
+        self._hdr(code, "application/json", {"Content-Length": str(len(body))})
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def do_HEAD(self):
+        # Without this, BaseHTTPRequestHandler answers HEAD with a default 501 that bypasses
+        # the host/auth/security-header pipeline. Reject cleanly through _hdr instead.
+        return self._json({"error": "method not allowed"}, 405)
 
     def _read_json(self) -> dict:
         try:
@@ -146,7 +152,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_static(p[len("/static/"):])
         if p == "/api/options":
             return self._json({"models": ENGINE.models(), "languages": ENGINE.languages(),
-                               "default_model": ENGINE.default_model()})
+                               "default_model": ENGINE.default_model(),
+                               "input_devices": ENGINE.input_devices()})
         if p == "/api/status":
             return self._json(ENGINE.status())
         if p == "/api/sessions":
@@ -156,6 +163,8 @@ class Handler(BaseHTTPRequestHandler):
             kind = (q.get("kind") or ["transcript"])[0]
             d = (q.get("dir") or [None])[0]
             return self._json(ENGINE.read_artifact(stem, kind, dir=d))
+        if p == "/api/audio":
+            return self._serve_audio(q)
         if p == "/api/events":
             return self._sse()
         return self._json({"error": "not found"}, 404)
@@ -171,15 +180,18 @@ class Handler(BaseHTTPRequestHandler):
         if p.startswith("/api/") and not self._authed(q):
             return self._json({"error": "unauthorized"}, 401)
         if p == "/api/record/start":
-            return self._json(ENGINE.start_recording())
+            b = self._read_json()
+            return self._json(ENGINE.start_recording(device=b.get("device")))
         if p == "/api/record/stop":
             b = self._read_json()
             return self._json(ENGINE.stop_recording(model=b.get("model") or None,
-                                                     language=b.get("language", "en")))
+                                                     language=b.get("language", "en"),
+                                                     diarize=b.get("diarize", True) is not False))
         if p == "/api/transcribe":
             b = self._read_json()
             return self._json(ENGINE.transcribe_existing(b.get("wav", ""), model=b.get("model") or None,
-                                                         language=b.get("language", "en")))
+                                                         language=b.get("language", "en"),
+                                                         diarize=b.get("diarize", True) is not False))
         if p == "/api/live/start":
             b = self._read_json()
             return self._json(ENGINE.live_start(b.get("wav")))
@@ -205,8 +217,59 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "not found"}, 404)
         ctype = _CTYPES.get(target.suffix, "application/octet-stream")
         data = target.read_bytes()
-        self._hdr(200, ctype)
+        self._hdr(200, ctype, {"Content-Length": str(len(data))})
         self.wfile.write(data)
+
+    def _serve_audio(self, q):
+        """Stream a session's source WAV (Download/playback). Honors a Range header so the
+        <audio> element can seek (206 partial) and probe existence cheaply (bytes=0-0).
+        Inherits the same-origin + token + host guards from do_GET (it's an /api route)."""
+        stem = (q.get("stem") or [""])[0]
+        d = (q.get("dir") or [None])[0]
+        p = ENGINE.audio_path(stem, dir=d)
+        if not p or not p.is_file():
+            return self._json({"error": "not found"}, 404)
+        try:
+            size = p.stat().st_size
+        except OSError:
+            return self._json({"error": "not found"}, 404)
+        start, end, status = 0, size - 1, 200
+        rng = self.headers.get("Range")
+        if rng and rng.startswith("bytes="):
+            try:
+                s, _, e = rng[len("bytes="):].partition("-")
+                if s.strip():
+                    start = int(s)
+                    end = int(e) if e.strip() else size - 1
+                elif e.strip():                 # suffix range bytes=-N (last N bytes)
+                    start = max(0, size - int(e))
+                if start > end or start >= size:
+                    self._hdr(416, "audio/wav", {"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"})
+                    return
+                end = min(end, size - 1)
+                status = 206
+            except (ValueError, TypeError):
+                start, end, status = 0, size - 1, 200
+        length = end - start + 1
+        # Bare ASCII filename for Content-Disposition (stem is a known session id; strip anyway)
+        safe = "".join(c for c in stem if c.isalnum() or c in "-_") or "audio"
+        extra = {"Accept-Ranges": "bytes", "Content-Length": str(length),
+                 "Content-Disposition": f'inline; filename="{safe}.wav"'}
+        if status == 206:
+            extra["Content-Range"] = f"bytes {start}-{end}/{size}"
+        self._hdr(status, "audio/wav", extra)
+        try:
+            with open(p, "rb") as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _sse(self):
         global _sse_count
@@ -254,6 +317,7 @@ def main(argv=None) -> int:
             TOKEN = _loopback_token
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
+    ENGINE.warm()   # background preload of the default model so the first recording is snappy
     if lan:
         print(f"[voxterm-gui] LAN-exposed (VOXTERM_GUI_LAN=1) — token REQUIRED on every /api call.", flush=True)
         print(f"[voxterm-gui] open from your phone:  http://<this-host>:{port}/?token={TOKEN}", flush=True)

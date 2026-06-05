@@ -73,13 +73,31 @@ def gui_default_model() -> str:
     model where available (Linux / Intel mac); only fall back to config.DEFAULT_MODEL (MLX
     qwen3) on Apple Silicon, where there are no fw-* keys. This deliberately avoids defaulting
     to qwen3-0.6b on CPU-only Linux (config.DEFAULT_MODEL picks it when qwen-asr is installed,
-    but it's too slow to be usable on CPU)."""
+    but it's too slow to be usable on CPU).
+
+    Default is fw-base: measured ~1.6-1.8x faster than fw-small on CPU at near-equal accuracy on
+    clean speech, and the live monitor already prefers fw-base — so batch + live stay aligned.
+    Override with VOXTERM_DEFAULT_MODEL (e.g. fw-small for more accuracy, fw-tiny for more speed)."""
+    import os
     fw = config.FASTER_WHISPER_MODELS
-    if "fw-small" in fw:
-        return "fw-small"
+    env = os.environ.get("VOXTERM_DEFAULT_MODEL")
+    if env and (env in fw or env in config.AVAILABLE_MODELS):
+        return env
+    for pref in ("fw-base", "fw-small"):
+        if pref in fw:
+            return pref
     if fw:
         return sorted(fw)[0]
     return config.DEFAULT_MODEL
+
+
+def preload(model: str | None = None, language: str = "en") -> None:
+    """Warm the default transcriber (+ VAD + diarizer) so the first recording doesn't pay
+    model-load/JIT latency on the hot path. Best-effort; safe to call from a daemon thread."""
+    try:
+        _get_engines(model or gui_default_model(), language)
+    except Exception:
+        pass
 
 
 def load_wav_16k_mono(path: Path) -> np.ndarray:
@@ -102,10 +120,15 @@ def _fmt_hms(seconds: float) -> str:
 
 
 def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str | None = None,
-                     language: str = "en", progress=None) -> dict:
+                     language: str = "en", progress=None, diarize: bool = True) -> dict:
     """Transcribe a float32/16k mono buffer. Returns
     {events_path, transcript_path, n_turns, n_speakers}. ``progress(frac, msg)`` is
-    called 0..1 as windows complete (optional, for a live UI)."""
+    called 0..1 as windows complete (optional, for a live UI).
+
+    ``diarize=False`` skips speaker identification entirely (everything is attributed to a
+    single speaker). On CPU, diarization — not ASR — dominates wall time on multi-turn audio
+    (sliding-window embedding passes per segment), so dictation/single-speaker use is much
+    faster with it off."""
     model = model or gui_default_model()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -113,7 +136,8 @@ def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str | None = No
     if progress:
         progress(0.02, "loading engine")
     tr, vad, diar = _get_engines(model, language)  # cached across calls
-    diar.reset_session()
+    if diarize:
+        diar.reset_session()
 
     session_start = datetime.now()
     base = session_start.strftime("%Y-%m-%d_%H%M%S")
@@ -150,7 +174,9 @@ def transcribe_audio(audio: np.ndarray, out_dir: Path, *, model: str | None = No
             if not text:
                 continue
             ev.emit("vad", on=True)
-            if len(clip) >= 48000:
+            if not diarize:                       # speaker detection off: one speaker, no embedding passes
+                segments = [("Speaker 1", 1, 0, len(clip))]
+            elif len(clip) >= 48000:
                 segments = diar.identify_segments(clip.copy())
             else:
                 lbl, sid = diar.identify(clip.copy())
