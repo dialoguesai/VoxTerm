@@ -1,9 +1,10 @@
-//! VoxTerm on-device ASR plugin (Android). The phone records + transcribes locally via the
-//! sherpa-onnx Android AAR — no pairing, no relay, no network. The webview drives it through
-//! three commands: `start_transcribe` / `stop_transcribe`, and `poll_transcript`, which it calls
-//! on an interval while recording to read `{ partial, finals }` (polling — no plugin events).
-//! Desktop/iOS get an honest "unsupported" error (desktop uses the full Python engine; iOS is a
-//! future native port).
+//! VoxTerm on-device ASR plugin (Android). The phone records the mic, then transcribes the whole
+//! clip at stop with an offline sherpa-onnx Whisper recognizer — full context, punctuation, fully
+//! local (no pairing, no relay, no network). The webview drives it through three commands:
+//! `start_transcribe` / `stop_transcribe`, and `poll_transcript`, which it polls on an interval to
+//! read `{ phase, elapsed, level, durationSec, segments[], error? }` (polling — no plugin events).
+//! `phase` is idle | recording | transcribing | done | error. Desktop/iOS get an honest
+//! "unsupported" error (desktop uses the full Python engine; iOS is a future native port).
 
 use tauri::{
     plugin::{Builder, TauriPlugin},
@@ -54,8 +55,9 @@ async fn stop_transcribe<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     }
 }
 
-/// Poll the latest transcript: `{ partial: string, finals: string[] }`. The webview calls this
-/// on an interval while recording (simple + robust — avoids the plugin-event listener path).
+/// Poll the recording/transcription state: `{ phase, elapsed, level, durationSec, segments[],
+/// error? }` where `phase` is idle|recording|transcribing|done|error. The webview polls this on an
+/// interval (simple + robust — avoids the plugin-event listener path).
 #[tauri::command]
 async fn poll_transcript<R: Runtime>(app: AppHandle<R>) -> Result<serde_json::Value, String> {
     #[cfg(target_os = "android")]
@@ -68,7 +70,7 @@ async fn poll_transcript<R: Runtime>(app: AppHandle<R>) -> Result<serde_json::Va
     #[cfg(not(target_os = "android"))]
     {
         let _ = app;
-        Ok(serde_json::json!({ "partial": "", "finals": [] }))
+        Ok(serde_json::json!({ "phase": "idle", "elapsed": 0, "level": 0, "durationSec": 0, "segments": [] }))
     }
 }
 
