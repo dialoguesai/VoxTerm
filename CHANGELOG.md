@@ -14,10 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sherpa-nemotron-en` (NeMo FastConformer-RNNT 0.6B, accurate). Fully additive — nothing
   changes when the extra is absent. See `docs/streaming-asr.md` and
   `docs/streaming-asr-benchmark.md`.
-- **On-device Android transcription**: a native sherpa-onnx Tauri plugin (`tauri-plugin-voxasr`)
-  lets the mobile shell transcribe fully offline — no pairing, no relay, no network. A
-  lightweight streaming model ships by default with an opt-in `nemotron-0.6b` tier
-  (`VOXASR_MODEL`); `RECORD_AUDIO` only, no `INTERNET` permission. See
+- **Unified Android app**: the phone now runs the *same* web GUI as the desktop, with a native
+  on-device engine instead of the Python backend. A `LocalBackend` (`gui/static/backend-local.js`)
+  drives the `tauri-plugin-voxasr` plugin, which records then transcribes the clip at stop with
+  **offline Whisper** (`whisper-base.en` default, `VOXASR_MODEL=whisper-small.en` for accuracy) —
+  full punctuation, fully offline (the APK strips the `INTERNET` permission; `RECORD_AUDIO` only).
+  Python-only features (diarization, AI summarize, system audio) are hidden on-device. See
   `tauri-plugin-voxasr/README.md`.
 
 ## [0.3.0] - 2026-06-03
