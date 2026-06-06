@@ -28,7 +28,7 @@ import kotlin.concurrent.thread
 import kotlin.math.sqrt
 
 private const val SAMPLE_RATE = 16000
-private const val WHISPER_WINDOW = 30 * SAMPLE_RATE   // 480000 samples = Whisper's 30 s decode cap
+private const val WHISPER_WINDOW = 29 * SAMPLE_RATE   // just under Whisper's 30 s cap (it truncates >30 s)
 
 /**
  * On-device speech-to-text. Records the mic with AudioRecord (16 kHz mono PCM16) into a buffer and,
@@ -214,8 +214,8 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
         thread(start = true) { decodeTake(take.toByteArray(), gen) }
     }
 
-    // Transcribe a finished take: split into <=30 s windows (Whisper's cap) and join. Aborts quietly
-    // if a newer take has started (generation changed) so it never clobbers the new take's phase.
+    // Transcribe a finished take: split into <=29 s windows (under Whisper's 30 s cap) and join.
+    // Aborts quietly if a newer take started (generation changed) so it never clobbers its phase.
     private fun decodeTake(snapshot: ByteArray, gen: Int) {
         try {
             durationSec = snapshot.size / 2.0 / SAMPLE_RATE
@@ -240,8 +240,8 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    // End sample of the next decode window: <=30 s, but if more audio remains, nudge the cut to the
-    // quietest 10 ms frame in the last 2 s so a word straddling the 30 s boundary isn't sliced.
+    // End sample of the next decode window: the <=29 s cap, but if more audio remains, nudge the cut
+    // to the quietest 10 ms frame in the last 2 s so a word straddling the boundary isn't sliced.
     private fun windowEnd(pcm: ByteArray, off: Int, total: Int): Int {
         val hardEnd = off + WHISPER_WINDOW
         if (hardEnd >= total) return total
