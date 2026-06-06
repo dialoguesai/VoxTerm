@@ -65,7 +65,9 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
     private val segments = java.util.Collections.synchronizedList(mutableListOf<Pair<String, Double>>())
 
     // The Whisper model is bundled in assets/voxterm-model and staged to filesDir on first use, so
-    // transcription is fully offline (no first-run download).
+    // transcription is fully offline (no first-run download). @Synchronized so a debug self-test and
+    // a first record can't both stage concurrently and race the dir swap below.
+    @Synchronized
     private fun stagedModelDir(): File {
         val out = File(activity.filesDir, "voxterm-model")
         // Sentinel = ALL required files present so a half-copied dir self-heals instead of wedging.
@@ -80,8 +82,19 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
                 File(tmp, name).outputStream().use { input.copyTo(it) }
             }
         }
+        // Verify the staged dir is COMPLETE before swapping it in: a build shipping incomplete assets
+        // fails loudly here (surfaced as a transcribe error) instead of as a cryptic native recognizer
+        // crash later. Never promote a partial dir into `out`.
+        val missing = modelFiles.filterNot { File(tmp, it).exists() }
+        if (missing.isNotEmpty()) {
+            tmp.deleteRecursively()
+            throw java.io.IOException("bundled model is incomplete; missing: ${missing.joinToString()}")
+        }
         out.deleteRecursively()
-        tmp.renameTo(out)
+        if (!tmp.renameTo(out)) {
+            tmp.deleteRecursively()
+            throw java.io.IOException("could not stage model dir (rename ${tmp.name} -> ${out.name} failed)")
+        }
         return out
     }
 
