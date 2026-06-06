@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.INTERNET" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
+    <!-- On-device transcription is fully offline. Strip INTERNET (even if a dependency requests it)
+         so the APK genuinely cannot reach the network — only RECORD_AUDIO (merged from the voxasr
+         plugin) is granted. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />

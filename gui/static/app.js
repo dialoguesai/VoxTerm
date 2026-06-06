@@ -143,7 +143,8 @@ async function init() {
   $("navToggle").addEventListener("click", () => setNav(!document.body.classList.contains("nav-open")));
   $("copyAgent").addEventListener("click", copyForAI);
   $("summarizeAi").addEventListener("click", summarizeForAI);
-  $("summarizeLocal").addEventListener("click", summarizeLocal);
+  // Local-LLM summary needs the Python engine — skip it on-device (the button is CSS-hidden there).
+  if (!window.VOX_ONDEVICE) $("summarizeLocal").addEventListener("click", summarizeLocal);
   $("summaryClose").addEventListener("click", () => { $("summaryBlock").classList.add("hidden"); $("summaryBody").textContent = ""; });
   $("summaryCopy").addEventListener("click", async () => {
     try { await navigator.clipboard.writeText($("summaryBody").textContent); toast("Summary copied"); }
@@ -427,7 +428,9 @@ function render() {
     row.className = "turn" + (t.confidence_uncertain ? " uncertain" : "") + (same ? " same-speaker" : "");
     const c = t.peer ? PEER_COLOR : colorFor(t.speaker_id);
     const mk = (t.markers || []).map((m) => `<span class="mk">${escapeHtml(m)}</span>`).join("");
-    const spk = t.peer
+    // On-device there's one speaker (no diarization), so render the name as plain text — no rename
+    // button (it would be a no-op; a CSS-only disable leaves it keyboard/AT-reachable).
+    const spk = (t.peer || window.VOX_ONDEVICE)
       ? `<span class="t-spk"><span class="dot" style="background:${c}"></span>${escapeHtml(nameFor(t))}</span>`
       : `<span class="t-spk"><span class="dot" style="background:${c}"></span><button data-sid="${t.speaker_id}">${escapeHtml(nameFor(t))}</button></span>`;
     row.innerHTML = `<div class="t-head">${spk}<span class="t-time">${escapeHtml(t.t_offset_hms || "")}</span>${mk}</div>`
@@ -535,7 +538,8 @@ function download(text, filename, mime) {
 
 init().catch((e) => toast("Init failed: " + e));
 
-// PWA: register the offline app-shell service worker (script-src 'self' allows this).
-if ("serviceWorker" in navigator) {
+// PWA: register the offline app-shell service worker (script-src 'self' allows this). The on-device
+// bundle ships no SW (it's already fully local, and a SW under the asset origin only risks staleness).
+if ("serviceWorker" in navigator && !window.VOX_ONDEVICE) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
 }

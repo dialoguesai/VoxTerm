@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "identifier": "site.nubs.voxterm",
   "build": {
+    "beforeDevCommand": "bash scripts/stage-mobile.sh",
+    "beforeBuildCommand": "bash scripts/stage-mobile.sh",
     "frontendDist": "../mobile-pair"
   },
   "app": {
@@ -21,7 +23,7 @@
     ],
     "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:* ipc: http://ipc.localhost; font-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self' ipc: http://ipc.localhost; font-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {

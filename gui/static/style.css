@@ -309,3 +309,19 @@ body.low-signal .rec-wave { opacity: .45; }
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important;
                            transition-duration: .001ms !important; }
 }
+
+/* ---------- on-device (phone) capability gating ----------
+   The native LocalBackend sets `document.documentElement.classList.add("on-device")` before app.js
+   loads. The phone engine is record -> offline Whisper -> transcript -> export; controls backed by
+   the Python engine only are hidden so there are no dead buttons. */
+
+/* Dock: drop the language picker (Whisper *.en is English-only) and the settings gear (model,
+   audio source, mic device, diarize, summary-model all need the Python engine — nothing left). */
+html.on-device #language,
+html.on-device #settingsMenu { display: none !important; }
+
+/* Export menu: local-LLM summary needs the Python engine; "Summarize for AI (copy prompt)" is
+   pure client-side and stays. No recorded-audio store on-device, so hide the WAV download too. */
+html.on-device #summarizeLocal,
+html.on-device #dlWav,
+html.on-device #summaryBlock { display: none !important; }
