@@ -110,7 +110,7 @@ ok "device: $DEV"
 if [ "$NO_BUILD" = 0 ]; then
   say "C build ($PROFILE)"
   # Native AAR + bundled model are gitignored (large); fetch them if missing so a fresh checkout
-  # builds. Honors VOXASR_MODEL (zipformer-70m default | nemotron-0.6b).
+  # builds. Honors VOXASR_MODEL (whisper-base.en default | whisper-tiny.en | whisper-small.en).
   aar_present=0; for f in tauri-plugin-voxasr/android/libs/*.aar; do [ -f "$f" ] && aar_present=1; done
   if [ "$aar_present" = 0 ] || [ ! -f tauri-plugin-voxasr/android/src/main/assets/voxterm-model/encoder.int8.onnx ]; then
     say "fetching native deps (sherpa AAR + model)"
