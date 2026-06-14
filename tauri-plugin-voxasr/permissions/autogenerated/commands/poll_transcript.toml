@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-poll-transcript"
+description = "Enables the poll_transcript command without any pre-configured scope."
+commands.allow = ["poll_transcript"]
+
+[[permission]]
+identifier = "deny-poll-transcript"
+description = "Denies the poll_transcript command without any pre-configured scope."
+commands.deny = ["poll_transcript"]

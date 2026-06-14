@@ -382,11 +382,39 @@ class FasterWhisperTranscriber(_DeduplicatorMixin):
         self._init_dedup()
 
     def load(self):
-        """Pre-load the model (downloads on first run)."""
+        """Pre-load the model (downloads on first run) and warm the decoder.
+
+        Tuning (all env-overridable, measured on CPU): explicit compute_type (CT2 'auto'
+        already resolves to int8 on CPU, but be explicit so a CUDA box doesn't silently pick
+        float16), an explicit cpu_threads count (CT2's default oversubscribes hybrid P+E CPUs),
+        and greedy decoding (beam_size=1) on CPU — ~1.3-2x faster than beam 5 with no measurable
+        accuracy loss on the short pre-VAD'd clips this feeds. A final dummy decode JITs CT2's
+        kernels so the user's first real transcription isn't the cold path.
+        """
+        import os
         from faster_whisper import WhisperModel
-        self._model = WhisperModel(
-            self.model_size, device="auto", compute_type="auto",
-        )
+        try:
+            import torch
+            cuda = torch.cuda.is_available()
+        except Exception:
+            cuda = False
+        device = os.environ.get("VOXTERM_FW_DEVICE") or ("cuda" if cuda else "cpu")
+        compute = os.environ.get("VOXTERM_FW_COMPUTE") or ("float16" if device == "cuda" else "int8")
+        self._beam = int(os.environ.get("VOXTERM_FW_BEAM") or (5 if device == "cuda" else 1))
+        kw = {"device": device, "compute_type": compute}
+        if device == "cpu":
+            try:
+                default_threads = max(1, min(6, (os.cpu_count() or 4) // 2))
+            except Exception:
+                default_threads = 4
+            kw["cpu_threads"] = int(os.environ.get("VOXTERM_FW_CPU_THREADS") or default_threads)
+        self._model = WhisperModel(self.model_size, **kw)
+        try:                                   # warm the decoder off the user's hot path
+            warm = np.zeros(16000, dtype=np.float32)
+            for _ in self._model.transcribe(warm, language=self._language, beam_size=1, vad_filter=False)[0]:
+                pass
+        except Exception:
+            pass
         self._loaded = True
 
     def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
@@ -397,7 +425,7 @@ class FasterWhisperTranscriber(_DeduplicatorMixin):
         segments, _info = self._model.transcribe(
             audio,
             language=self._language,
-            beam_size=5,
+            beam_size=getattr(self, "_beam", 1),
             vad_filter=False,  # we already run Silero VAD upstream
         )
         text = " ".join(seg.text.strip() for seg in segments).strip()
@@ -415,6 +443,152 @@ class FasterWhisperTranscriber(_DeduplicatorMixin):
         return self._loaded
 
 
+# --- optional cross-platform streaming backend (sherpa-onnx) -----------------
+
+_SHERPA_RELEASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
+# repo dir name -> download tarball. All are transducer models (encoder/decoder/joiner/tokens).
+_SHERPA_MODEL_URLS = {
+    "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17":
+        f"{_SHERPA_RELEASE}/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2",
+    "sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25":
+        f"{_SHERPA_RELEASE}/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2",
+}
+
+
+def _model_complete(d: "Path") -> bool:
+    """True only when ALL four artifacts are present (so a half-extracted dir isn't trusted)."""
+    return (d.is_dir() and any(d.glob("*encoder*.onnx")) and any(d.glob("*decoder*.onnx"))
+            and any(d.glob("*joiner*.onnx")) and (d / "tokens.txt").exists())
+
+
+def _ensure_sherpa_model(repo: str) -> "Path":
+    """Return a local dir holding the streaming-zipformer ONNX files, downloading + extracting
+    the published tarball on first use. Cached under ~/.cache/voxterm/sherpa/<repo>/. Both the
+    download and the extraction are atomic, and a partial/corrupt cache self-heals."""
+    from pathlib import Path
+    import shutil
+    import tarfile
+    import urllib.request
+
+    cache = Path.home() / ".cache" / "voxterm" / "sherpa"
+    target = cache / repo
+    if _model_complete(target):
+        return target
+    shutil.rmtree(target, ignore_errors=True)               # wipe any partial/corrupt extraction
+    cache.mkdir(parents=True, exist_ok=True)
+    tarball = cache / (repo + ".tar.bz2")
+    if not tarball.exists():
+        tmp = tarball.with_suffix(".part")
+        try:
+            urllib.request.urlretrieve(_SHERPA_MODEL_URLS[repo], tmp)  # noqa: S310 (pinned github release URL)
+        except Exception:
+            tmp.unlink(missing_ok=True)                     # don't leak a partial download
+            raise
+        tmp.rename(tarball)
+    # extract into a sibling staging dir, then atomically move into place — an interrupted
+    # extraction never leaves a half-populated dir that _model_complete would accept.
+    staging = cache / (repo + ".extracting")
+    shutil.rmtree(staging, ignore_errors=True)
+    with tarfile.open(tarball, "r:bz2") as tf:
+        tf.extractall(staging, filter="data")               # produces staging/<repo>/ (safe filter)
+    extracted = staging / repo
+    if not _model_complete(extracted):
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RuntimeError(f"sherpa model tarball for {repo} is incomplete after extraction")
+    extracted.rename(target)
+    shutil.rmtree(staging, ignore_errors=True)
+    return target
+
+
+# Public alias so external callers (the GUI live loop) don't import the private name.
+is_hallucination = _is_hallucination
+
+
+class SherpaStreamingTranscriber(_DeduplicatorMixin):
+    """Cross-platform CPU streaming ASR via sherpa-onnx (k2-fsa). Optional backend — only
+    reachable when sherpa-onnx is installed (config gates the model key). Per-call
+    create_stream makes it a drop-in for the existing chunked callers; the live loop can also
+    drive it as a true streaming recognizer."""
+
+    def __init__(self, model: str = "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+                 language: str | None = "en"):
+        self.model_id = model
+        self._language = language
+        self._rec = None
+        self._loaded = False
+        self._init_dedup()
+
+    # Public surface for the GUI live loop, so it never reaches into underscore-privates.
+    @property
+    def recognizer(self):
+        """The underlying sherpa OnlineRecognizer (valid after load())."""
+        return self._rec
+
+    def reset_dedup(self):
+        """Clear consecutive-duplicate state — call when (re)starting a live stream."""
+        self._init_dedup()
+
+    def is_duplicate(self, text: str) -> bool:
+        """True if `text` repeats the immediately-preceding finalized text."""
+        return self._is_duplicate(text)
+
+    def load(self):
+        try:
+            import sherpa_onnx
+        except ImportError as e:
+            raise RuntimeError(
+                'sherpa-onnx is not installed; install it to use streaming models '
+                '(pip install "voxterm[streaming]" or pip install sherpa-onnx).'
+            ) from e
+        d = _ensure_sherpa_model(self.model_id)
+
+        def _pick(*globs):
+            for g in globs:
+                hits = sorted(d.glob(g))
+                if hits:
+                    return str(hits[0])
+            raise RuntimeError(
+                f"sherpa model dir {d} is missing a required file (looked for {globs!r}); "
+                "delete it and re-run to re-download."
+            )
+
+        enc = _pick("*encoder*.int8.onnx", "*encoder*.onnx")
+        dec = _pick("*decoder*.int8.onnx", "*decoder*.onnx")
+        joi = _pick("*joiner*.int8.onnx", "*joiner*.onnx")
+        tokens = _pick("tokens.txt")
+        self._rec = sherpa_onnx.OnlineRecognizer.from_transducer(
+            tokens=tokens, encoder=enc, decoder=dec, joiner=joi,
+            num_threads=2, provider="cpu", enable_endpoint_detection=True,
+            rule1_min_trailing_silence=2.4, rule2_min_trailing_silence=1.2,
+            rule3_min_utterance_length=20.0,
+        )
+        self._loaded = True
+
+    def transcribe(self, audio: np.ndarray, **kwargs) -> dict:
+        rms = float(np.sqrt(np.mean(audio ** 2)))
+        if rms < 0.005:
+            return {"text": "", "speaker": "", "speaker_id": 0}
+        s = self._rec.create_stream()
+        s.accept_waveform(16000, np.ascontiguousarray(audio, dtype=np.float32))
+        while self._rec.is_ready(s):
+            self._rec.decode_stream(s)
+        s.input_finished()
+        while self._rec.is_ready(s):
+            self._rec.decode_stream(s)
+        text = (self._rec.get_result(s) or "").strip()
+        if text and text.isupper():
+            # only sentence-case models that emit ALL-CAPS (zipformer); leave models with native
+            # casing + punctuation (nemotron) untouched.
+            text = text.capitalize()
+        if not text or _is_hallucination(text, self._language) or self._is_duplicate(text):
+            return {"text": "", "speaker": "", "speaker_id": 0}
+        return {"text": text, "speaker": "", "speaker_id": 0}
+
+    @property
+    def is_loaded(self) -> bool:        # @property to match every other backend's contract
+        return self._loaded
+
+
 def get_transcriber(model_name: str, *, language: str | None = "en"):
     """Construct the transcriber backend for a model key.
 
@@ -429,6 +603,7 @@ def get_transcriber(model_name: str, *, language: str | None = "en"):
         FASTER_WHISPER_MODELS,
         PARAKEET_MODELS,
         QWEN3_MODELS,
+        SHERPA_MODELS,
     )
 
     model_repo = AVAILABLE_MODELS[model_name]
@@ -436,6 +611,8 @@ def get_transcriber(model_name: str, *, language: str | None = "en"):
         return Qwen3Transcriber(model=model_repo, language=language)
     if model_name in PARAKEET_MODELS:
         return ParakeetTranscriber(model=model_repo, language=language)
+    if model_name in SHERPA_MODELS:
+        return SherpaStreamingTranscriber(model=model_repo, language=language)
     if model_name in FASTER_WHISPER_MODELS:
         return FasterWhisperTranscriber(model=model_repo, language=language)
     return WhisperTranscriber(model=model_repo)

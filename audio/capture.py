@@ -1,5 +1,6 @@
 import math
 import queue
+import sys
 import numpy as np
 import sounddevice as sd
 from scipy.signal import resample_poly
@@ -81,9 +82,23 @@ class AudioCapture:
         # Reset filter state to avoid a click on resume.
         if self._noise_filter is not None:
             self._noise_filter.reset()
-        dev_info = sd.query_devices(kind='input')
+        try:
+            dev_info = sd.query_devices(kind='input')
+        except Exception as e:
+            if sys.platform == "darwin":
+                raise RuntimeError(
+                    "No microphone available. On macOS, grant Microphone permission to this app "
+                    "in System Settings > Privacy & Security > Microphone, then retry."
+                ) from e
+            raise
         self._device_name = dev_info['name']
         native_channels = dev_info['max_input_channels']
+        if not native_channels and sys.platform == "darwin":
+            raise RuntimeError(
+                "The input device reports 0 channels — on macOS this usually means Microphone "
+                "permission hasn't been granted. Allow it in System Settings > Privacy & "
+                "Security > Microphone, then retry."
+            )
         self._native_rate = int(dev_info['default_samplerate'])
         # Compute resample ratio as integer up/down factors
         if self._native_rate != SAMPLE_RATE:

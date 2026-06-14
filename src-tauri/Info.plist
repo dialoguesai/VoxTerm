@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the macOS .app Info.plist by Tauri. The engine sidecar (bundled inside
+     the signed app) opens the mic via sounddevice, so the TCC prompt attributes to VoxTerm
+     only if these usage strings are present and the engine is signed with the app's team. -->
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>VoxTerm transcribes your microphone locally. Audio is processed on-device and never leaves your machine.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>VoxTerm can capture system audio locally to transcribe what you hear. Nothing leaves your machine.</string>
+</dict>
+</plist>

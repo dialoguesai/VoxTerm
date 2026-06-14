@@ -39,7 +39,7 @@ git clone https://github.com/dmarzzz/VoxTerm.git
 cd voxterm
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .                 # add ".[streaming]" for the optional streaming ASR backend
 python3 -m tui.app
 ```
 
@@ -128,6 +128,28 @@ Press `P` to manage your speaker profile library (rename, delete, wipe all data)
 - Whisper variants (tiny through large-v3) available via `M` menu
 
 Models download automatically on first use.
+
+### Optional: streaming ASR (cross-platform, CPU)
+
+`pip install "voxterm[streaming]"` adds a sherpa-onnx **streaming** backend (word-by-word,
+CPU-only, Linux/macOS-arm64/Windows) with two model keys — `sherpa-stream-en` (zipformer-20M,
+ultra-fast) and `sherpa-nemotron-en` (NeMo 0.6B, accurate). Fully opt-in: absent, nothing
+changes. See [docs/streaming-asr.md](docs/streaming-asr.md) and the
+[benchmark](docs/streaming-asr-benchmark.md).
+
+### Android: the same GUI, on-device (offline)
+
+The Android app runs the **same web GUI as the desktop**, but with a native on-device engine instead
+of the Python backend: it records, then transcribes **entirely on the phone** with offline Whisper
+via [`tauri-plugin-voxasr/`](tauri-plugin-voxasr/) — no pairing, no relay, **no network** (the APK
+strips the `INTERNET` permission). Build it with `scripts/android-dev.sh --debug` (it fetches the
+bundled model on first run). `whisper-base.en` ships by default; set
+`VOXASR_MODEL=whisper-small.en` for higher accuracy. See
+[tauri-plugin-voxasr/README.md](tauri-plugin-voxasr/README.md).
+
+**Just want to install it?** CI publishes a prebuilt, signed APK on every mobile change —
+grab `VoxTerm-android-arm64.apk` from the [`android-latest` release](https://github.com/dmarzzz/VoxTerm/releases/tag/android-latest)
+and follow the [Android install guide](docs/android-install.md) (sideload, or auto-update via Obtainium).
 
 ## Project Structure
 

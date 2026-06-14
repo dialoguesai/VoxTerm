@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>VoxTerm — Connect</title>
+<style>
+  :root {
+    --bg:#0e0f13; --bg-elev:#16181f; --line:#262a33; --text:#e6e8ee;
+    --muted:#9aa1ad; --faint:#7d8694; --accent:#5eead4; --accent-dim:#2dd4bf; --ink:#06231e;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; }
+  body {
+    background:var(--bg); color:var(--text);
+    font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    display:flex; flex-direction:column; justify-content:center;
+    padding:max(28px,env(safe-area-inset-top)) max(22px,env(safe-area-inset-left))
+            max(28px,env(safe-area-inset-bottom)) max(22px,env(safe-area-inset-right));
+  }
+  .wrap { width:100%; max-width:440px; margin:0 auto; }
+  h1 { font-size:24px; margin:0 0 4px; letter-spacing:-.01em; }
+  h1 .dot { color:var(--accent); }
+  p.sub { color:var(--muted); margin:0 0 24px; font-size:14px; }
+  label { display:block; font-size:12px; text-transform:uppercase; letter-spacing:.07em;
+          color:var(--faint); margin:16px 0 6px; }
+  input {
+    width:100%; min-height:48px; padding:12px 14px; font-size:16px;
+    background:var(--bg-elev); color:var(--text); border:1px solid var(--line);
+    border-radius:12px; outline:none;
+  }
+  input:focus { border-color:var(--accent); }
+  .row { display:flex; gap:12px; }
+  .row .host { flex:3; } .row .port { flex:1; }
+  button {
+    width:100%; min-height:52px; margin-top:26px; font-size:16px; font-weight:600;
+    background:var(--accent); color:var(--ink); border:none; border-radius:14px; cursor:pointer;
+  }
+  button:active { filter:brightness(.94); }
+  .hint { color:var(--faint); font-size:12.5px; margin-top:18px; }
+  .hint code { color:var(--accent-dim); background:var(--bg-elev); padding:1px 6px; border-radius:6px; }
+  .err { color:#ff7a85; font-size:13.5px; min-height:18px; margin-top:12px; }
+  .ghost { width:auto; min-height:0; margin-top:14px; padding:8px 12px; font-size:13px;
+           font-weight:500; background:transparent; color:var(--faint); border:1px solid var(--line);
+           border-radius:10px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>VoxTerm<span class="dot">.</span></h1>
+
+    <!-- Shown first. On the desktop app the Rust shell navigates to the running engine within
+         ~1s, so the user sees this and then the GUI — never the phone form below. -->
+    <div id="loader" class="sub">Connecting to VoxTerm…</div>
+
+    <!-- On Android the app redirects to the on-device GUI (app/); this pairing form is for a plain
+         phone browser connecting to a VoxTerm desktop on the LAN (revealed by showPairForm). -->
+    <div id="pairform" hidden>
+    <p class="sub">Connect to VoxTerm running on your computer — over your own Wi‑Fi, no cloud.</p>
+
+    <label for="host">Desktop address</label>
+    <div class="row">
+      <input class="host" id="host" inputmode="url" autocomplete="off"
+             autocapitalize="off" spellcheck="false" placeholder="192.168.1.50" />
+      <input class="port" id="port" inputmode="numeric" autocomplete="off" placeholder="8740" value="8740" />
+    </div>
+
+    <label for="token">Access token</label>
+    <input id="token" autocomplete="off" autocapitalize="off" spellcheck="false"
+           placeholder="paste the token VoxTerm printed" />
+
+    <button id="go">Connect</button>
+    <div class="err" id="err"></div>
+
+    <p class="hint">On your computer run <code>VOXTERM_GUI_LAN=1 python -m gui.server</code> —
+      it prints the address and token to paste here. The phone never records; your desktop does.</p>
+    <button id="forget" class="ghost" type="button">Forget this pairing</button>
+    </div>
+  </div>
+
+<script src="pair.js"></script>
+</body>
+</html>

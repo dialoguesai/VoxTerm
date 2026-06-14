@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#1c1c1e">
+  <title>VoxTerm</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+</head>
+<body>
+  <button id="navToggle" class="nav-toggle" aria-label="Toggle sessions" aria-controls="sidebar" aria-expanded="false">☰</button>
+
+  <aside id="sidebar" class="sidebar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <h1>VoxTerm</h1>
+    </div>
+    <input id="sessionSearch" class="session-search" type="search" placeholder="Search sessions…" aria-label="Search sessions" autocomplete="off">
+    <ul id="sessions" class="sessions"></ul>
+  </aside>
+
+  <main class="main">
+    <div class="doc">
+      <!-- TRANSCRIPT HEADER (shown when a session is loaded) -->
+      <header id="tvHead" class="tv-head hidden">
+        <div class="tv-titlewrap">
+          <h2 id="tvTitle">Transcript</h2>
+          <p id="tvMeta" class="tv-meta"></p>
+          <audio id="player" class="player hidden" controls preload="metadata"></audio>
+        </div>
+        <div class="tv-actions">
+          <button id="copyAgent" class="btn">Copy for AI</button>
+          <details class="menu" id="exportMenu">
+            <summary class="btn ghost" id="moreBtn" aria-label="More actions" aria-haspopup="menu">•••</summary>
+            <div class="menu-pop" role="menu">
+              <button class="menu-item" id="summarizeAi" role="menuitem">Summarize for AI (copy prompt)</button>
+              <button class="menu-item" id="summarizeLocal" role="menuitem">Summarize with local LLM</button>
+              <button class="menu-item" id="dlWav" role="menuitem">Download audio (WAV)</button>
+              <div class="menu-sep"></div>
+              <button class="menu-item" id="dlMd" role="menuitem">Download Markdown</button>
+              <button class="menu-item" id="dlJson" role="menuitem">Download JSON</button>
+              <button class="menu-item" id="dlSrt" role="menuitem">Download SRT</button>
+              <button class="menu-item" id="dlVtt" role="menuitem">Download VTT</button>
+              <div class="menu-sep"></div>
+              <button class="menu-item danger" id="deleteSession" role="menuitem">Delete session</button>
+            </div>
+          </details>
+        </div>
+      </header>
+
+      <!-- LOCAL-LLM SUMMARY (shown after "Summarize with local LLM") -->
+      <section id="summaryBlock" class="summary-block hidden" aria-live="polite">
+        <div class="summary-head">
+          <span id="summaryTitle">Summary</span>
+          <span class="summary-actions">
+            <button id="summaryCopy" class="btn ghost" type="button">Copy</button>
+            <button id="summaryClose" class="btn ghost" type="button" aria-label="Dismiss summary">✕</button>
+          </span>
+        </div>
+        <div id="summaryBody" class="summary-body"></div>
+      </section>
+
+      <!-- PROGRESS (while transcribing) -->
+      <section id="progress" class="progress hidden" aria-live="polite">
+        <div class="progress-row">
+          <span id="progressMsg">Transcribing…</span>
+          <span id="progressPct">0%</span>
+        </div>
+        <div class="bar"><div id="barFill" class="bar-fill"></div></div>
+      </section>
+
+      <!-- TRANSCRIPT / LIVE turns render here -->
+      <div id="turns" class="turns"></div>
+      <div id="liveLines" class="live-lines hidden" aria-live="polite"></div>
+
+      <!-- EMPTY STATE -->
+      <section id="empty" class="empty">
+        <p><strong>Press record to start.</strong><br>Your transcript appears when you stop — everything stays on your machine.</p>
+      </section>
+    </div>
+
+    <!-- DOCK (record + controls) -->
+    <div class="dock">
+      <button id="recBtn" class="rec-btn" aria-label="Start recording"><span class="rec-icon"></span></button>
+      <div class="dock-status">
+        <span id="timer" class="timer">00:00</span>
+        <span id="recState" class="rec-state">Ready</span>
+      </div>
+      <canvas id="recWave" class="rec-wave" width="600" height="56" aria-hidden="true"></canvas>
+      <select id="language" class="select" aria-label="Language"></select>
+      <details class="menu" id="settingsMenu">
+        <summary class="gear-btn" id="gearBtn" aria-label="Settings" aria-haspopup="menu">⚙</summary>
+        <div class="menu-pop settings-pop" role="menu">
+          <label class="field"><span>Model</span><select id="model" class="select"></select></label>
+          <label class="field"><span>Audio source</span><select id="source" class="select">
+            <option value="mic">Microphone</option>
+            <option value="system">System audio (what's playing)</option>
+            <option value="both">Mic + system</option>
+          </select></label>
+          <label class="field"><span>Microphone</span><select id="micDevice" class="select"></select></label>
+          <label class="toggle"><input type="checkbox" id="diarize" checked><span>Detect speakers</span></label>
+          <label class="field"><span>Summary model</span><input id="sumModel" class="select" type="text" placeholder="ollama:qwen3:0.6b — blank = MLX (Mac)"></label>
+          <div class="menu-sep"></div>
+          <p class="kbd-hint">Off is faster for single-voice dictation. Space or R to record · Esc to close</p>
+        </div>
+      </details>
+    </div>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  </main>
+
+  <script src="/static/backend-remote.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

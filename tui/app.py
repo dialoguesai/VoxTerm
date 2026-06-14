@@ -70,6 +70,7 @@ from tui.widgets.transcript_explorer import TranscriptExplorerScreen
 from tui.widgets.recording_pulse import RecordingPulse
 from audio.capture import AudioCapture
 from audio.buffer import AudioBuffer
+from audio.mix import mix_chunks
 from audio.system_capture import SystemCapture
 from audio.transcriber import configure_mlx_memory, get_transcriber
 from audio.diarization.proxy import DiarizationProxy
@@ -80,7 +81,7 @@ from config import (
     SILENCE_THRESHOLD, SILENCE_TRIGGER_SECONDS,
     MAX_BUFFER_SECONDS, MIN_BUFFER_SECONDS,
     DEFAULT_MODEL, AVAILABLE_MODELS, QWEN3_MODELS, FASTER_WHISPER_MODELS,
-    PARAKEET_MODELS,
+    PARAKEET_MODELS, SHERPA_MODELS,
     DEFAULT_LANGUAGE, AVAILABLE_LANGUAGES,
     LIVE_DIR,
     EVENTS_ENABLED,
@@ -546,6 +547,7 @@ class VoxTerm(App):
         Binding("p", "toggle_party", "Party"),
         Binding("v", "toggle_merged_view", "View"),
         Binding("h", "show_hivemind", "Hivemind"),
+        Binding("g", "launch_gui", "GUI"),
         Binding("?", "show_help", "Help", key_display="?"),
         Binding("q", "quit", "Quit"),
         Binding("escape", "quit", show=False),
@@ -942,17 +944,6 @@ class VoxTerm(App):
             self._write_crash_dump("_process_audio", e)
             raise
 
-    @staticmethod
-    def _mix_chunks(mic: list[np.ndarray], sys: list[np.ndarray]) -> list[np.ndarray]:
-        """Time-aligned addition of mic and system audio chunks."""
-        mixed = []
-        n = min(len(mic), len(sys))
-        for i in range(n):
-            mixed.append(np.clip(mic[i] + sys[i], -1.0, 1.0))
-        mixed.extend(mic[n:])
-        mixed.extend(sys[n:])
-        return mixed
-
     def _process_audio_inner(self):
         waveform = self.query_one(WaveformWidget)
 
@@ -998,14 +989,14 @@ class VoxTerm(App):
                     )
                     self._party.audio_send_seq += 1
 
-        chunks = self._mix_chunks(mic_chunks, sys_chunks) if sys_chunks else mic_chunks
+        chunks = mix_chunks(mic_chunks, sys_chunks) if sys_chunks else mic_chunks
         if not chunks:
             waveform.tick()
             return
 
         # Build a mic-only stream aligned 1:1 with `chunks` so the
         # diarizer sees only the local microphone, never the system-audio
-        # mix. _mix_chunks emits: n=min(len(mic),len(sys)) summed entries,
+        # mix. mix_chunks emits: n=min(len(mic),len(sys)) summed entries,
         # then any mic tail, then any sys tail. Pad sys-only tail with
         # silence so indices line up with `chunks`.
         if sys_chunks:
@@ -1382,31 +1373,11 @@ class VoxTerm(App):
     ) -> list[tuple[str, str, int]]:
         """Split transcribed text across segments proportionally by duration.
 
-        Returns list of (text_portion, speaker_label, speaker_id).
+        Returns list of (text_portion, speaker_label, speaker_id). The implementation lives
+        in the TUI-free ``tui.text_split`` so headless consumers can reuse it.
         """
-        words = text.split()
-        if not words or not segments:
-            return [(text, "", 0)]
-
-        total_samples = sum(end - start for _, _, start, end in segments)
-        if total_samples <= 0:
-            return [(text, segments[0][0], segments[0][1])]
-
-        result = []
-        word_idx = 0
-        for i, (label, sid, start, end) in enumerate(segments):
-            duration_frac = (end - start) / total_samples
-            if i == len(segments) - 1:
-                # Last segment gets remaining words
-                n_words = len(words) - word_idx
-            else:
-                n_words = max(1, round(len(words) * duration_frac))
-
-            seg_words = words[word_idx:word_idx + n_words]
-            word_idx += n_words
-            result.append((" ".join(seg_words), label, sid))
-
-        return result
+        from tui.text_split import split_text_by_segments
+        return split_text_by_segments(text, segments)
 
     def _on_transcription(
         self, text: str, speaker: str = "", speaker_id: int = 0,
@@ -2364,6 +2335,30 @@ class VoxTerm(App):
         except Exception:
             log.warning("could not open hivemind screen", exc_info=True)
 
+    def action_launch_gui(self):
+        """Open the VoxTerm web GUI in the browser, out-of-process.
+
+        A separate process is mandatory here: the GUI runs its own blocking server and its
+        own audio + transcription engine, and sharing this process would fight the TUI's
+        event loop, audio-device ownership, and the MLX/torch C++ runtime (see CLAUDE.md).
+        """
+        tp = self.query_one(TranscriptPanel)
+        prior = getattr(self, "_gui_proc", None)
+        if prior is not None and prior.poll() is None:   # still running — don't spawn a 2nd engine
+            tp.system_message("web GUI already running — check your browser", Log.SYS)
+            return
+        try:
+            self._gui_proc = subprocess.Popen(
+                [sys.executable, "-m", "gui.launcher"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            tp.system_message("launching the web GUI in your browser…", Log.SYS)
+        except Exception:
+            log.warning("could not launch GUI", exc_info=True)
+            tp.system_message("could not launch the GUI", Log.SYS)
+
     def action_toggle_debug(self):
         self._debug = not self._debug
         state = "ON" if self._debug else "OFF"
@@ -2525,6 +2520,11 @@ class VoxTerm(App):
 def main():
     import argparse
 
+    # `voxterm gui` → open the web GUI (keeps the flat CLI; no argparse subparsers needed).
+    if sys.argv[1:2] == ["gui"]:
+        from gui.launcher import main as gui_main
+        raise SystemExit(gui_main())
+
     # Resolve defaults: saved preferences > config defaults
     _cfg = _get_config()
     _saved_model = _cfg.get("last_model")
@@ -2630,6 +2630,8 @@ def main():
                 backend = " [parakeet-mlx]"
             elif name in FASTER_WHISPER_MODELS:
                 backend = " [faster-whisper]"
+            elif name in SHERPA_MODELS:
+                backend = " [sherpa-onnx]"
             else:
                 backend = " [whisper]"
             print(f"  {name:20s} → {repo}{backend}{tag}")

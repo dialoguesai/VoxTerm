@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- VoxTerm iOS thin client: connects over plain HTTP to a user-entered LAN desktop.
+       Minimal ATS relaxation for local networks only (NOT NSAllowsArbitraryLoads). -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+  <!-- iOS 14+ shows a Local Network permission prompt on first LAN access; this is its text. -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>VoxTerm connects to the VoxTerm app running on your computer over your local Wi-Fi. No microphone access is requested on this device — your computer does the recording.</string>
+</dict>
+</plist>
