@@ -20,6 +20,7 @@ from config import (
     CHUNK_SIZE,
     MAX_BUFFER_SECONDS,
     MIN_BUFFER_SECONDS,
+    PTT_MAX_RECORD_SECONDS,
     SAMPLE_RATE,
     SILENCE_THRESHOLD,
     SILENCE_TRIGGER_SECONDS,
@@ -40,6 +41,7 @@ class DictationLoop:
         on_state_change: callable | None = None,
         mlx_executor: ThreadPoolExecutor | None = None,
         hivemind_client=None,
+        push_to_talk: bool = False,
     ):
         self.capture = AudioCapture()
         self.vad = SileroVAD()
@@ -55,6 +57,11 @@ class DictationLoop:
         # Optional hivemind sink — segments mirrored on every transcribe.
         self._hivemind = hivemind_client
         self._session_start = time.time()
+
+        # Push-to-talk: record while the hotkey is held, transcribe + paste
+        # once on release (finish()).  Silence/buffer auto-triggers are
+        # suppressed so the user gets a single paste per hold.
+        self._push_to_talk = push_to_talk
 
         self._active = False
         self._transcribing = threading.Event()
@@ -96,6 +103,42 @@ class DictationLoop:
             self._thread.join(timeout=3)
             self._thread = None
         log.info("dictation stopped")
+
+    def finish(self) -> None:
+        """Stop capture and transcribe + paste whatever was recorded.
+
+        Push-to-talk release path: unlike stop() (which discards the buffer),
+        this flushes the accumulated audio for a final transcription so the
+        held utterance gets pasted.
+        """
+        if not self._active:
+            return
+        self._active = False
+        self.capture.stop()
+        if self._thread is not None:
+            self._thread.join(timeout=3)
+            self._thread = None
+        log.info("dictation finished — flushing")
+        self._flush_final()
+
+    def _flush_final(self) -> None:
+        """Transcribe + paste the remaining buffered audio (release path)."""
+        if self._transcribing.is_set():
+            # A MAX_BUFFER safety flush is already running; wait briefly so the
+            # MLX executor is free, then flush whatever is left.
+            self._transcribing.wait(timeout=30)
+        audio = self.buffer.get_and_clear()
+        if len(audio) < int(SAMPLE_RATE * MIN_BUFFER_SECONDS):
+            self._on_state_change("idle")
+            return
+        self._had_speech = False
+        self._silence_chunks = 0
+        self._transcribing.set()
+        self._transcribe_started = time.time()
+        self._on_state_change("transcribing")
+        threading.Thread(
+            target=self._transcribe_worker, args=(audio,), daemon=True,
+        ).start()
 
     def _run(self) -> None:
         """Main audio loop — mirrors app.py _process_audio_inner without TUI."""
@@ -140,7 +183,14 @@ class DictationLoop:
                 time.sleep(interval)
                 continue
 
-            if (self._had_speech
+            # In push-to-talk mode the paste happens on release (finish()), so
+            # skip the silence + 3s buffer triggers entirely — we want a single
+            # transcription per hold, not a paste every few seconds. Only flush
+            # mid-hold if the recording runs unusually long (stuck-key guard).
+            if self._push_to_talk:
+                if buffer_duration >= PTT_MAX_RECORD_SECONDS:
+                    self._trigger_transcription()
+            elif (self._had_speech
                     and silence_duration > SILENCE_TRIGGER_SECONDS
                     and buffer_duration > MIN_BUFFER_SECONDS):
                 self._trigger_transcription()
@@ -191,3 +241,7 @@ class DictationLoop:
             self._transcribing.clear()
             if self._active:
                 self._on_state_change("listening")
+            else:
+                # Stopped/finished (push-to-talk release) — back to idle once
+                # the final transcription has been pasted.
+                self._on_state_change("idle")
