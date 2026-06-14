@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>VoxTerm for Android — Download</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Download VoxTerm for Android: fully offline, on-device voice transcription. Record, stop, read your transcript — no account, no network.">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0a0e14;
+  color: #8090a0;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+}
+.container { max-width: 540px; width: 100%; }
+
+.back {
+  display: block;
+  color: #303840;
+  text-decoration: none;
+  font-size: 0.8em;
+  letter-spacing: 2px;
+  margin-bottom: 36px;
+}
+.back:hover { color: #00e5ff; }
+
+h1 {
+  color: #00ffcc;
+  font-size: 2.2em;
+  letter-spacing: 5px;
+  margin-bottom: 6px;
+}
+.sub {
+  color: #00e5ff;
+  font-size: 0.8em;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  margin-bottom: 28px;
+}
+.tagline {
+  color: #607080;
+  font-size: 0.95em;
+  margin-bottom: 44px;
+  line-height: 1.6;
+}
+.tagline em { color: #00e5ff; font-style: normal; }
+
+.dl-label {
+  color: #607080;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  margin-bottom: 10px;
+}
+.download {
+  display: block;
+  background: #0d1520;
+  border: 1px solid #1a3040;
+  border-left: 3px solid #00ffcc;
+  padding: 18px 22px;
+  color: #00ffcc;
+  font-size: 1.1em;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+  border-radius: 2px;
+  text-decoration: none;
+  transition: background .15s ease;
+}
+.download:hover { background: #111c2a; }
+.download .file { color: #607080; font-size: 0.72em; display: block; margin-top: 6px; letter-spacing: 0; }
+.dl-alt {
+  font-size: 0.78em;
+  color: #303840;
+  margin-bottom: 44px;
+}
+.dl-alt a { color: #607080; text-decoration: none; }
+.dl-alt a:hover { color: #00e5ff; }
+
+.step-label {
+  color: #00ffcc;
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  margin-bottom: 14px;
+}
+ol { list-style: none; counter-reset: s; margin-bottom: 44px; }
+ol li {
+  counter-increment: s;
+  position: relative;
+  padding: 0 0 14px 30px;
+  font-size: 0.88em;
+  line-height: 1.6;
+  color: #8090a0;
+}
+ol li::before {
+  content: counter(s);
+  position: absolute;
+  left: 0;
+  color: #00e5ff;
+  font-size: 0.85em;
+}
+ol li strong { color: #a0b0c0; font-weight: normal; }
+code {
+  background: #0d1520;
+  border: 1px solid #1a3040;
+  padding: 1px 6px;
+  border-radius: 2px;
+  color: #00e5ff;
+  font-size: 0.9em;
+}
+
+.box {
+  border: 1px solid #1a2030;
+  padding: 18px 22px;
+  margin-bottom: 44px;
+  border-radius: 2px;
+  font-size: 0.85em;
+  line-height: 1.7;
+}
+.box strong { color: #00ffcc; font-weight: normal; }
+.box a { color: #00e5ff; text-decoration: none; }
+.box a:hover { text-decoration: underline; }
+
+.features {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 40px;
+}
+.feat {
+  padding: 12px 0;
+  border-bottom: 1px solid #141a22;
+  font-size: 0.85em;
+}
+.feat:nth-child(odd) { padding-right: 16px; }
+.feat:nth-child(even) { padding-left: 16px; border-left: 1px solid #141a22; }
+.feat .k {
+  color: #00ffcc;
+  display: block;
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin-bottom: 3px;
+}
+
+.footer {
+  color: #303840;
+  font-size: 0.8em;
+  padding-top: 24px;
+  border-top: 1px solid #141a22;
+}
+.footer a { color: #00e5ff; text-decoration: none; }
+.footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<a class="back" href="/">◂ VOXTERM</a>
+
+<h1>VOXTERM</h1>
+<p class="sub">for Android</p>
+<p class="tagline">
+  Fully <em>offline</em>, <em>on-device</em> voice transcription.<br>
+  Record, stop, read your transcript — no account, no network.
+</p>
+
+<p class="dl-label">download</p>
+<a class="download" href="https://github.com/dmarzzz/VoxTerm/releases/download/android-latest/VoxTerm-android-arm64.apk">
+  ▸ Download APK
+  <span class="file">VoxTerm-android-arm64.apk · arm64 · Android 7+</span>
+</a>
+<p class="dl-alt">all builds → <a href="https://github.com/dmarzzz/VoxTerm/releases/tag/android-latest">github.com/dmarzzz/VoxTerm/releases</a></p>
+
+<p class="step-label">install (sideload)</p>
+<ol>
+  <li>On your phone, tap <strong>Download APK</strong> above to get <code>VoxTerm-android-arm64.apk</code>.</li>
+  <li>Open the file. Android warns the source isn't allowed to install apps — tap <strong>Settings → Allow from this source</strong> (per-app, e.g. your browser or Files), then go back.</li>
+  <li>Tap <strong>Install</strong>, then <strong>Open</strong>.</li>
+  <li>On your first recording, grant the <strong>microphone</strong> permission.</li>
+  <li>Tap <strong>record</strong>, talk, tap <strong>stop</strong> — your transcript appears. Works with Wi-Fi and data off.</li>
+</ol>
+
+<div class="box">
+  <strong>auto-update (optional)</strong> — install <a href="https://github.com/ImranR98/Obtainium">Obtainium</a>,
+  Add App → paste <code>https://github.com/dmarzzz/VoxTerm</code>, pick the
+  <code>android-latest</code> APK. Every new build bumps the version, so Obtainium
+  offers the update on its own.
+</div>
+
+<div class="features">
+  <div class="feat"><span class="k">offline</span>nothing leaves the phone</div>
+  <div class="feat"><span class="k">permissions</span>microphone only, no internet</div>
+  <div class="feat"><span class="k">engine</span>on-device Whisper (sherpa-onnx)</div>
+  <div class="feat"><span class="k">export</span>markdown · json · srt · vtt</div>
+  <div class="feat"><span class="k">requires</span>arm64 · Android 7.0+</div>
+  <div class="feat"><span class="k">open source</span>MIT license</div>
+</div>
+
+<div class="footer">
+  Android (arm64) · ~150–230 MB ·
+  <a href="https://github.com/dmarzzz/VoxTerm/blob/main/docs/android-install.md">install guide</a> ·
+  <a href="https://github.com/dmarzzz/VoxTerm">github</a>
+</div>
+
+</div>
+</body>
+</html>
