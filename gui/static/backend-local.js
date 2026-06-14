@@ -192,7 +192,17 @@
       let frame;
       if (phase === "recording") {
         this._sawActive = true;
-        frame = { recording: true, elapsed: st.elapsed || 0, level: st.level || 0, job: { state: "idle" } };
+        // Live preview: map the plugin's finalized windows + in-progress decode into the {active,
+        // lines, partial} shape app.js's live view already renders. Whisper re-decodes the whole
+        // window each pass, so the partial is all "volatile" (no separately-stable head) until it
+        // finalizes into a line.
+        const lines = (st.liveLines || []).filter((s) => s && s.text).map((s) => ({ t: hms(s.start), text: s.text }));
+        const lp = st.livePartial;
+        const partial = lp && lp.text ? { t: hms(lp.start), stable: "", volatile: lp.text } : null;
+        frame = {
+          recording: true, elapsed: st.elapsed || 0, level: st.level || 0, job: { state: "idle" },
+          live: { active: true, lines: lines, partial: partial },
+        };
       } else if (phase === "transcribing") {
         this._sawActive = true;
         frame = { recording: false, job: { state: "transcribing", frac: 0, msg: "Transcribing…" } };

@@ -147,6 +147,10 @@ bundled model on first run). `whisper-base.en` ships by default; set
 `VOXASR_MODEL=whisper-small.en` for higher accuracy. See
 [tauri-plugin-voxasr/README.md](tauri-plugin-voxasr/README.md).
 
+**Just want to install it?** CI publishes a prebuilt, signed APK on every mobile change —
+grab `VoxTerm-android-arm64.apk` from the [`android-latest` release](https://github.com/dmarzzz/VoxTerm/releases/tag/android-latest)
+and follow the [Android install guide](docs/android-install.md) (sideload, or auto-update via Obtainium).
+
 ## Project Structure
 
 ```

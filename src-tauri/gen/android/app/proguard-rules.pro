@@ -19,3 +19,13 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# --- sherpa-onnx (on-device ASR) ---
+# The sherpa-onnx native library reads config fields (e.g. decodingMethod, modelType, the nested
+# whisper/feat configs) from the Kotlin config objects by NAME via JNI GetFieldID. R8 has no way to
+# see those native accesses, so under minification it renames/removes the fields and the native
+# OfflineRecognizer constructor fails at runtime with
+#   "failed to get field id for decodingMethod".
+# Keep every sherpa class and all of its members so the JNI field/method lookups resolve.
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+-keepclassmembers class com.k2fsa.sherpa.onnx.** { *; }

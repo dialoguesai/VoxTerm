@@ -45,6 +45,10 @@ private const val WHISPER_WINDOW = 29 * SAMPLE_RATE   // just under Whisper's 30
 class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
     @Volatile private var running = false
     private var worker: Thread? = null
+    // Live-preview decoder: runs alongside the mic worker while recording, repeatedly decoding the
+    // growing buffer so a rough transcript streams in near-real-time. The authoritative pass still
+    // runs once at stop. Joined before that final pass so the two never decode concurrently.
+    private var liveWorker: Thread? = null
     // Bumped per capture session so a worker that outlives stop's join can't run the mic alongside,
     // or clobber the phase of, a newer session.
     @Volatile private var generation = 0
@@ -63,6 +67,17 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
     @Volatile private var errorMsg: String? = null
     // Finalized transcript segments (one per <=30 s window): text + its start offset in seconds.
     private val segments = java.util.Collections.synchronizedList(mutableListOf<Pair<String, Double>>())
+
+    // ---- live-preview state (only meaningful while phase == "recording") ----
+    // Completed <=29 s windows decoded DURING recording (rough, no boundary nudging) plus the
+    // in-progress window's latest decode. The GUI streams these live; at stop they're superseded by
+    // decodeTake()'s authoritative result, so the saved transcript is unaffected.
+    private val liveSegments = java.util.Collections.synchronizedList(mutableListOf<Pair<String, Double>>())
+    @Volatile private var livePartialText = ""
+    @Volatile private var livePartialStart = 0.0
+    // Serializes every native decode so the live loop, the final pass, and the debug self-test never
+    // call rec.decode() on overlapping threads.
+    private val decodeLock = Any()
 
     // The Whisper model is bundled in assets/voxterm-model and staged to filesDir on first use, so
     // transcription is fully offline (no first-run download). @Synchronized so a debug self-test and
@@ -124,12 +139,13 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
         recognizer ?: buildRecognizer(dir).also { recognizer = it }
 
     // Decode one <=30 s window in a single offline pass (no isReady/endpoint loop — that's online).
-    private fun decodeChunk(rec: OfflineRecognizer, samples: FloatArray): String {
+    // Serialized via decodeLock so the live loop and the final pass never decode concurrently.
+    private fun decodeChunk(rec: OfflineRecognizer, samples: FloatArray): String = synchronized(decodeLock) {
         val stream: OfflineStream = rec.createStream()
         try {
             stream.acceptWaveform(samples, SAMPLE_RATE)   // (samples, sampleRate)
             rec.decode(stream)
-            return rec.getResult(stream).text.trim()
+            rec.getResult(stream).text.trim()
         } finally {
             stream.release()                              // never leak the native stream
         }
@@ -165,9 +181,12 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
         // and released the single-owner mic before we open a new AudioRecord — its loop guard
         // (generation == its own gen) is already false, so this join returns promptly.
         worker?.join(3000)
+        liveWorker?.join(3000)            // ditto for the prior take's live decoder
         running = true
         pcmBytes = ByteArrayOutputStream(SAMPLE_RATE * 2 * 60)   // ~1 min preallocated (32 KB/s)
         synchronized(segments) { segments.clear() }
+        synchronized(liveSegments) { liveSegments.clear() }
+        livePartialText = ""; livePartialStart = 0.0
         phase = "recording"; elapsedSec = 0.0; levelRms = 0.0; durationSec = 0.0; errorMsg = null
         worker = thread(start = true) {
             var audio: AudioRecord? = null
@@ -208,6 +227,7 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
                 audio?.release()
             }
         }
+        liveWorker = thread(start = true) { runLiveLoop(gen) }
         invoke.resolve(JSObject())
     }
 
@@ -219,7 +239,8 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
     fun stopTranscribe(invoke: Invoke) {
         if (phase != "recording") { invoke.resolve(JSObject()); return }   // double-stop / never started
         running = false
-        worker?.join(2000)                  // the worker exits on running=false; beginCapture re-joins
+        worker?.join(2000)                  // the mic worker exits on running=false; beginCapture re-joins
+        liveWorker?.join(2000)              // stop the live decoder before the final pass (no concurrent decode)
         invoke.resolve(JSObject())          // resolve now; transcription runs async, reported via poll
         val gen = generation
         val take = pcmBytes                 // capture THIS take's buffer (a new take reassigns the field)
@@ -275,6 +296,55 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
         return bestIdx
     }
 
+    // Live preview: while recording, repeatedly decode the in-progress <=29 s window so a rough
+    // transcript streams in. A window is finalized into liveSegments once it fills; the current
+    // window's latest decode is livePartialText. Work per pass is bounded (<=29 s of audio) and there
+    // is no boundary nudging (that's the final pass's job). Exits when running flips false or a newer
+    // take starts. Whisper re-decodes the whole window each pass, so the partial can shift slightly
+    // until the window finalizes — that's expected for an offline (non-streaming) model.
+    private fun runLiveLoop(gen: Int) {
+        val rec = try {
+            ensureRecognizer(stagedModelDir())
+        } catch (e: Exception) {
+            // No live preview if the model can't load — the final pass at stop still runs and is the
+            // one that surfaces a real error to the user. Don't kill the recording over a preview.
+            Log.w("voxasr", "live preview disabled (recognizer init failed): ${e.message}")
+            return
+        }
+        val src = pcmBytes                  // this take's growing buffer (the mic worker writes to it)
+        var base = 0                        // first sample of the in-progress window
+        var lastEnd = -1                    // sample count at the last decode (skip if nothing new)
+        val minNew = SAMPLE_RATE / 2        // re-decode once >=0.5 s of fresh audio has accumulated
+        while (running && generation == gen) {
+            val total = src.size() / 2
+            val end = minOf(base + WHISPER_WINDOW, total)
+            val capped = (end - base) >= WHISPER_WINDOW && end != lastEnd   // window just hit 29 s
+            if (end - base < minNew || (end - lastEnd < minNew && !capped)) {
+                try { Thread.sleep(150) } catch (_: InterruptedException) {}
+                continue
+            }
+            val snap = src.toByteArray()    // ByteArrayOutputStream methods are synchronized → consistent prefix
+            val hi = minOf(end, snap.size / 2)
+            if (hi - base < minNew) { try { Thread.sleep(150) } catch (_: InterruptedException) {}; continue }
+            val samples = FloatArray(hi - base) {
+                val b = (base + it) * 2
+                val s = ((snap[b + 1].toInt() shl 8) or (snap[b].toInt() and 0xff)).toShort()
+                s / 32768.0f
+            }
+            val text = try { decodeChunk(rec, samples) } catch (e: Exception) { "" }
+            if (generation != gen) break
+            livePartialStart = base / SAMPLE_RATE.toDouble()
+            livePartialText = text
+            lastEnd = hi
+            if (hi - base >= WHISPER_WINDOW) {              // window full → finalize, open the next
+                if (text.isNotEmpty()) liveSegments.add(text to base / SAMPLE_RATE.toDouble())
+                base = hi
+                livePartialText = ""
+                lastEnd = -1
+            }
+        }
+    }
+
     // The webview polls this: { phase, elapsed, level, durationSec, error?, segments:[{text,start}] }.
     @Command
     fun pollTranscript(invoke: Invoke) {
@@ -291,6 +361,19 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
             }
         }
         res.put("segments", arr)
+        // Live preview (the GUI reads these only while phase == "recording"): finalized windows so
+        // far plus the in-progress window's latest decode.
+        val liveArr = org.json.JSONArray()
+        synchronized(liveSegments) {
+            for ((text, start) in liveSegments) {
+                liveArr.put(org.json.JSONObject().put("text", text).put("start", start))
+            }
+        }
+        res.put("liveLines", liveArr)
+        val lp = livePartialText
+        if (lp.isNotEmpty()) {
+            res.put("livePartial", org.json.JSONObject().put("text", lp).put("start", livePartialStart))
+        }
         invoke.resolve(res)
     }
 

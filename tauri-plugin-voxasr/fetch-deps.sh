@@ -43,7 +43,7 @@ CACHE="$HOME/.cache/voxterm/sherpa/$MODEL"
 # shellcheck disable=SC2206
 cached=( "$CACHE"/*encoder*.int8.onnx )
 if [ ! -e "${cached[0]}" ]; then
-  echo "fetching $MODEL…"
+  echo "fetching ${MODEL}…"   # brace the var: a bare $MODEL before the multibyte "…" trips bash's
   mkdir -p "$(dirname "$CACHE")"
   curl -fSL -o "/tmp/$MODEL.tar.bz2" \
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$MODEL.tar.bz2"
