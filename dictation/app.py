@@ -116,6 +116,17 @@ def _write_pid_file() -> None:
 
 
 def main() -> None:
+    # ---- Crash diagnostics ----
+    # Capture C-level tracebacks (e.g. MLX/Metal segfaults) to
+    # ~/Documents/voxterm/.crashes/faulthandler.log. Only installs handlers for
+    # fatal signals (SIGSEGV/SIGBUS/...), so it won't clash with the Wayland
+    # SIGUSR1/SIGUSR2 push-to-talk hotkey.
+    try:
+        from diagnostics import setup_faulthandler
+        setup_faulthandler()
+    except Exception:
+        log.warning("faulthandler setup failed", exc_info=True)
+
     # ---- Resolve saved preferences ----
     try:
         from app import _get_config
@@ -258,15 +269,17 @@ def main() -> None:
         on_state_change=indicator.set_state,
         mlx_executor=mlx_executor,
         hivemind_client=hivemind_client,
+        push_to_talk=True,
     )
 
-    def toggle_dictation():
-        if loop.is_active:
-            loop.stop()
-        else:
-            loop.start()
+    # Push-to-talk: hold the hotkey to record, release to transcribe + paste.
+    def start_dictation():
+        loop.start()
 
-    hotkey = get_hotkey(toggle_dictation)
+    def finish_dictation():
+        loop.finish()
+
+    hotkey = get_hotkey(start_dictation, finish_dictation)
 
     # Wire quit
     def quit_all():
@@ -291,12 +304,12 @@ def main() -> None:
     # ---- Start ----
     hotkey.start()
     if CURRENT_PLATFORM == Platform.MACOS:
-        log.info("hotkey: Cmd+Shift+D")
+        log.info("hotkey: hold ` (backtick)")
     else:
-        log.info("hotkey: Super+Shift+D (X11) or SIGUSR1 (Wayland)")
+        log.info("hotkey: hold ` (backtick) (X11) or SIGUSR1/SIGUSR2 (Wayland)")
 
     indicator.set_state("idle")
-    print("VOXTERM DICTATION ready. Press hotkey to start/stop dictation.")
+    print("VOXTERM DICTATION ready. Hold hotkey to dictate, release to paste.")
 
     try:
         indicator.run()  # blocks main thread

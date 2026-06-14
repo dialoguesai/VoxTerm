@@ -110,6 +110,10 @@ AVAILABLE_LANGUAGES = {
 }
 MAX_BUFFER_SECONDS = 3.0
 MIN_BUFFER_SECONDS = 1.0
+# Push-to-talk (dictation) records for the whole hold and transcribes once on
+# release. This caps a single hold so a stuck key can't grow the buffer (or the
+# one-shot transcription) without bound; longer holds flush in chunks.
+PTT_MAX_RECORD_SECONDS = 30.0
 SILENCE_THRESHOLD = 0.012
 SILENCE_TRIGGER_SECONDS = 0.3
 VAD_THRESHOLD = 0.5           # Silero VAD speech probability threshold
