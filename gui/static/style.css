@@ -395,3 +395,15 @@ html.on-device #summaryBlock { display: none !important; }
 .ir-t { color: var(--faint); font-variant-numeric: tabular-nums; font-size: var(--fs-caption); min-width: 44px; }
 .ir-badge { font-size: var(--fs-caption); font-weight: 600; color: var(--muted); min-width: 84px; }
 .ir-desc { color: var(--text); font-size: var(--fs-sub); }
+
+/* opt-in on-device-LLM control atop the Graph / Interruptions panels */
+.conv-toolbar { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin: 0 0 var(--sp-3); }
+.conv-toolbar .conv-cap { margin: 0; flex: 1 1 auto; min-width: 0; }
+.llm-sharpen { appearance: none; cursor: pointer; flex: none; height: 30px; padding: 0 14px;
+  border: var(--hairline); border-radius: var(--r-pill); background: var(--bg-elev-2); color: var(--text);
+  font: 600 var(--fs-sub)/1 var(--font); transition: background var(--dur) var(--ease); }
+.llm-sharpen:hover { background: var(--fill-hover); }
+.llm-sharpen:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.llm-badge { flex: none; font-size: var(--fs-caption); font-weight: 600; color: var(--muted);
+  padding: 4px 10px; border-radius: var(--r-pill); background: var(--fill); }
+.llm-state { flex: none; font-size: var(--fs-sub); color: var(--faint); font-style: italic; }

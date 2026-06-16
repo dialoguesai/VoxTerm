@@ -114,13 +114,17 @@ class VoxasrPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun buildRecognizer(dir: File): OfflineRecognizer {
+        // lang.txt (staged by fetch-deps.sh): "en" forces English (the *.en models), "auto"/empty/
+        // absent means auto-detect (the multilingual models). sherpa-onnx treats language="" as detect.
+        val langTag = File(dir, "lang.txt").let { if (it.exists()) it.readText().trim() else "en" }
+        val whisperLang = if (langTag == "auto" || langTag.isEmpty()) "" else langTag
         val config = OfflineRecognizerConfig(
             featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
             modelConfig = OfflineModelConfig(
                 whisper = OfflineWhisperModelConfig(
                     encoder = File(dir, "encoder.int8.onnx").absolutePath,
                     decoder = File(dir, "decoder.int8.onnx").absolutePath,
-                    language = "en",          // bundled model is English-only (whisper *.en)
+                    language = whisperLang,   // "" = auto-detect (multilingual); "en" for the *.en models
                     task = "transcribe",      // not "translate"
                 ),
                 tokens = File(dir, "tokens.txt").absolutePath,

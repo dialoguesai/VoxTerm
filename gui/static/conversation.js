@@ -22,6 +22,12 @@
   let lastSig = "";                  // content signature — skip redundant re-analysis
   let analyzeTok = 0;                // guards against an out-of-order async analyze resolving late
   let debounce = null;
+  // On-device LLM is OPT-IN: the heuristic renders instantly + live (cheap, safe), and the LLM runs
+  // only when the user taps "Sharpen" — running the ~0.5 GB model automatically on every render can
+  // OOM-crash the app (a native crash JS can't catch). llmCache holds the last LLM result for the doc
+  // it was computed for, so it survives mode switches but is dropped when the transcript changes.
+  let llmCache = null;               // { sig, data:{graph,interruptions} }
+  let llmBusy = false;
 
   function docSig(doc) {
     const turns = (doc && doc.turns) || [];
@@ -61,16 +67,53 @@
   async function runAnalyze() {
     const doc = api.getDoc && api.getDoc();
     if (!doc || !(doc.turns || []).length) { renderEmpty(); return; }
-    const sig = docSig(doc) + "|" + mode + "|" + (window.VOX_ANALYZE && window.VOX_ANALYZE.kind);
+    const ds = docSig(doc);
+    const useLlm = !!(llmCache && llmCache.sig === ds);   // user already sharpened THIS transcript
+    const sig = ds + "|" + mode + "|" + (useLlm ? "llm" : "heur") + "|" + (llmBusy ? "busy" : "");
     if (sig === lastSig) return;     // nothing changed since last draw
     lastSig = sig;
     const tok = ++analyzeTok;
-    let res;
-    try { res = await window.VOX_ANALYZE.analyze(doc); }
-    catch (e) { if (tok === analyzeTok) renderError(String((e && e.message) || e)); return; }
+    let res, source;
+    if (useLlm) { res = llmCache.data; source = "llm"; }
+    else {
+      try { res = await window.VOX_ANALYZE.analyze(doc); source = "heuristic"; }
+      catch (e) { if (tok === analyzeTok) renderError(String((e && e.message) || e)); return; }
+    }
     if (tok !== analyzeTok) return;  // a newer analyze superseded this one
-    if (mode === "graph") renderGraph(res.graph);
-    else if (mode === "interruptions") renderInterruptions(res.interruptions);
+    if (mode === "graph") renderGraph(res.graph, source);
+    else if (mode === "interruptions") renderInterruptions(res.interruptions, source);
+  }
+
+  // Toolbar shown atop the Graph / Interruptions panels: the caption, plus the opt-in on-device-LLM
+  // control (Sharpen button → busy state → "on-device LLM" badge). Tapping Sharpen runs the model
+  // exactly once for the current transcript; failures fall back to the already-shown heuristic.
+  function toolbar(caption, source) {
+    let right = "";
+    if (llmBusy) right = `<span class="llm-state" aria-live="polite">Analyzing on-device… first run loads the model (~10s)</span>`;
+    else if (source === "llm") right = `<span class="llm-badge" title="${esc((window.VOX_LLM && window.VOX_LLM.model) || "on-device LLM")}">⚡ on-device LLM</span>`;
+    else if (window.VOX_LLM && window.VOX_LLM.available) right = `<button class="llm-sharpen" type="button">✨ Sharpen with on-device AI</button>`;
+    return `<div class="conv-toolbar"><span class="conv-cap">${caption}</span>${right}</div>`;
+  }
+  function wireToolbar(root) {
+    const b = root.querySelector(".llm-sharpen");
+    if (b) b.addEventListener("click", sharpen);
+  }
+
+  async function sharpen() {
+    const doc = api.getDoc && api.getDoc();
+    if (!doc || llmBusy || !(window.VOX_LLM && window.VOX_LLM.available)) return;
+    const ds = docSig(doc);
+    llmBusy = true; lastSig = ""; runAnalyze();          // repaint with the busy state
+    try {
+      const data = await window.VOX_LLM.analyze(doc);
+      llmCache = { sig: ds, data };
+    } catch (e) {
+      llmCache = null;
+      const p = mode === "graph" ? $("graphPanel") : $("interruptPanel");
+      if (p) { const s = document.createElement("div"); s.className = "conv-hint"; s.textContent = "On-device AI couldn't analyze this one — showing the quick estimate."; p.prepend(s); }
+    } finally {
+      llmBusy = false; lastSig = ""; runAnalyze();        // repaint with the LLM result (or heuristic)
+    }
   }
 
   function renderEmpty() {
@@ -95,7 +138,7 @@
     return `M${x1} ${y1} C${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2} ${y2}`;
   }
 
-  function renderGraph(graph) {
+  function renderGraph(graph, source) {
     const g = GEO;
     const nodes = graph.nodes || [], edges = graph.edges || [];
     const byId = {}; nodes.forEach((n) => (byId[n.id] = n));
@@ -135,12 +178,11 @@
     // utterance cards
     utter.forEach((n) => { boxes += utterCard(g.utterX, y[n.id] - g.nodeH / 2, g.utterW, g.nodeH, n); });
 
-    $("graphPanel").innerHTML =
-      `<div class="conv-cap">Topic map · ${topics.length} topic${topics.length === 1 ? "" : "s"} · ${utter.length} turn${utter.length === 1 ? "" : "s"}`
-      + (window.VOX_ANALYZE.kind === "heuristic" ? ` · <span class="conv-hint">heuristic — argument structure sharpens with the on-device LLM</span>` : "") + `</div>`
+    const cap = `Topic map · ${topics.length} topic${topics.length === 1 ? "" : "s"} · ${utter.length} turn${utter.length === 1 ? "" : "s"}`;
+    $("graphPanel").innerHTML = toolbar(cap, source)
       + `<div class="graph-scroll"><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" class="graph-svg" role="img" aria-label="Conversation topic map">`
       + paths + boxes + `</svg></div>`;
-    wireSeeks($("graphPanel"));
+    wireSeeks($("graphPanel")); wireToolbar($("graphPanel"));
   }
   function avg(a) { return a.reduce((s, v) => s + v, 0) / a.length; }
 
@@ -161,18 +203,21 @@
   function clip(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
   // ---- INTERRUPTIONS: counters + timeline + list -----------------------------
-  function renderInterruptions(ir) {
+  function renderInterruptions(ir, source) {
     const dur = ir.durationSec || 0;
-    const cap = ir.multiSpeaker
-      ? `Detected from speaker changes + timing across multiple speakers.`
-      : `Single-speaker transcription — overlaps are inferred from cut-off cues only. With the on-device LLM (or a diarized recording) this gets much sharper.`;
+    const cap = source === "llm"
+      ? `Speakers + interruptions inferred on-device by the LLM.`
+      : ir.multiSpeaker
+        ? `Detected from speaker changes + timing across multiple speakers.`
+        : `Single-speaker transcription — the quick estimate can't tell speakers apart, so it finds few interruptions. Tap “Sharpen” to let the on-device LLM infer speakers.`;
 
     const stat = (n, label, cls) => `<div class="stat ${cls}"><div class="stat-n">${n}</div><div class="stat-l">${label}</div></div>`;
-    const head = `<div class="ir-stats">`
+    const head = toolbar(esc(cap), source)
+      + `<div class="ir-stats">`
       + stat(ir.total, "Interruptions", "total")
       + stat(ir.overlapCount, "Overlaps", "overlap")
       + stat(ir.rapidCount, "Rapid switches", "rapid")
-      + `</div><p class="conv-cap">${esc(cap)}</p>`;
+      + `</div>`;
 
     // merge + sort events for the timeline and list
     const events = ir.overlap.map((e) => ({ ...e, cat: "overlap" }))
@@ -180,7 +225,7 @@
       .sort((a, b) => (a.t_offset || 0) - (b.t_offset || 0));
 
     $("interruptPanel").innerHTML = head + timeline(events, dur) + perMinute(events, dur) + eventList(events);
-    wireSeeks($("interruptPanel"));
+    wireSeeks($("interruptPanel")); wireToolbar($("interruptPanel"));
   }
 
   function timeline(events, dur) {
@@ -248,6 +293,8 @@
   const api = {
     getDoc: null,
     setTop, setMode, refresh,
+    // called by llm-backend.js once a model is detected, so the Sharpen button appears on an open mode
+    llmReady() { lastSig = ""; applyMode(); },
     init() {
       document.querySelectorAll("#modeTabs .mode-tab").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
     },

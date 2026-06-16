@@ -26,10 +26,10 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: "Bundled Whisper model"
+        description: "Bundled Whisper model (plain = multilingual, .en = English-only)"
         type: choice
-        default: whisper-base.en
-        options: [whisper-tiny.en, whisper-base.en, whisper-small.en]
+        default: whisper-base
+        options: [whisper-base, whisper-tiny, whisper-small, whisper-base.en, whisper-tiny.en, whisper-small.en]
       llm_model_url:
         description: "On-device LLM .task URL (blank = bundled Qwen2.5-0.5B default)"
         type: string
@@ -43,7 +43,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  VOXASR_MODEL: ${{ github.event.inputs.model || 'whisper-base.en' }}
+  VOXASR_MODEL: ${{ github.event.inputs.model || 'whisper-base' }}
   VOXLLM_MODEL_URL: ${{ github.event.inputs.llm_model_url || '' }}
   NDK_VERSION: "28.2.13676358"
 

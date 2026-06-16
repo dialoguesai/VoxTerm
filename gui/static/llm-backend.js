@@ -17,7 +17,6 @@
 (function () {
   if (!window.VOX_ONDEVICE || !(window.__TAURI__ && window.__TAURI__.core)) return;
   const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
-  const heuristic = window.VOX_ANALYZE;          // keep the offline fallback analyzer
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const CFG = {
@@ -161,34 +160,32 @@
     };
   }
 
-  // ---- install the LLM analyzer (with heuristic fallback) --------------------
-  function installLlmAnalyzer(model) {
-    window.VOX_ANALYZE = {
-      kind: "llm",
+  // ---- expose the on-device LLM analyzer (OPT-IN — the UI runs it on demand) --
+  // Crucially this does NOT replace window.VOX_ANALYZE (the heuristic). The heuristic keeps rendering
+  // the modes instantly and live; the UI calls window.VOX_LLM.analyze() only when the user taps
+  // "Sharpen". Running the ~0.5 GB model on every render could OOM-crash the app — a native crash JS
+  // cannot catch — so it must be an explicit, one-shot action, never automatic.
+  function installLlm(model) {
+    window.VOX_LLM = {
+      available: true,
       model: model || "on-device LLM",
+      // Throws on failure; the caller keeps the heuristic that's already on screen and shows a notice.
       async analyze(doc) {
         const turns = (doc && doc.turns) || [];
-        if (!turns.length) return heuristic.analyze(doc);
-        try {
-          const parsed = parseModelJson(await generate(buildPrompt(turns)));
-          if (!parsed || !Array.isArray(parsed.topics)) throw new Error("model returned no usable JSON");
-          return toContract(parsed, doc);
-        } catch (e) {
-          if (String(e && e.message) === "superseded") throw e;   // a newer analyze is already running
-          const h = await heuristic.analyze(doc);                 // graceful fallback — modes still work
-          h._llmFallback = String((e && e.message) || e);
-          return h;
-        }
+        if (!turns.length) throw new Error("no transcript");
+        const parsed = parseModelJson(await generate(buildPrompt(turns)));
+        if (!parsed || !Array.isArray(parsed.topics)) throw new Error("model returned no usable JSON");
+        return toContract(parsed, doc);
       },
     };
-    if (window.VOX_CONV && window.VOX_CONV.refresh) window.VOX_CONV.refresh();   // redraw if a mode is open
+    if (window.VOX_CONV && window.VOX_CONV.llmReady) window.VOX_CONV.llmReady();   // surface the Sharpen button
   }
 
-  // Probe the plugin once at startup; swap in the LLM analyzer only if a model actually loaded.
+  // Probe the plugin once at startup; advertise the LLM only if a model actually bundled.
   (async () => {
     try {
       const s = await invoke("plugin:voxllm|llm_available");
-      if (s && s.available) installLlmAnalyzer(s.model);
-    } catch (_) { /* plugin absent / model missing → stay on the heuristic */ }
+      if (s && s.available) installLlm(s.model);
+    } catch (_) { /* plugin absent / model missing → heuristic only */ }
   })();
 })();

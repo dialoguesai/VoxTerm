@@ -23,11 +23,16 @@ LIBS="$HERE/android/libs"
 ASSETS="$HERE/android/src/main/assets/voxterm-model"
 mkdir -p "$LIBS" "$ASSETS"
 
+# `.en` tiers are English-only; the plain tiers are MULTILINGUAL (auto-detect language). LANG_TAG is
+# staged into assets/lang.txt and read by the Kotlin recognizer ("en" = force English, "auto" = detect).
 case "${VOXASR_MODEL:-whisper-base.en}" in
-  whisper-tiny.en)  MODEL="sherpa-onnx-whisper-tiny.en" ;;
-  whisper-base.en)  MODEL="sherpa-onnx-whisper-base.en" ;;
-  whisper-small.en) MODEL="sherpa-onnx-whisper-small.en" ;;
-  *) echo "unknown VOXASR_MODEL='${VOXASR_MODEL}' (want whisper-tiny.en | whisper-base.en | whisper-small.en)" >&2; exit 1 ;;
+  whisper-tiny.en)  MODEL="sherpa-onnx-whisper-tiny.en";  LANG_TAG="en" ;;
+  whisper-base.en)  MODEL="sherpa-onnx-whisper-base.en";  LANG_TAG="en" ;;
+  whisper-small.en) MODEL="sherpa-onnx-whisper-small.en"; LANG_TAG="en" ;;
+  whisper-tiny)     MODEL="sherpa-onnx-whisper-tiny";     LANG_TAG="auto" ;;
+  whisper-base)     MODEL="sherpa-onnx-whisper-base";     LANG_TAG="auto" ;;
+  whisper-small)    MODEL="sherpa-onnx-whisper-small";    LANG_TAG="auto" ;;
+  *) echo "unknown VOXASR_MODEL='${VOXASR_MODEL}' (want whisper-{tiny,base,small} or .en variants)" >&2; exit 1 ;;
 esac
 
 AAR="$LIBS/sherpa-onnx-$VER.aar"
@@ -65,4 +70,5 @@ stage "*encoder*.int8.onnx" encoder.int8.onnx
 stage "*decoder*.int8.onnx" decoder.int8.onnx
 stage "*tokens*"            tokens.txt
 cp "$CACHE/test_wavs/0.wav" "$ASSETS/test.wav"   # debug self-test clip (offline decode check)
-echo "voxasr native deps ready ($(du -sh "$ASSETS" | cut -f1) model [$MODEL], $(du -h "$AAR" | cut -f1) aar)."
+printf '%s' "$LANG_TAG" > "$ASSETS/lang.txt"      # read by the recognizer: "en" (English) or "auto" (detect)
+echo "voxasr native deps ready ($(du -sh "$ASSETS" | cut -f1) model [$MODEL, lang=$LANG_TAG], $(du -h "$AAR" | cut -f1) aar)."

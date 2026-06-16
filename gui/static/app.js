@@ -318,11 +318,17 @@ async function toggleRecord() {
   if (!recording) {
     _levelPeak = 0; _recStartedAt = Date.now();
     const device = parseInt($("micDevice").value, 10);
+    // On a fresh install the FIRST start blocks on the OS mic-permission prompt. Disable the button
+    // and show a clear "Starting…" so a second tap can't desync the start/stop state machine while the
+    // dialog is up (the bug behind "pressed three times before it recorded"). Re-enabled below.
+    $("recBtn").disabled = true;
+    $("recState").textContent = "Starting…";
     const r = await getJSON("/api/record/start", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ device: Number.isNaN(device) ? -1 : device, source: $("source").value }),
     });
-    if (!r.ok) { toast(r.error ? "Mic error: " + r.error : "Could not start (mic busy?)"); return; }
+    $("recBtn").disabled = false;   // recording is live now (or it failed) — applyStatus owns it from here
+    if (!r.ok) { $("recState").textContent = "Ready"; toast(r.error ? "Mic error: " + r.error : "Could not start (mic busy?)"); return; }
     showRecording();   // no live preview — keep recording light; the accurate transcript appears on stop
   } else {
     $("recBtn").disabled = true;     // debounce; applyStatus is the single owner of re-enabling
