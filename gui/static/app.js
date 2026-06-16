@@ -54,15 +54,39 @@ function nameFor(turn) {
 // which content block is showing: 'empty' | 'live' | 'transcript'
 function setView(state) {
   $("empty").classList.toggle("hidden", state !== "empty");
-  $("liveLines").classList.toggle("hidden", state !== "live");
   const t = state === "transcript";
   $("tvHead").classList.toggle("hidden", !t);
-  $("turns").classList.toggle("hidden", !t);
   if (!t) {
     const p = $("player"); if (p && !p.paused) p.pause();   // never leave audio playing off-screen
     $("summaryBlock").classList.add("hidden"); $("summaryBody").textContent = "";   // summary is per-session
   }
+  // VOX_CONV owns the panel-level switch (turns / liveLines / graph / interruptions) for the current
+  // mode within this top-level state, and re-analyzes when a derived mode is showing.
+  if (window.VOX_CONV) window.VOX_CONV.setTop(state);
 }
+
+// The doc the Graph/Interruptions modes analyze: the loaded transcript, or — while recording — a
+// single-speaker doc synthesized from the live tail so the derived views update in real time.
+let LIVE_DOC = null;
+function hmsToSec(s) {
+  const p = String(s || "").split(":").map(Number);
+  if (!p.length || p.some(Number.isNaN)) return undefined;
+  return p.reduce((acc, n) => acc * 60 + n, 0);
+}
+function buildLiveDoc(lines) {
+  return {
+    session: { id: "(live)" },
+    speakers: [{ id: 0, label: "Speaker 1" }],
+    turns: (lines || []).map((l) => ({ speaker: "Speaker 1", speaker_id: 0, text: l.text, t_offset: hmsToSec(l.t), t_offset_hms: l.t })),
+  };
+}
+function activeDoc() { return (CUR && Array.isArray(CUR.turns)) ? CUR : LIVE_DOC; }
+// Click-to-play seam used by graph nodes / interruption events.
+window.VOX_SEEK = function (sec) {
+  const p = $("player"); if (!p || !p.src || typeof sec !== "number") return;
+  const go = () => { try { p.currentTime = sec; } catch { /* not seekable yet */ } p.play().catch(() => {}); };
+  if (p.readyState >= 1) go(); else { p.addEventListener("loadedmetadata", go, { once: true }); p.load(); }
+};
 
 // Live amplitude strip: push each SSE level reading and draw a scrolling bar history.
 const WAVE_MAX = 80;
@@ -166,6 +190,8 @@ async function init() {
   });
   document.addEventListener("keydown", onKeydown);
 
+  if (window.VOX_CONV) { window.VOX_CONV.getDoc = activeDoc; window.VOX_CONV.init(); }
+
   await loadSessions();
   openEvents();
 }
@@ -248,8 +274,9 @@ function applyStatus(s) {
   const live = s.live || { active: false, lines: [], partial: null };
   document.body.classList.toggle("live-on", !!live.active);
   if (live.active && s.recording) {   // only while actually recording — never re-flip a loaded transcript
-    setView("live");
     const lines = live.lines || [];
+    LIVE_DOC = buildLiveDoc(lines);    // feed the Graph/Interruptions modes the live tail
+    setView("live");                   // triggers a re-analyze if a derived mode is open (reads LIVE_DOC)
     const el = $("liveLines");
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     let html = lines.map((l) => `<div class="ll"><span class="ll-t">${escapeHtml(l.t)}</span>${escapeHtml(l.text)}</div>`).join("");
@@ -449,9 +476,10 @@ function render() {
     }
     wrap.appendChild(row);
   });
+  if (window.VOX_CONV) window.VOX_CONV.refresh();   // refresh Graph/Interruptions if one is open
 }
 function showRawMarkdown(stem, dir, text) {
-  CUR = null; CUR_STEM = stem; CUR_DIR = dir || null;
+  CUR = null; LIVE_DOC = null; CUR_STEM = stem; CUR_DIR = dir || null;   // no structured turns → derived modes show empty, not a stale live graph
   setExportEnabled(false);   // no structured JSON behind a raw-markdown view (WAV/delete stay on)
   setView("transcript");
   $("tvTitle").textContent = prettyStem(stem); $("tvMeta").textContent = "(no AI export — raw transcript)";
