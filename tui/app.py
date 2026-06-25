@@ -318,8 +318,8 @@ class QuitConfirmScreen(ModalScreen):
     """
 
     BINDINGS = [
+        Binding("q,Q", "confirm_quit", "Quit", priority=True),
         Binding("escape", "cancel", "Cancel"),
-        Binding("q", "confirm_quit", "Quit"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -451,11 +451,12 @@ class HelpScreen(ModalScreen):
                 "[bold #00e5ff]M[/]       [#c0c0c0]Switch transcription model[/]\n"
                 "[bold #00e5ff]L[/]       [#c0c0c0]Switch language[/]\n"
                 "[bold #00e5ff]P[/]       [#c0c0c0]Party mode — join / leave[/]\n"
+                "[bold #c77dff]D[/]       [#c0c0c0]Dialogues — attach account / Topos push[/]\n"
                 "[bold #00e5ff]O[/]       [#c0c0c0]Speaker profiles[/]\n"
                 "[bold #00e5ff]V[/]       [#c0c0c0]Toggle merged transcript view[/]\n"
                 "[bold #00e5ff]C[/]       [#c0c0c0]Clear transcript[/]\n"
-                "[bold #00e5ff]D[/]       [#c0c0c0]Toggle debug mode[/]\n"
-                "[bold #00e5ff]Q[/]       [#c0c0c0]Quit[/]",
+                "[bold #00e5ff]d[/]       [#c0c0c0]Toggle debug mode[/]\n"
+                "[bold #00e5ff]Q[/]       [#c0c0c0]Quit (Esc also works)[/]",
                 id="help-content",
                 markup=True,
             )
@@ -547,15 +548,17 @@ class VoxTerm(App):
         Binding("p", "toggle_party", "Party"),
         Binding("v", "toggle_merged_view", "View"),
         Binding("h", "show_hivemind", "Hivemind"),
+        Binding("D", "show_dialogues", "Dialogues", key_display="D"),
         Binding("g", "launch_gui", "GUI"),
         Binding("?", "show_help", "Help", key_display="?"),
-        Binding("q", "quit", "Quit"),
-        Binding("escape", "quit", show=False),
+        Binding("q,Q", "quit", "Quit", priority=True, key_display="Q"),
+        Binding("ctrl+q", "quit", "Quit", priority=True, show=False),
+        Binding("escape", "quit", "Quit", show=False, key_display="Esc"),
     ]
 
     def __init__(self, transcriber=None, model_name="qwen3-0.6b", language="en",
                  p2p_name=None, p2p_create=False, p2p_join_code=None,
-                 hivemind_client=None):
+                 hivemind_client=None, topos_client=None):
         super().__init__()
         self._p2p_auto_name = p2p_name
         self._p2p_auto_create = p2p_create
@@ -563,6 +566,8 @@ class VoxTerm(App):
         # Hivemind transcript sink (None when --hivemind=off or no sink).
         # All segments produced in _on_transcription are mirrored to it.
         self._hivemind = hivemind_client
+        # Dialogues / Topos app_ingest sink (optional; user attaches via D menu).
+        self._topos = topos_client
         self.audio_capture = AudioCapture()
         self.system_capture = SystemCapture()
         self.audio_buffer = AudioBuffer()
@@ -575,6 +580,7 @@ class VoxTerm(App):
         self._language = language
         self._is_qwen3 = model_name in QWEN3_MODELS
         self._recording = False
+        self._pending_external_sink_flush = False
         self._had_speech = False
         self._silence_chunks = 0
         # Held while a transcription worker is active. Acts as the busy gate:
@@ -653,6 +659,7 @@ class VoxTerm(App):
             "[bold #00e5ff]\\[U][/][#607080] Summarize  [/]"
             "[bold #00e5ff]\\[E][/][#607080] Transcripts  [/]"
             "[bold #00e5ff]\\[P][/][#607080] Party  [/]"
+            "[bold #c77dff]\\[D][/][#c77dff] Dialogues  [/]"
             "[bold #00e5ff]\\[V][/][#607080] Merged  [/]"
             "[bold #00e5ff]\\[?][/][#607080] Help[/]",
             id="footer-bar",
@@ -781,6 +788,98 @@ class VoxTerm(App):
         if _P2P_AVAILABLE:
             self._party_start_passive_discovery_worker()
 
+        # First-run Dialogues attach prompt (until attached or user declines).
+        self.call_after_refresh(self._maybe_prompt_dialogues_attach)
+
+        if self._topos is not None:
+            self._topos._on_batch_posted = self._announce_topos_written
+
+    def _announce_topos_written(self, batch_index: int, record_count: int, record_id: str) -> None:
+        msg = f"transcript written to TOPOS ({record_count} segments, {record_id})"
+        try:
+            self.query_one(TranscriptPanel).system_message(msg, Log.SYS)
+        except Exception:
+            pass
+
+    def _maybe_flush_external_sinks(self, *, announce_topos_skip: bool = False) -> None:
+        """Flush external sinks once transcription is idle after recording stop."""
+        if self._transcribe_busy.locked() or not self._pending_external_sink_flush:
+            return
+        self._pending_external_sink_flush = False
+        self._flush_external_sinks(announce_topos_skip=announce_topos_skip)
+
+    def _flush_external_sinks(self, *, announce_topos_skip: bool = False) -> None:
+        """Flush hivemind / Topos buffers (e.g. on recording stop or EOF)."""
+        if self._hivemind is not None:
+            try:
+                self._hivemind.flush_now()
+            except Exception:
+                log.warning("hivemind flush failed", exc_info=True)
+        if self._topos is not None:
+            try:
+                posted = self._topos.flush_now()
+                if announce_topos_skip and not posted and self._topos.is_attached and not self._topos.push_enabled:
+                    self.query_one(TranscriptPanel).system_message(
+                        "Topos attached but push is off — open Dialogues (D) and enable "
+                        "Send transcripts to Topos",
+                        Log.SYS,
+                    )
+            except Exception:
+                log.warning("dialogues flush failed", exc_info=True)
+
+    def _dialogues_attach_callbacks(self):
+        def _on_attach_complete() -> None:
+            try:
+                _get_config().update({"dialogues_attach_declined": False})
+            except Exception:
+                pass
+            if self._topos is not None:
+                if bool(_get_config().get("dialogues_push_enabled")):
+                    try:
+                        self._topos.enable_push()
+                    except Exception:
+                        log.warning("dialogues restore push after attach failed", exc_info=True)
+                if self._topos._on_state_change is not None:
+                    try:
+                        self._topos._on_state_change(self._topos.push_enabled)
+                    except Exception:
+                        pass
+
+        def _on_detach() -> None:
+            if self._topos is not None and self._topos._on_state_change is not None:
+                try:
+                    self._topos._on_state_change(False)
+                except Exception:
+                    pass
+
+        def _on_decline() -> None:
+            try:
+                _get_config().update({"dialogues_attach_declined": True})
+            except Exception:
+                log.warning("dialogues attach decline persist failed", exc_info=True)
+
+        return _on_attach_complete, _on_detach, _on_decline
+
+    def _maybe_prompt_dialogues_attach(self) -> None:
+        try:
+            from dialogues.credentials import load_credentials
+            from tui.widgets.dialogues_screen import DialoguesAttachPromptScreen
+
+            if load_credentials() is not None:
+                return
+            if bool(_get_config().get("dialogues_attach_declined")):
+                return
+            on_attach, _on_detach, on_decline = self._dialogues_attach_callbacks()
+            self.push_screen(
+                DialoguesAttachPromptScreen(
+                    self._topos,
+                    on_attach_complete=on_attach,
+                    on_decline=on_decline,
+                )
+            )
+        except Exception:
+            log.warning("dialogues attach prompt failed", exc_info=True)
+
     def on_screen_resume(self) -> None:
         # Carry the recording border into modals that push on top of the main screen.
         if self._recording_pulse is not None:
@@ -810,7 +909,7 @@ class VoxTerm(App):
             f"    [#00ffcc]{model_text}[/] [dim]\\[M][/]"
             f"    [#ffaa66]{lang_text}[/] [dim]\\[L][/]"
             f"{p2p_text}"
-            f"    [dim]\\[E] Transcripts  \\[S] Save  \\[Q] Quit[/]"
+            f"    [#c77dff]\\[D] Dialogues[/]  [dim]\\[E] Transcripts  \\[S] Save  \\[Q/Esc] Quit[/]"
         )
 
         # Auto-save indicator in transcript border title
@@ -1321,6 +1420,11 @@ class VoxTerm(App):
                 self._transcribe_busy.release()
             except RuntimeError as e:
                 self._write_crash_dump(f"transcribe_busy_release_failed: {e}", e)
+            else:
+                if not self._recording:
+                    self.call_from_thread(
+                        lambda: self._maybe_flush_external_sinks(announce_topos_skip=True),
+                    )
 
     def _try_cross_session_match(self, speaker_id: int) -> None:
         """Attempt cross-session matching for a speaker (worker thread)."""
@@ -1403,6 +1507,13 @@ class VoxTerm(App):
             except Exception:
                 # Never let hivemind errors break the dictation loop.
                 log.warning("hivemind add_segment failed", exc_info=True)
+
+        if self._topos is not None:
+            try:
+                t = (datetime.now() - self._session_start).total_seconds()
+                self._topos.add_segment(t, speaker or "?", text)
+            except Exception:
+                log.warning("dialogues add_segment failed", exc_info=True)
 
         self._update_telemetry()
 
@@ -1667,8 +1778,11 @@ class VoxTerm(App):
                 self._recording_pulse.stop()
             transcript.system_message("recording stopped", Log.REC, {"stopped": "#ff4466"})
             self._events.emit("recording", on=False)
+            self._pending_external_sink_flush = True
+            self._maybe_flush_external_sinks(announce_topos_skip=True)
         else:
             self._recording = True
+            self._pending_external_sink_flush = False
             self._mic_error_shown = False
             self._sck_death_shown = False
             self.vad.reset()
@@ -2335,6 +2449,22 @@ class VoxTerm(App):
         except Exception:
             log.warning("could not open hivemind screen", exc_info=True)
 
+    def action_show_dialogues(self):
+        """Open Dialogues attach / Topos push menu."""
+        try:
+            from tui.widgets.dialogues_screen import DialoguesScreen
+
+            on_attach, on_detach, _on_decline = self._dialogues_attach_callbacks()
+            self.push_screen(
+                DialoguesScreen(
+                    self._topos,
+                    on_attach_complete=on_attach,
+                    on_detach=on_detach,
+                )
+            )
+        except Exception:
+            log.warning("could not open dialogues screen", exc_info=True)
+
     def action_launch_gui(self):
         """Open the VoxTerm web GUI in the browser, out-of-process.
 
@@ -2478,6 +2608,12 @@ class VoxTerm(App):
                 self._hivemind.close()
             except Exception:
                 log.warning("hivemind close failed", exc_info=True)
+
+        if self._topos is not None:
+            try:
+                self._topos.close()
+            except Exception:
+                log.warning("dialogues close failed", exc_info=True)
 
         try:
             self._events.emit("session", phase="end")
@@ -2741,6 +2877,44 @@ def main():
         log.warning("hivemind configure failed", exc_info=True)
         hivemind_client = None
 
+    topos_client = None
+    try:
+        from dialogues.credentials import load_credentials
+        from dialogues.topos_client import configure as _topos_configure
+        from network.hivemind import get_or_create_device_id
+
+        _dialogues_creds = load_credentials()
+        _persisted_topos_push = bool(_cfg.get("dialogues_push_enabled") or False)
+
+        def _on_topos_state_change(enabled: bool) -> None:
+            try:
+                creds = load_credentials()
+                _cfg.update({
+                    "dialogues_attached": creds is not None,
+                    "dialogues_push_enabled": bool(enabled),
+                    "dialogues_resource_id": creds.resource_id if creds else "",
+                    "dialogues_control_plane_url": creds.control_plane_url if creds else "",
+                })
+            except Exception:
+                log.warning("dialogues state persist failed", exc_info=True)
+
+        topos_client = _topos_configure(
+            device_id=get_or_create_device_id(),
+            location=args.hivemind_location or "",
+            push_enabled=_persisted_topos_push and _dialogues_creds is not None,
+            on_state_change=_on_topos_state_change,
+        )
+        if _dialogues_creds is not None:
+            push_state = (
+                "[pushing]" if topos_client.push_enabled else "[not pushing — press 'D' to enable]"
+            )
+            print(f"VOXTERM // dialogues: attached to Topos {push_state}")
+        else:
+            print("VOXTERM // dialogues: not attached — press 'D' to connect Topos")
+    except Exception:
+        log.warning("dialogues configure failed", exc_info=True)
+        topos_client = None
+
     # Persist hivemind preferences (mode + URL) so a CLI flag becomes
     # the new default without forcing the user to retype it.
     try:
@@ -2763,6 +2937,7 @@ def main():
         p2p_create=args.session_create,
         p2p_join_code=args.session_join,
         hivemind_client=hivemind_client,
+        topos_client=topos_client,
     )
 
     # Global exception hooks — dump diagnostics on any uncaught crash

@@ -1,0 +1,41 @@
+name: Dialogues tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "dialogues/**"
+      - "tui/**"
+      - "tests/test_dialogues_*.py"
+      - "tests/test_topos_client.py"
+      - "config.py"
+      - "pyproject.toml"
+  pull_request:
+    paths:
+      - "dialogues/**"
+      - "tui/**"
+      - "tests/test_dialogues_*.py"
+      - "tests/test_topos_client.py"
+      - "config.py"
+      - "pyproject.toml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+      - name: Run Dialogues unit tests
+        run: |
+          pytest tests/test_dialogues_pkce.py \
+                 tests/test_dialogues_oauth_loopback.py \
+                 tests/test_dialogues_http.py \
+                 tests/test_dialogues_screen.py \
+                 tests/test_topos_client.py -q

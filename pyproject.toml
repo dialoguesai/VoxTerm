@@ -58,13 +58,14 @@ voxterm-dictate = "dictation.app:main"
 voxterm-gui = "gui.launcher:main"
 
 [project.urls]
-Homepage = "https://github.com/dmarzzz/VoxTerm"
-Repository = "https://github.com/dmarzzz/VoxTerm"
+Homepage = "https://github.com/dialoguesai/VoxTerm"
+Repository = "https://github.com/dialoguesai/VoxTerm"
 
 [tool.hatch.build.targets.wheel]
 packages = [
     "audio",
     "config.py",
+    "dialogues",
     "diagnostics.py",
     "dictation",
     "gui",

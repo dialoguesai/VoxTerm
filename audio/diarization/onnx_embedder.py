@@ -43,9 +43,14 @@ ONNX_MODELS = {
     ),
 }
 
-# Pre-exported ONNX models hosted on GitHub releases (zero-setup download)
+# Pre-exported ONNX models hosted on GitHub releases (zero-setup download).
+# Override VOXTERM_ONNX_GITHUB_REPO when forking (e.g. dialoguesai/VoxTerm).
+_ONNX_GITHUB_REPO = os.environ.get("VOXTERM_ONNX_GITHUB_REPO", "dmarzzz/VoxTerm")
+
 ONNX_DOWNLOAD_URLS = {
-    "eres2net_large": "https://github.com/dmarzzz/VoxTerm/releases/download/onnx-models/eres2net_large.onnx",
+    "eres2net_large": (
+        f"https://github.com/{_ONNX_GITHUB_REPO}/releases/download/onnx-models/eres2net_large.onnx"
+    ),
 }
 
 DEFAULT_MODEL = "eres2net_large"

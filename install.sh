@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # ── VoxTerm Installer ──────────────────────────────────────
 #
-#   Install:    curl -fsSL https://github.com/dmarzzz/VoxTerm/releases/latest/download/install.sh | bash
+#   Install:    curl -fsSL https://github.com/dialoguesai/VoxTerm/releases/latest/download/install.sh | bash
 #   Specific:   curl ... | bash -s -- --version v0.1.0
 #   Uninstall:  curl ... | bash -s -- --uninstall
 #
@@ -15,9 +15,9 @@ set -Eeuo pipefail
 
 # Installer revision — bump on every edit to this file. Printed at startup
 # so users can confirm they aren't running a stale copy.
-INSTALLER_REV="2026-05-16.3"
+INSTALLER_REV="2026-06-25.1"
 
-REPO="dmarzzz/VoxTerm"
+REPO="${VOXTERM_GITHUB_REPO:-dialoguesai/VoxTerm}"
 REPO_URL="https://github.com/$REPO"
 INSTALL_URL="https://github.com/$REPO/releases/latest/download/install.sh"
 INSTALL_DIR="$HOME/.local/share/voxterm"

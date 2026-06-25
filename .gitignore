@@ -15,6 +15,7 @@ __pycache__/
 *.md
 !README.md
 !CHANGELOG.md
+!FORK.md
 !docs/**/*.md
 
 # Session state and crash dumps
@@ -26,6 +27,14 @@ __pycache__/
 # Test artifacts
 .pytest_cache/
 htmlcov/
+.coverage
+dist/
+build/
+*.egg-info/
+
+# Dialogues credentials (never commit — normally lives outside repo in DATA_DIR)
+dialogues_credentials.json
+**/dialogues_credentials.json
 !CLAUDE.md
 
 # Large test fixtures (downloaded on demand, see benchmark script)

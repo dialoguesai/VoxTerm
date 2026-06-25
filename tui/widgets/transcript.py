@@ -48,6 +48,8 @@ def _append_rainbow(text: Text, s: str) -> None:
 class TranscriptPanel(RichLog):
     """Cyberpunk-styled live transcription panel with speaker attribution."""
 
+    can_focus = False
+
     DEFAULT_CSS = """
     TranscriptPanel {
         border: heavy #00e5ff;

@@ -331,6 +331,13 @@ _DEFAULTS: dict[str, Any] = {
     # pubkey so a different sink showing up on the LAN doesn't get
     # transcripts by accident. Empty string = "any discovered sink".
     "hivemind_pinned_sink_pubkey": "",
+    # Dialogues / Topos Grant Access (app_ingest transcript push).
+    "dialogues_attached": False,
+    "dialogues_push_enabled": False,
+    "dialogues_resource_id": "",
+    "dialogues_control_plane_url": "",
+    # User chose "Not now" on the first-run attach prompt; skip until they press D.
+    "dialogues_attach_declined": False,
 }
 
 # Expected types per key (for validation)
@@ -349,6 +356,11 @@ _TYPES: dict[str, type] = {
     "hivemind_location": str,
     "hivemind_push_enabled": bool,
     "hivemind_pinned_sink_pubkey": str,
+    "dialogues_attached": bool,
+    "dialogues_push_enabled": bool,
+    "dialogues_resource_id": str,
+    "dialogues_control_plane_url": str,
+    "dialogues_attach_declined": bool,
 }
 
 
