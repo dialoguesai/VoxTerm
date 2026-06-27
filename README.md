@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/voxterm_logo.png" alt="VoxTerm" width="160">
+</p>
+
 # VOXTERM
 
 Local real-time voice transcription TUI with speaker diarization and P2P collaborative transcription. Runs offline by default — optional Dialogues/Topos transcript push when you opt in.
